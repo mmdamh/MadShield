@@ -1,0 +1,20 @@
+# Build output / local tooling
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# Never commit signing material
+*.keystore
+*.jks
+release.keystore
+
+# Engine sources are fetched by CI at the pinned commits
+native/aether-core/
+native/hev-socks5-tunnel/
+
+# Native libraries are produced by CI, not committed
+app/src/main/jniLibs/
+app/src/main/assets_hashes.properties

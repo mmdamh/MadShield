@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Blanket deny on cleartext for every domain. The app itself makes no
+         direct HTTP calls at all; all traffic goes through the local engine
+         process, not through Android's own HTTP stack. This is a defense-in-depth
+         rule in case any future dependency ever tries. -->
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

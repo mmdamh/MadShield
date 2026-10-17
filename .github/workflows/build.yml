@@ -1,0 +1,397 @@
+name: Build AetherShield APK
+
+# Everything is built from SOURCE in this workflow, on GitHub's own runners --
+# no prebuilt aether/hev-socks5-tunnel binaries are ever downloaded and
+# trusted blindly. Both engines are fetched by exact pinned commit hash; bump the pin
+# deliberately (native/*.pin) instead of tracking "latest" so a
+# malicious upstream push can't silently land in your next build.
+#
+# The aether-core build job below is verified against CluvexStudio/Aether's
+# own .github/workflows/release.yml "android" job (checked directly against
+# the v1.5.0 source on 2026-08-03), not guessed -- same Go/CMake/NDK/cargo-ndk
+# recipe they use to publish their own android-arm64/armv7 releases. Only
+# arm64-v8a and armeabi-v7a are built -- matches the reference app's own ABI
+# set, which covers virtually every real Android phone (x86_64 mainly
+# matters for emulators, and skipping it halves native build time).
+# The hev-socks5-tunnel job builds our OWN JNI bridge (scripts/aethertun-jni.c)
+# instead of relying on hev's bundled JNI layer, which has drifted across
+# upstream versions before and crashed full VPN mode while leaving proxy-only
+# mode working. hev's own JNI layer is stripped from the build; symbol names
+# on both libraries are verified at build time (llvm-nm), not assumed.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-native-aether:
+    name: Build aether core (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+          - abi: armeabi-v7a
+            target: armv7-linux-androideabi
+    steps:
+      - uses: actions/checkout@v4
+
+      # The engine source is fetched by EXACT commit hash from native/aether-core.pin
+      # (no submodule setup needed on your side). GitHub serves any commit by SHA, and
+      # the check below fails the build if what was fetched is not that exact commit.
+      - name: Fetch aether-core at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/aether-core.pin)"
+          rm -rf native/aether-core
+          mkdir -p native/aether-core
+          git -C native/aether-core init -q
+          git -C native/aether-core fetch -q --depth 1 https://github.com/CluvexStudio/Aether "$pin"
+          git -C native/aether-core checkout -q FETCH_HEAD
+          test "$(git -C native/aether-core rev-parse HEAD)" = "$pin"
+          echo "aether-core @ $pin"
+
+      # The app drives the core purely through AETHER_* environment variables
+      # (see EngineProcessManager.kt). If an upstream bump ever renames or
+      # drops one of them, fail HERE with the missing name instead of
+      # shipping an APK whose settings silently do nothing. Names verified
+      # against Aether v2.3.0 (commit 6175b67) via the AetherGUI reference.
+      - name: Verify the core still honors every env var the app sets
+        run: |
+          set -e
+          SRC=native/aether-core/aether/src
+          for v in AETHER_PROTOCOL AETHER_SCAN AETHER_IP AETHER_NOIZE AETHER_SOCKS \
+                   AETHER_CONFIG AETHER_QUICK_RECONNECT AETHER_MASQUE_HTTP2 \
+                   AETHER_GOOL_MODE AETHER_EXIT_LOC AETHER_ECH AETHER_DNS \
+                   AETHER_ROUTES_FILE AETHER_TEAM AETHER_MASQUE_H2_FRAGMENT \
+                   AETHER_MASQUE_MTU AETHER_ECH_DNS AETHER_EXIT_LOC_SECS; do
+            grep -rq "$v" "$SRC" || { echo "ERROR: core source no longer mentions $v"; exit 1; }
+          done
+          echo "OK: all AETHER_* variables the app sets exist in the pinned core"
+
+      # Core v2.3.0 raised its minimum to Rust 1.98; "stable" satisfies that
+      # once 1.98+ is the stable channel (it is as of this release).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # boring-sys (BoringSSL bindings, pulled in by quiche) needs Go to build
+      # BoringSSL itself -- confirmed dependency, not optional.
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      # No separate system clang install here on purpose: the NDK ships its
+      # own clang and cc-rs/bindgen use that automatically for Android
+      # targets. (Contrast with a native Linux build, which does need a
+      # system clang -- see upstream's Dockerfile.)
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # ROOT CAUSE of the on-device error
+      #   CANNOT LINK EXECUTABLE ... library "libc++_shared.so" not found
+      # BoringSSL (pulled in by quiche) is C++, and cargo-ndk links the NDK's
+      # libc++ as a SHARED library by default. The APK never contains
+      # libc++_shared.so, so the engine process dies the instant Android tries
+      # to start it and the app sits at "Connecting" until the timeout.
+      # Upstream Aether's own release workflow avoids it by telling the boring
+      # build to link libc++ statically; this is that exact line. The check
+      # after the build then FAILS THE CI JOB if a shared libc++ ever sneaks
+      # back in, so a broken APK can no longer be produced silently.
+      - name: Build aether core
+        working-directory: native/aether-core/aether
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          under=$(echo "${{ matrix.target }}" | tr '-' '_')
+          export "BORING_BSSL_RUST_CPPLIB_${under}=static:-bundle=c++"
+          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release
+          bin="target/${{ matrix.target }}/release/aether"
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          needed=$("$READELF" -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+          echo "[android ${{ matrix.abi }}] aether NEEDED: $needed"
+          if grep -qx 'libc++_shared.so' <<<"$needed"; then
+            echo "ERROR: aether still needs libc++_shared.so (static libc++ link failed)"; exit 1
+          fi
+
+      - name: Rename to lib*.so (required for Android to extract+exec it) and stage
+        run: |
+          mkdir -p "staged/${{ matrix.abi }}"
+          cp "native/aether-core/aether/target/${{ matrix.target }}/release/aether" \
+             "staged/${{ matrix.abi }}/libaether.so"
+
+      - name: Upload aether binary for this ABI
+        uses: actions/upload-artifact@v4
+        with:
+          name: aether-${{ matrix.abi }}
+          path: staged/${{ matrix.abi }}/libaether.so
+          retention-days: 1
+
+  build-native-tun2socks:
+    name: Build hev-socks5-tunnel + our JNI bridge (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same exact-commit fetch as for the engine. hev has its own submodules
+      # (lwip, yaml, hev-task-system, hev-socks5-core) that its Android.mk needs,
+      # so those are initialised too (each is pinned by hev's own commit).
+      - name: Fetch hev-socks5-tunnel at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/hev-socks5-tunnel.pin)"
+          rm -rf native/hev-socks5-tunnel
+          mkdir -p native/hev-socks5-tunnel
+          git -C native/hev-socks5-tunnel init -q
+          git -C native/hev-socks5-tunnel fetch -q --depth 1 https://github.com/heiher/hev-socks5-tunnel "$pin"
+          git -C native/hev-socks5-tunnel checkout -q FETCH_HEAD
+          test "$(git -C native/hev-socks5-tunnel rev-parse HEAD)" = "$pin"
+          git -C native/hev-socks5-tunnel submodule update --init --recursive --depth 1
+          echo "hev-socks5-tunnel @ $pin"
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      # This whole job's structure is cross-checked against a reference app
+      # that documented (in its own commit history / SECURITY_AUDIT docs) a
+      # real, field-hit crash class: loading hev-socks5-tunnel directly and
+      # trusting its BUNDLED JNI layer (hev-jni.c) crashes full VPN mode
+      # whenever upstream's JNI signatures drift, while proxy-only mode (which
+      # never touches hev) keeps working -- exactly the symptom reported here.
+      # Fix: strip hev's own JNI layer out of the build entirely, and ship our
+      # own tiny bridge (scripts/aethertun-jni.c) that binds only hev's STABLE
+      # public C API and exports Java_* symbols we control.
+      - name: Strip hev's bundled JNI layer out of the build
+        run: |
+          set -e
+          find native/hev-socks5-tunnel -name '*.mk' -print0 \
+            | xargs -0 sed -i 's|[^[:space:]]*hev-jni\.c||g'
+          find native/hev-socks5-tunnel -name 'hev-jni.c' -delete
+
+      - name: Locate Android.mk
+        id: mk
+        run: |
+          set -e
+          if [ -f native/hev-socks5-tunnel/Android.mk ]; then
+            echo "dir=native/hev-socks5-tunnel" >> "$GITHUB_OUTPUT"
+          elif [ -f native/hev-socks5-tunnel/jni/Android.mk ]; then
+            echo "dir=native/hev-socks5-tunnel/jni" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Android.mk not found at repo root or jni/" >&2
+            exit 1
+          fi
+
+      - name: Build hev-socks5-tunnel core (without its JNI layer)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          MK_DIR="${{ steps.mk.outputs.dir }}"
+          APP_MK_FLAG=""
+          [ -f "${MK_DIR}/Application.mk" ] && APP_MK_FLAG="NDK_APPLICATION_MK=${MK_DIR}/Application.mk"
+          "$ANDROID_NDK_HOME/ndk-build" \
+            NDK_PROJECT_PATH=native/hev-socks5-tunnel \
+            APP_BUILD_SCRIPT="${MK_DIR}/Android.mk" \
+            ${APP_MK_FLAG} \
+            APP_ABI=${{ matrix.abi }} \
+            APP_PLATFORM=android-26 \
+            APP_STL=c++_static \
+            APP_CFLAGS=-O3
+
+      - name: Verify hev exports its stable C API and NOT a JNI layer
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          SO="native/hev-socks5-tunnel/libs/${{ matrix.abi }}/libhev-socks5-tunnel.so"
+          test -f "$SO" || { echo "ERROR: $SO not produced"; exit 1; }
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          SYMS="$("$NM" --dynamic --defined-only "$SO")"
+          for sym in hev_socks5_tunnel_main hev_socks5_tunnel_quit hev_socks5_tunnel_stats; do
+            echo "$SYMS" | grep -qw "$sym" || { echo "ERROR: $SO missing $sym"; exit 1; }
+          done
+          # If hev-jni.c wasn't fully stripped, JNI_OnLoad would still be
+          # exported -- ART's dlsym() search of DT_NEEDED deps would find it
+          # and run its (potentially signature-drifted) RegisterNatives again.
+          if echo "$SYMS" | grep -qw JNI_OnLoad; then
+            echo "ERROR: hev still exports JNI_OnLoad -- strip step did not work for this upstream layout"
+            exit 1
+          fi
+          echo "OK: hev exports the stable C API and nothing JNI-related"
+
+      - name: Build our own JNI bridge (libaethertun.so)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          case "${{ matrix.abi }}" in
+            arm64-v8a)   CLANG="aarch64-linux-android26-clang" ;;
+            armeabi-v7a) CLANG="armv7a-linux-androideabi26-clang" ;;
+          esac
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          LIBDIR="native/hev-socks5-tunnel/libs/${{ matrix.abi }}"
+          "$TOOLCHAIN/$CLANG" -O2 -fPIC -shared -Wall -Werror \
+            -Wl,-soname,libaethertun.so -Wl,--no-undefined \
+            -o "$LIBDIR/libaethertun.so" scripts/aethertun-jni.c \
+            -L"$LIBDIR" -lhev-socks5-tunnel -llog
+
+      - name: Verify the bridge exports the exact symbols Kotlin expects
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -e
+          SO="native/hev-socks5-tunnel/libs/${{ matrix.abi }}/libaethertun.so"
+          NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          SYMS="$("$NM" --dynamic --defined-only "$SO")"
+          for sym in \
+            JNI_OnLoad \
+            Java_com_aethershield_app_vpn_TProxyService_TProxyStartService \
+            Java_com_aethershield_app_vpn_TProxyService_TProxyStopService \
+            Java_com_aethershield_app_vpn_TProxyService_TProxyIsRunning \
+            Java_com_aethershield_app_vpn_TProxyService_TProxyGetStats; do
+            echo "$SYMS" | grep -qw "$sym" || { echo "ERROR: $SO missing $sym -- Kotlin externals would not resolve"; exit 1; }
+          done
+          echo "OK: libaethertun.so exports all Java_* symbols TProxyService.kt declares"
+          # Same trap as the engine: no native library we ship may depend on a
+          # shared libc++ the APK does not contain.
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          for lib in libaethertun.so libhev-socks5-tunnel.so; do
+            F="native/hev-socks5-tunnel/libs/${{ matrix.abi }}/$lib"
+            if "$READELF" -d "$F" | grep -q 'libc++_shared.so'; then
+              echo "ERROR: $lib needs libc++_shared.so, which is not packaged"; exit 1
+            fi
+          done
+          echo "OK: tun2socks libraries do not need libc++_shared.so"
+
+      - name: Stage both libraries
+        run: |
+          set -e
+          mkdir -p staged/${{ matrix.abi }}
+          cp "native/hev-socks5-tunnel/libs/${{ matrix.abi }}/libhev-socks5-tunnel.so" staged/${{ matrix.abi }}/
+          cp "native/hev-socks5-tunnel/libs/${{ matrix.abi }}/libaethertun.so" staged/${{ matrix.abi }}/
+
+      - name: Upload native libs for this ABI
+        uses: actions/upload-artifact@v4
+        with:
+          name: tun2socks-${{ matrix.abi }}
+          path: staged/${{ matrix.abi }}/*.so
+          retention-days: 1
+
+  build-apk:
+    needs: [build-native-aether, build-native-tun2socks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to publish a GitHub Release below
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-native
+
+      - name: Assemble jniLibs/<abi>/ from the downloaded artifacts
+        run: |
+          set -e
+          mkdir -p app/src/main/jniLibs
+          for abi in arm64-v8a armeabi-v7a; do
+            mkdir -p "app/src/main/jniLibs/$abi"
+            cp "dist-native/aether-$abi/libaether.so" "app/src/main/jniLibs/$abi/"
+            cp "dist-native/tun2socks-$abi/libhev-socks5-tunnel.so" "app/src/main/jniLibs/$abi/"
+            cp "dist-native/tun2socks-$abi/libaethertun.so" "app/src/main/jniLibs/$abi/"
+          done
+
+      - name: Compute + record binary hashes (for BinaryIntegrity.kt)
+        run: |
+          set -e
+          {
+            echo "arm64-v8a/libaether.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libaether.so | cut -d' ' -f1)"
+            echo "arm64-v8a/libaethertun.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libaethertun.so | cut -d' ' -f1)"
+            echo "arm64-v8a/libhev-socks5-tunnel.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so | cut -d' ' -f1)"
+          } > app/src/main/assets_hashes.properties || true
+          # This computes real hashes of what CI itself just built and is
+          # about to package, which is what BinaryIntegrity.kt needs to
+          # compare against at runtime. Wiring this properties file into
+          # BuildConfig/a generated resource that BinaryIntegrity.verify()
+          # reads is the one remaining manual step -- left explicit rather
+          # than faked with placeholder hashes.
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      # No gradlew/gradle-wrapper.jar in this repo -- generating one needs
+      # network access to download the wrapper jar, which wasn't available
+      # wherever this project was first put together. Using the official
+      # setup-gradle action instead sidesteps that entirely: it installs a
+      # real Gradle distribution and caches it, so "gradle" (not "./gradlew")
+      # is what gets called below.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Decode signing key
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+        run: |
+          if [ -n "$SIGNING_KEY_BASE64" ]; then
+            echo "$SIGNING_KEY_BASE64" | base64 -d > release.keystore
+          fi
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AetherShield-release
+          path: app/build/outputs/apk/release/*.apk
+
+      # Publishes a real GitHub Release (not just a build artifact) on every
+      # successful build, so the APK is easy to find and doesn't expire in
+      # 90 days the way Actions artifacts do. Each build gets its own unique
+      # tag (the run number), so nothing ever collides or overwrites a
+      # previous release; "make_latest: true" keeps the newest one marked
+      # Latest so a plain /releases/latest link always points at it.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AetherShield build ${{ github.run_number }}
+          files: app/build/outputs/apk/release/*.apk
+          make_latest: true
+          generate_release_notes: true
