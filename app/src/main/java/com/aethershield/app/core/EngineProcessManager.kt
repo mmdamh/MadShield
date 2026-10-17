@@ -124,12 +124,24 @@ class EngineProcessManager(private val context: Context) {
 
     /** A one-line, human-readable reason the engine is not running, or null if there is none. */
     fun failureReason(): String? {
+        // The output pump records the exit a moment AFTER the process dies; give it a short
+        // moment so the real reason is not missed. Call from a background thread only.
+        if (lastExit == null && process?.isAlive == false) {
+            val deadline = System.currentTimeMillis() + 1_500
+            while (lastExit == null && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(25) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            }
+        }
         val exit = lastExit ?: return null
         val joined = exit.lastLines.joinToString("\n")
         return when {
             joined.contains("libc++_shared.so") ->
                 "The engine needs libc++_shared.so, which is missing from this build. " +
                     "Rebuild the APK with the updated CI workflow (static libc++)."
+            joined.contains("ECH key", ignoreCase = true) ->
+                "ECH is on but its key lookup failed (the ECH resolver is not reachable from this network). " +
+                    "Turn ECH off in Settings or pick another ECH resolver in the DNS tab. " +
+                    (exit.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { "[${it.take(140)}]" } ?: "")
             joined.contains("CANNOT LINK EXECUTABLE") ->
                 "Android could not load the engine binary: " +
                     (exit.lastLines.firstOrNull { it.contains("CANNOT LINK") } ?: "link error")

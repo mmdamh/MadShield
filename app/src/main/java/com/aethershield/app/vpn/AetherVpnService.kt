@@ -92,7 +92,7 @@ class AetherVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_DISCONNECT) {
             userRequestedStop = true
-            stopSelf()
+            teardownAndStop()
             return START_NOT_STICKY
         }
         userRequestedStop = false
@@ -133,16 +133,26 @@ class AetherVpnService : VpnService() {
             establishTun(baseConfig) // capture traffic immediately; nothing bridged yet
         }
 
-        // Two-pass connect: try exactly what the user configured; if it does not
-        // come up, retry once with anti-DPI hardening (see EngineConfig.hardened()).
-        var attempt = attemptConnect(baseConfig, FIRST_PASS_TIMEOUT_MS)
+        // Connect in up to three steps, each only when the previous one failed:
+        //  1. exactly what the user configured;
+        //  2. the same without ECH, if the failure was the ECH key lookup (that
+        //     lookup is blocked on many networks and makes the core refuse to start);
+        //  3. with anti-DPI hardening (see EngineConfig.hardened()).
         var active = baseConfig
+        var attempt = attemptConnect(active, FIRST_PASS_TIMEOUT_MS)
+        if (attempt is Attempt.Failed && active.ech && EchFallback.isEchFailure(attempt.reason)) {
+            RingLogBuffer.append("[vpn] ECH key lookup failed; retrying without ECH")
+            engine.stop()
+            active = active.copy(ech = false)
+            attempt = attemptConnect(active, FIRST_PASS_TIMEOUT_MS)
+        }
         if (attempt is Attempt.Failed) {
             RingLogBuffer.append("[vpn] first pass failed (${attempt.reason}); retrying with anti-DPI hardening")
             engine.stop()
-            active = baseConfig.hardened()
+            active = active.hardened()
             attempt = attemptConnect(active, HARDENED_PASS_TIMEOUT_MS)
         }
+        if (userRequestedStop) return
 
         if (attempt is Attempt.Failed) {
             RingLogBuffer.append("[vpn] engine did not become healthy: ${attempt.reason}")
@@ -164,6 +174,7 @@ class AetherVpnService : VpnService() {
     }
 
     private fun markConnected(config: EngineConfig) {
+        if (userRequestedStop) return
         AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
         updateNotification(getString(R.string.state_connected))
     }
@@ -175,6 +186,7 @@ class AetherVpnService : VpnService() {
                 ?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) }
                 ?: emptyMap()
             val job = currentCoroutineContext()[Job]
+            ensureActive() // never launch an engine after the user already pressed Disconnect
             // EnginePreflightException propagates on purpose: it cannot work no matter
             // how often we retry, so connect() surfaces it as-is.
             engine.start(config, ruleWriter, secretEnv)
@@ -196,6 +208,7 @@ class AetherVpnService : VpnService() {
 
     /** Startup failed for good: release everything so the phone's normal internet works again. */
     private fun failStartup(reason: String) {
+        if (userRequestedStop) return
         healthJob?.cancel()
         runCatching { TProxyService.TProxyStopService() }
         engine.stop()
@@ -399,6 +412,24 @@ class AetherVpnService : VpnService() {
         userRequestedStop = true
         stopSelfSafely()
         super.onRevoke()
+    }
+
+    /**
+     * User pressed Disconnect. Tears everything down itself and then reports Idle
+     * explicitly, instead of relying only on onDestroy() running: the UI must never
+     * be left on "Disconnecting". Runs off the main thread so a slow step cannot freeze the app.
+     */
+    private fun teardownAndStop() {
+        healthJob?.cancel()
+        connectJob?.cancel()
+        Thread {
+            runCatching { TProxyService.TProxyStopService() }
+            runCatching { engine.stop() }
+            runCatching { releaseTun() }
+            AetherController.setState(ConnectionState.Idle)
+            RingLogBuffer.clear()
+            stopSelf()
+        }.start()
     }
 
     private fun stopSelfSafely() {

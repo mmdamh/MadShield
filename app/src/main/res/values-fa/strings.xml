@@ -32,6 +32,7 @@
     <string name="status_error">اتصال ناموفق بود</string>
     <string name="hint_idle">برای اتصال روی دکمه بزنید</string>
     <string name="hint_busy">منتظر پاسخ موتور هستیم</string>
+    <string name="hint_disconnecting">در حال خاموش کردن تونل</string>
     <string name="hint_live_vpn">کل دستگاه شما محافظت می‌شود</string>
     <string name="hint_live_proxy">برنامه‌ها را روی آدرس پروکسی تنظیم کنید</string>
     <string name="proxy_address_label">SOCKS5 %1$s</string>

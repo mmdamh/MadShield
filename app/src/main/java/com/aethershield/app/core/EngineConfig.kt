@@ -134,19 +134,35 @@ data class EngineConfig(
     /**
      * Second-pass configuration for when a plain attempt fails or times out --
      * most commonly because QUIC/UDP (MASQUE h3) is throttled. Switches the
-     * MASQUE carrier to HTTP/2 over TCP, fragments the ClientHello, enables
-     * ECH and the firewall noize profile. WireGuard gets noize only (it has
-     * no h2/h3 choice and no ClientHello to fragment).
+     * MASQUE carrier to HTTP/2 over TCP, fragments the ClientHello and uses the
+     * firewall noize profile. WireGuard gets noize only (it has no h2/h3 choice
+     * and no ClientHello to fragment).
+     *
+     * ECH is deliberately NOT switched on here: it needs a DoH/DNS lookup of the
+     * ECH key that is itself blocked on many networks, and when that lookup fails
+     * the core refuses to start at all ("ECH is on but there is no ECH key to
+     * offer"). A fallback that can make things worse is not a fallback. The user's
+     * own ECH choice is kept as it is.
      */
     fun hardened(): EngineConfig = when (protocol) {
         Protocol.SMART, Protocol.MASQUE_H3, Protocol.MASQUE_H2 -> copy(
             protocol = Protocol.MASQUE_H2,
-            noizeProfile = "firewall", fragment = true, ech = true
+            noizeProfile = "firewall", fragment = true
         )
         Protocol.GOOL -> copy(
             masqueHttp2 = true,
-            noizeProfile = "firewall", fragment = true, ech = true
+            noizeProfile = "firewall", fragment = true
         )
         Protocol.WIREGUARD, Protocol.GOOL_CLASSIC -> copy(noizeProfile = "firewall")
     }
+}
+
+/**
+ * The core exits with an "ECH ... no ECH key" error when ECH is on but the key
+ * lookup (AETHER_ECH_DNS) cannot be completed. That is recoverable: connect
+ * again without ECH instead of leaving the user with a dead connection.
+ */
+object EchFallback {
+    fun isEchFailure(reason: String?): Boolean =
+        reason != null && reason.contains("ECH", ignoreCase = true)
 }

@@ -165,5 +165,15 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(Intent(this, AetherVpnService::class.java).setAction(AetherVpnService.ACTION_DISCONNECT))
         }
+        // Safety net: if the service has not reported back in a few seconds, force-stop both
+        // services and return to Idle, so the button can never stay stuck on "Disconnecting".
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(6_000)
+            if (AetherController.state.value is ConnectionState.Disconnecting) {
+                stopService(Intent(this@MainActivity, AetherVpnService::class.java))
+                stopService(Intent(this@MainActivity, ProxyOnlyService::class.java))
+                AetherController.setState(ConnectionState.Idle)
+            }
+        }
     }
 }

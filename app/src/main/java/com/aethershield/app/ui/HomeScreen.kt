@@ -159,6 +159,7 @@ private fun HeroCard(config: EngineConfig, state: ConnectionState, onTap: () -> 
             Text(
                 stringResource(
                     when {
+                        state is ConnectionState.Disconnecting -> R.string.hint_disconnecting
                         busy -> R.string.hint_busy
                         live && config.mode == ConnectionMode.VPN -> R.string.hint_live_vpn
                         live -> R.string.hint_live_proxy

@@ -57,7 +57,13 @@ class ProxyOnlyService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             userRequestedStop = true
-            stopSelf()
+            job?.cancel()
+            Thread {
+                runCatching { engine.stop() }
+                AetherController.setState(ConnectionState.Idle)
+                RingLogBuffer.clear()
+                stopSelf()
+            }.start()
             return START_NOT_STICKY
         }
         userRequestedStop = false
@@ -70,13 +76,21 @@ class ProxyOnlyService : Service() {
                 val config = settingsStore.configFlow.first()
                 val secretEnv = settingsStore.getServiceTokenSecret()
                     ?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) } ?: emptyMap()
-                engine.start(config, ruleWriter, secretEnv)
-
                 val self = currentCoroutineContext()[Job]
-                when (SocksProbe.awaitReady(
-                    TunnelConfig.SOCKS_HOST, config.socksPort, CONNECT_TIMEOUT_MS,
-                    engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
-                )) {
+                suspend fun startAndWait(c: EngineConfig): SocksProbe.Wait {
+                    ensureActive()
+                    engine.start(c, ruleWriter, secretEnv)
+                    return SocksProbe.awaitReady(
+                        TunnelConfig.SOCKS_HOST, c.socksPort, CONNECT_TIMEOUT_MS,
+                        engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
+                    )
+                }
+                var wait = startAndWait(config)
+                if (wait == SocksProbe.Wait.ENGINE_DIED && config.ech && EchFallback.isEchFailure(engine.failureReason())) {
+                    RingLogBuffer.append("[proxy] ECH key lookup failed; retrying without ECH")
+                    wait = startAndWait(config.copy(ech = false))
+                }
+                when (wait) {
                     SocksProbe.Wait.READY -> {
                         AetherController.setState(
                             ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")

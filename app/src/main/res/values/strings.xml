@@ -32,6 +32,7 @@
     <string name="status_error">Connection failed</string>
     <string name="hint_idle">Tap the button to connect</string>
     <string name="hint_busy">Waiting for the engine to answer</string>
+    <string name="hint_disconnecting">Shutting down the tunnel</string>
     <string name="hint_live_vpn">Your whole device is protected</string>
     <string name="hint_live_proxy">Point your apps at the proxy address</string>
     <string name="proxy_address_label">SOCKS5 %1$s</string>
