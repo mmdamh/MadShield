@@ -29,7 +29,6 @@ class ProxyOnlyService : Service() {
         const val ACTION_STOP = "com.aethershield.app.core.PROXY_STOP"
         private const val NOTIF_ID = 2
         private const val CHANNEL_ID = "proxy_status"
-        private const val CONNECT_TIMEOUT_MS = 45_000L
         private const val HEALTH_CHECK_INTERVAL_MS = 5_000L
     }
 
@@ -81,7 +80,7 @@ class ProxyOnlyService : Service() {
                     ensureActive()
                     engine.start(c, ruleWriter, secretEnv)
                     return SocksProbe.awaitReady(
-                        TunnelConfig.SOCKS_HOST, c.socksPort, CONNECT_TIMEOUT_MS,
+                        TunnelConfig.SOCKS_HOST, c.socksPort, ConnectPolicy.firstPassTimeoutMs(c),
                         engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
                     )
                 }
@@ -89,6 +88,15 @@ class ProxyOnlyService : Service() {
                 if (wait == SocksProbe.Wait.ENGINE_DIED && config.ech && EchFallback.isEchFailure(engine.failureReason())) {
                     RingLogBuffer.append("[proxy] ECH key lookup failed; retrying without ECH")
                     wait = startAndWait(config.copy(ech = false))
+                }
+                if (wait != SocksProbe.Wait.READY && wait != SocksProbe.Wait.CANCELLED &&
+                    ConnectPolicy.shouldTryClassicGool(
+                        config,
+                        if (wait == SocksProbe.Wait.TIMEOUT) "no answer from the engine" else engine.failureReason()
+                    )
+                ) {
+                    RingLogBuffer.append("[proxy] Gool over MASQUE found no gateway; trying classic Gool")
+                    wait = startAndWait(config.copy(protocol = Protocol.GOOL_CLASSIC))
                 }
                 when (wait) {
                     SocksProbe.Wait.READY -> {
@@ -99,7 +107,7 @@ class ProxyOnlyService : Service() {
                         watch(config)
                     }
                     SocksProbe.Wait.ENGINE_DIED -> fail(engine.failureReason() ?: "the engine process exited")
-                    SocksProbe.Wait.TIMEOUT -> fail("no answer from the engine after ${CONNECT_TIMEOUT_MS / 1000}s")
+                    SocksProbe.Wait.TIMEOUT -> fail("no answer from the engine after ${ConnectPolicy.firstPassTimeoutMs(config) / 1000}s")
                     SocksProbe.Wait.CANCELLED -> Unit
                 }
             } catch (c: CancellationException) {

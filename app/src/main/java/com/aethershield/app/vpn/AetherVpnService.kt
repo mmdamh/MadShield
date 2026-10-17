@@ -60,8 +60,7 @@ class AetherVpnService : VpnService() {
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "tunnel_status"
         private const val HEALTH_CHECK_INTERVAL_MS = 5_000L
-        private const val FIRST_PASS_TIMEOUT_MS = 45_000L
-        private const val HARDENED_PASS_TIMEOUT_MS = 45_000L
+        private const val HARDENED_PASS_TIMEOUT_MS = 60_000L
         private const val RECOVERY_TIMEOUT_MS = 30_000L
         private const val MAX_RECOVERIES = 5
         private const val BRIDGE_STOP_TIMEOUT_MS = 4_000L
@@ -139,12 +138,18 @@ class AetherVpnService : VpnService() {
         //     lookup is blocked on many networks and makes the core refuse to start);
         //  3. with anti-DPI hardening (see EngineConfig.hardened()).
         var active = baseConfig
-        var attempt = attemptConnect(active, FIRST_PASS_TIMEOUT_MS)
+        var attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
         if (attempt is Attempt.Failed && active.ech && EchFallback.isEchFailure(attempt.reason)) {
             RingLogBuffer.append("[vpn] ECH key lookup failed; retrying without ECH")
             engine.stop()
             active = active.copy(ech = false)
-            attempt = attemptConnect(active, FIRST_PASS_TIMEOUT_MS)
+            attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
+        }
+        if (attempt is Attempt.Failed && ConnectPolicy.shouldTryClassicGool(active, attempt.reason)) {
+            RingLogBuffer.append("[vpn] Gool over MASQUE found no gateway (${attempt.reason}); trying classic Gool (no MASQUE gateway needed)")
+            engine.stop()
+            active = active.copy(protocol = Protocol.GOOL_CLASSIC)
+            attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
         }
         if (attempt is Attempt.Failed) {
             RingLogBuffer.append("[vpn] first pass failed (${attempt.reason}); retrying with anti-DPI hardening")
@@ -269,22 +274,23 @@ class AetherVpnService : VpnService() {
      */
     private fun writeHevConfig(config: EngineConfig): File {
         val file = File(cacheDir, "hev.yaml")
+        // Same keys and values as ZedSecure's field-tested hev config (hev's own defaults for
+        // everything else; no stack-size or timeout overrides that could starve a session).
         val yaml = """
-            misc:
-              task-stack-size: 32768
-              connect-timeout: 15000
-              tcp-read-write-timeout: 60000
-              udp-read-write-timeout: 60000
-              log-level: warn
             tunnel:
               mtu: ${config.effectiveMtu}
               ipv4: ${TunnelConfig.TUN_IPV4}
               ipv6: '${TunnelConfig.TUN_IPV6}'
-              icmp: 'reply'
             socks5:
-              address: ${TunnelConfig.SOCKS_HOST}
               port: ${config.socksPort}
+              address: ${TunnelConfig.SOCKS_HOST}
               udp: 'udp'
+            misc:
+              tcp-buffer-size: 131072
+              udp-recv-buffer-size: 262144
+              tcp-read-write-timeout: 300000
+              udp-read-write-timeout: 60000
+              log-level: warn
         """.trimIndent()
         file.writeText(yaml)
         return file
@@ -306,8 +312,19 @@ class AetherVpnService : VpnService() {
             if (!started) {
                 RingLogBuffer.append("[vpn] hev refused to start (config/fd rejected)")
                 AetherController.setState(ConnectionState.Error("tunnel start refused"))
+                return false
             }
-            started
+            // The native start only schedules a thread. If that thread exits at once (bad config,
+            // bad fd) the tunnel would be reported "connected" while carrying nothing, which is
+            // exactly the "VPN says connected but the internet does not pass" symptom.
+            delay(700)
+            if (!runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)) {
+                RingLogBuffer.append("[vpn] tunnel bridge stopped right after start (config: ${cfgFile.readText().replace('\n', ' ')})")
+                AetherController.setState(ConnectionState.Error("the tunnel bridge stopped right after starting"))
+                return false
+            }
+            RingLogBuffer.append("[vpn] tunnel bridge running (mtu=${config.effectiveMtu}, socks=${config.socksPort})")
+            true
         } catch (t: Throwable) {
             RingLogBuffer.append("[vpn] hev start failed: ${t.message}")
             AetherController.setState(ConnectionState.Error(t.message ?: "tunnel start failed"))
@@ -333,12 +350,21 @@ class AetherVpnService : VpnService() {
             var consecutiveFailures = 0
             var recoveries = 0
             var wasDown = false
+            var tick = 0
             while (isActive) {
                 delay(HEALTH_CHECK_INTERVAL_MS)
                 try {
                     val ok = engine.isRunning &&
                         SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
                     if (ok) {
+                        // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
+                        // all zero => nothing enters the tunnel; tx only => nothing comes back.
+                        if (tick++ % 6 == 1) {
+                            val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                            if (s != null && s.size >= 4) {
+                                RingLogBuffer.append("[vpn] tunnel counters: ${s[0]} / ${s[1]} B / ${s[2]} / ${s[3]} B (hev order: tx pkts, tx bytes, rx pkts, rx bytes)")
+                            }
+                        }
                         consecutiveFailures = 0
                         if (wasDown) { // came back (core replaced its tunnel, or we restarted it)
                             wasDown = false

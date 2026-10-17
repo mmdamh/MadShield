@@ -166,3 +166,30 @@ object EchFallback {
     fun isEchFailure(reason: String?): Boolean =
         reason != null && reason.contains("ECH", ignoreCase = true)
 }
+
+/**
+ * Connect timing and the Gool fallback, shared by the VPN and proxy services.
+ *
+ * AetherGUI gives a scanned connect 90 s (its default "stall timeout"), because the core's own
+ * gateway scan alone has a 45 s budget and the tunnel is verified AFTER it. A 45 s wait here
+ * therefore gave up at the very moment the core was about to answer.
+ *
+ * AetherGUI also falls back from the MASQUE-carried Gool to the classic WireGuard-in-WireGuard
+ * Gool when the core reports "gateway scan failed": the classic topology needs no MASQUE
+ * gateway at all, so a network that filters the MASQUE scan still connects.
+ */
+object ConnectPolicy {
+    const val SCANNED_PASS_MS = 90_000L
+    const val SIMPLE_PASS_MS = 45_000L
+
+    fun firstPassTimeoutMs(c: EngineConfig): Long =
+        if (c.protocol == Protocol.WIREGUARD) SIMPLE_PASS_MS else SCANNED_PASS_MS
+
+    fun isScanFailure(reason: String?): Boolean =
+        reason != null && reason.contains("gateway scan failed", ignoreCase = true)
+
+    /** Gool over MASQUE failed in the way the classic topology can avoid. */
+    fun shouldTryClassicGool(c: EngineConfig, reason: String?): Boolean =
+        c.protocol == Protocol.GOOL && reason != null &&
+            (isScanFailure(reason) || reason.startsWith("no answer from the engine"))
+}
