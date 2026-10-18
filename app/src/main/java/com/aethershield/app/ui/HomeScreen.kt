@@ -40,6 +40,7 @@ import com.aethershield.app.R
 import com.aethershield.app.core.*
 import com.aethershield.app.ui.components.CookieBlob
 import com.aethershield.app.ui.components.NavClearance
+import com.aethershield.app.ui.components.rememberIsForeground
 import com.aethershield.app.ui.components.PillToggle
 import com.aethershield.app.vpn.TProxyService
 import kotlinx.coroutines.delay
@@ -110,7 +111,8 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(10.dp))
-        FactChips(config)
+        val running by AetherController.active.collectAsState()
+        FactChips(config, running)
         Spacer(Modifier.height(10.dp))
         if (config.mode == ConnectionMode.VPN) {
             TrafficTiles(active = connectionState is ConnectionState.Connected)
@@ -198,14 +200,17 @@ private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
 
     // Rotation only runs while it means something (connecting / connected); an idle
     // button costs nothing, which keeps battery use flat.
-    val transition = rememberInfiniteTransition(label = "blob")
-    val spin by transition.animateFloat(
-        initialValue = 0f, targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            tween(if (busy) 3200 else 24000, easing = LinearEasing), RepeatMode.Restart
-        ),
-        label = "blob-spin"
-    )
+    val spin = if (busy || live) {
+        val transition = rememberInfiniteTransition(label = "blob")
+        val angle by transition.animateFloat(
+            initialValue = 0f, targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                tween(if (busy) 3200 else 24000, easing = LinearEasing), RepeatMode.Restart
+            ),
+            label = "blob-spin"
+        )
+        angle
+    } else 0f
     val amplitude by animateFloatAsState(
         when { busy -> 0.10f; live -> 0.075f; else -> 0.04f },
         spring(dampingRatio = 0.6f, stiffness = 260f), label = "blob-amp"
@@ -254,7 +259,9 @@ private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
 @Composable
 private fun UptimeText(sinceMs: Long, color: Color) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(sinceMs) {
+    val foreground by rememberIsForeground()
+    LaunchedEffect(sinceMs, foreground) {
+        if (!foreground) return@LaunchedEffect
         while (true) {
             now = System.currentTimeMillis()
             delay(1000)
@@ -314,7 +321,7 @@ private fun ErrorCard(message: String, onRetry: () -> Unit, onStop: () -> Unit, 
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FactChips(config: EngineConfig) {
+private fun FactChips(config: EngineConfig, running: EngineConfig?) {
     val dnsName = DnsPresets.matching(config.dnsResolvers)?.name
         ?: if (config.dnsResolvers.isEmpty()) stringResource(R.string.dns_default)
         else stringResource(R.string.dns_custom_count, config.dnsResolvers.size)
@@ -323,7 +330,12 @@ private fun FactChips(config: EngineConfig) {
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Chip(protocolShort(config.protocol))
+        // The protocol that is REALLY running: after a fallback (Gool -> HTTP/2 carrier -> classic Gool)
+        // it differs from the setting, and a classic Gool exit is a plain WARP (Iranian) address.
+        val shown = running ?: config
+        Chip(protocolShort(shown.protocol))
+        if (running != null && shown.protocol == Protocol.GOOL && shown.masqueHttp2) Chip("HTTP/2")
+        if (running != null && running.protocol != config.protocol) Chip(stringResource(R.string.chip_fallback))
         Chip("DNS · $dnsName")
         if (config.mode == ConnectionMode.VPN) Chip("MTU ${config.effectiveMtu}")
         if (config.exitLoc != null) Chip(stringResource(R.string.chip_exit_guard))
@@ -392,8 +404,10 @@ private data class Traffic(val downBps: Long = 0, val upBps: Long = 0, val total
 @Composable
 private fun rememberTraffic(active: Boolean): State<Traffic> {
     val state = remember { mutableStateOf(Traffic()) }
-    LaunchedEffect(active) {
+    val foreground by rememberIsForeground()
+    LaunchedEffect(active, foreground) {
         if (!active) { state.value = Traffic(); return@LaunchedEffect }
+        if (!foreground) return@LaunchedEffect
         var last: LongArray? = null
         while (true) {
             val s = if (TProxyService.available) runCatching { TProxyService.TProxyGetStats() }.getOrNull() else null

@@ -28,5 +28,11 @@ object AetherController {
 
     fun setState(newState: ConnectionState) {
         _state.value = newState
+        if (newState !is ConnectionState.Connected && newState !is ConnectionState.Connecting) _active.value = null
     }
+
+    /** The protocol/carrier that is REALLY running, which differs from the setting after a fallback. */
+    private val _active = MutableStateFlow<EngineConfig?>(null)
+    val active = _active.asStateFlow()
+    fun setActive(config: EngineConfig?) { _active.value = config }
 }

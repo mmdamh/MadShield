@@ -227,3 +227,30 @@ val MonoFamily: FontFamily = FontFamily.Monospace
 
 /** Space left at the bottom of every tab so the floating navigation bar never covers content. */
 val NavClearance = 96.dp
+
+
+/**
+ * True while the app's screen is visible (lifecycle STARTED or later). Polling loops that only feed the UI
+ * (uptime, throughput) must stop when this is false: a LaunchedEffect keeps running after the screen goes
+ * off, and one JNI call a second all night is exactly the kind of idle drain that heats a phone.
+ */
+@Composable
+fun rememberIsForeground(): State<Boolean> {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val lifecycle = remember(ctx) {
+        generateSequence(ctx) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<androidx.lifecycle.LifecycleOwner>()
+            .firstOrNull()?.lifecycle
+    }
+    val state = remember(lifecycle) {
+        mutableStateOf(lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) ?: true)
+    }
+    DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, _ ->
+            state.value = lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) ?: true
+        }
+        lifecycle?.addObserver(observer)
+        onDispose { lifecycle?.removeObserver(observer) }
+    }
+    return state
+}

@@ -156,4 +156,12 @@
     <string name="identity_reset_done">Removed %1$d saved WARP identity file(s). A new one is registered on the next connect.</string>
     <string name="identity_reset_none">No saved WARP identity found.</string>
     <string name="identity_reset_help">Use this if the exit IP stays stuck on an unwanted country. It deletes the saved WARP accounts; new ones are made on the next connect.</string>
+    <string name="sw_gool_h2">Gool over HTTP/2 (TCP)</string>
+    <string name="sw_gool_h2_sub">Carries Gool\'s outer MASQUE tunnel over TCP instead of QUIC. Use it when HTTP/3 never connects; on networks that throttle UDP it is usually the only one that works. If it is off and HTTP/3 fails, the app tries HTTP/2 by itself before falling back to classic Gool.</string>
+    <string name="lbl_perf">Performance profile</string>
+    <string name="perf_auto">Auto (core decides)</string>
+    <string name="perf_medium">Balanced</string>
+    <string name="perf_low">Light</string>
+    <string name="perf_help">Balanced and Light use smaller buffers and a capped network scan, so the phone runs cooler and the battery lasts longer. Auto lets the core pick the biggest profile on a fast phone. Takes effect on the next connect.</string>
+    <string name="chip_fallback">Fallback</string>
 </resources>

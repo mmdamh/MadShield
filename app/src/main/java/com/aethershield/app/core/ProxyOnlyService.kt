@@ -76,13 +76,25 @@ class ProxyOnlyService : Service() {
                 val secretEnv = settingsStore.getServiceTokenSecret()
                     ?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) } ?: emptyMap()
                 val self = currentCoroutineContext()[Job]
+                var active = config
                 suspend fun startAndWait(c: EngineConfig): SocksProbe.Wait {
                     ensureActive()
+                    active = c
                     engine.start(c, ruleWriter, secretEnv)
-                    return SocksProbe.awaitReady(
-                        TunnelConfig.SOCKS_HOST, c.socksPort, ConnectPolicy.firstPassTimeoutMs(c),
+                    val timeout = ConnectPolicy.firstPassTimeoutMs(c)
+                    val t0 = System.currentTimeMillis()
+                    val w = SocksProbe.awaitReady(
+                        TunnelConfig.SOCKS_HOST, c.socksPort, timeout,
                         engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
                     )
+                    if (w != SocksProbe.Wait.READY || c.effectiveChain == PrivacyChain.NONE) return w
+                    // Psiphon/Tor's local proxy answers before the chain is connected: wait for "is ready".
+                    val left = (timeout - (System.currentTimeMillis() - t0)).coerceAtLeast(10_000L)
+                    return when (val r = engine.awaitChainReady(left) { self?.isActive == false }) {
+                        null -> SocksProbe.Wait.READY
+                        "cancelled" -> SocksProbe.Wait.CANCELLED
+                        else -> { RingLogBuffer.append("[proxy] chain not ready: $r"); SocksProbe.Wait.TIMEOUT }
+                    }
                 }
                 var wait = startAndWait(config)
                 if (wait == SocksProbe.Wait.ENGINE_DIED && config.ech && EchFallback.isEchFailure(engine.failureReason())) {
@@ -90,16 +102,26 @@ class ProxyOnlyService : Service() {
                     wait = startAndWait(config.copy(ech = false))
                 }
                 if (wait != SocksProbe.Wait.READY && wait != SocksProbe.Wait.CANCELLED &&
+                    ConnectPolicy.shouldTryGoolH2(
+                        active,
+                        if (wait == SocksProbe.Wait.TIMEOUT) "no answer from the engine" else engine.failureReason()
+                    )
+                ) {
+                    RingLogBuffer.append("[proxy] Gool over HTTP/3 did not connect; trying the HTTP/2 (TCP) carrier")
+                    wait = startAndWait(active.copy(masqueHttp2 = true))
+                }
+                if (wait != SocksProbe.Wait.READY && wait != SocksProbe.Wait.CANCELLED &&
                     ConnectPolicy.shouldTryClassicGool(
-                        config,
+                        active,
                         if (wait == SocksProbe.Wait.TIMEOUT) "no answer from the engine" else engine.failureReason()
                     )
                 ) {
                     RingLogBuffer.append("[proxy] Gool over MASQUE found no gateway; trying classic Gool")
-                    wait = startAndWait(config.copy(protocol = Protocol.GOOL_CLASSIC))
+                    wait = startAndWait(active.copy(protocol = Protocol.GOOL_CLASSIC))
                 }
                 when (wait) {
                     SocksProbe.Wait.READY -> {
+                        AetherController.setActive(active)
                         AetherController.setState(
                             ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")
                         )
@@ -123,7 +145,7 @@ class ProxyOnlyService : Service() {
     private suspend fun watch(config: EngineConfig) {
         var misses = 0
         while (currentCoroutineContext().isActive) {
-            delay(HEALTH_CHECK_INTERVAL_MS)
+            delay(PowerPolicy.cadence(isScreenOn()).healthMs)
             val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
             if (ok) {
                 if (misses >= 2) {
@@ -138,6 +160,9 @@ class ProxyOnlyService : Service() {
             }
         }
     }
+
+    private fun isScreenOn(): Boolean =
+        runCatching { (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive }.getOrDefault(true)
 
     private fun fail(reason: String) {
         RingLogBuffer.append("[proxy] start failed: $reason")

@@ -156,4 +156,12 @@
     <string name="identity_reset_done">%1$d فایل هویت ذخیره‌شدهٔ وارپ حذف شد. در اتصال بعدی هویت جدید ساخته می‌شود.</string>
     <string name="identity_reset_none">هویت ذخیره‌شده‌ای پیدا نشد.</string>
     <string name="identity_reset_help">اگر آی‌پی خروجی روی کشور ناخواسته گیر کرده از این استفاده کنید. حساب‌های ذخیره‌شدهٔ وارپ پاک می‌شوند و در اتصال بعدی حساب جدید ساخته می‌شود.</string>
+    <string name="sw_gool_h2">گول روی HTTP/2 (TCP)</string>
+    <string name="sw_gool_h2_sub">تونل MASQUE بیرونیِ گول را به‌جای QUIC روی TCP می‌برد. وقتی HTTP/3 هرگز وصل نمی‌شود روشنش کنید؛ در شبکه‌هایی که UDP را کند می‌کنند معمولاً تنها حالتی است که کار می‌کند. اگر خاموش باشد و HTTP/3 وصل نشود، برنامه قبل از رفتن به گول کلاسیک خودش HTTP/2 را امتحان می‌کند.</string>
+    <string name="lbl_perf">پروفایل کارایی</string>
+    <string name="perf_auto">خودکار (هسته تصمیم می‌گیرد)</string>
+    <string name="perf_medium">متعادل</string>
+    <string name="perf_low">سبک</string>
+    <string name="perf_help">«متعادل» و «سبک» بافرهای کوچک‌تر و اسکن شبکهٔ محدودتری دارند، پس گوشی خنک‌تر می‌ماند و باتری بیشتر عمر می‌کند. «خودکار» در گوشی‌های سریع بزرگ‌ترین پروفایل را انتخاب می‌کند. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="chip_fallback">حالت جایگزین</string>
 </resources>

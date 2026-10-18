@@ -43,6 +43,7 @@ object EngineEnvironment {
         env["AETHER_IP"] = CoreChoices.ipOrDefault(config.ipMode)
         env["AETHER_NOIZE"] = CoreChoices.noizeOrDefault(config.noizeProfile)
         env["AETHER_LOG_LEVEL"] = "info"
+        CoreChoices.perfOrDefault(config.perfProfile).takeIf { it != "auto" }?.let { env["AETHER_PERF_PROFILE"] = it }
         val publicSocks = "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"
         val chain = config.effectiveChain
         // With a chain on, the core's own WARP proxy moves to an internal port and Psiphon/Tor
@@ -98,7 +99,7 @@ object EngineEnvironment {
 
         config.exitLoc?.takeIf { it.isNotBlank() }?.let {
             env["AETHER_EXIT_LOC"] = it
-            env["AETHER_EXIT_LOC_SECS"] = "60"
+            env["AETHER_EXIT_LOC_SECS"] = "180"
         }
         if (config.dnsResolvers.isNotEmpty()) env["AETHER_DNS"] = config.dnsResolvers.joinToString(",")
         routesFilePath?.let { env["AETHER_ROUTES_FILE"] = it }

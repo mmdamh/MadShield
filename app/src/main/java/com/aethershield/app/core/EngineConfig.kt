@@ -73,6 +73,11 @@ object CoreChoices {
     val IP_MODES = listOf("v4", "v6", "both")
     val NOIZE_PROFILES = listOf("off", "light", "firewall", "balanced", "gfw", "aggressive")
 
+    /** AETHER_PERF_PROFILE: "auto" leaves it to the core, which picks "high" on an 8-core phone. */
+    val PERF_PROFILES = listOf("auto", "medium", "low")
+    const val DEFAULT_PERF = "medium"
+    fun perfOrDefault(v: String?) = v?.takeIf { it in PERF_PROFILES } ?: DEFAULT_PERF
+
     const val DEFAULT_SCAN = "turbo"
     const val DEFAULT_IP = "v4"
     const val DEFAULT_NOIZE = "balanced"
@@ -153,7 +158,11 @@ data class EngineConfig(
 
     // Chain WARP -> Psiphon / Tor. psiphonRegion = two-letter exit country, null = automatic.
     val privacyChain: PrivacyChain = PrivacyChain.NONE,
-    val psiphonRegion: String? = null
+    val psiphonRegion: String? = null,
+
+    // Core resource profile (AETHER_PERF_PROFILE). Lighter than the core's own pick on big phones:
+    // smaller buffers and a capped scan, which means less heat and battery use.
+    val perfProfile: String = CoreChoices.DEFAULT_PERF
 ) {
     /** The chain that will really run (none for SMART). */
     val effectiveChain: PrivacyChain
@@ -251,6 +260,16 @@ object ConnectPolicy {
      */
     fun shouldTryClassicGool(c: EngineConfig, reason: String?): Boolean =
         c.protocol == Protocol.GOOL && reason != null &&
+            (isScanFailure(reason) ||
+                (c.effectiveChain == PrivacyChain.NONE && reason.startsWith("no answer from the engine")))
+
+    /**
+     * Gool over MASQUE is first tried with HTTP/3 (QUIC, UDP). Where UDP is throttled that scan/handshake
+     * never completes, while the HTTP/2 (TCP) carrier of the very same Gool works. So HTTP/2 comes BEFORE
+     * the classic fallback (which gives a plain WARP exit, i.e. the Iranian one).
+     */
+    fun shouldTryGoolH2(c: EngineConfig, reason: String?): Boolean =
+        c.protocol == Protocol.GOOL && !c.masqueHttp2 && reason != null &&
             (isScanFailure(reason) ||
                 (c.effectiveChain == PrivacyChain.NONE && reason.startsWith("no answer from the engine")))
 

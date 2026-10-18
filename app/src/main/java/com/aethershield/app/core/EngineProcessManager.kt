@@ -39,6 +39,11 @@ class EngineProcessManager(private val context: Context) {
     @Volatile private var dying: Process? = null
     @Volatile var lastExit: EngineExit? = null
         private set
+
+    /** True once the core announced that its Psiphon/Tor chain really carries traffic. */
+    @Volatile var chainReady: Boolean = false
+        private set
+    @Volatile private var nativeDirPath: String? = null
     private var pumpJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val tail = ArrayDeque<String>()
@@ -48,8 +53,10 @@ class EngineProcessManager(private val context: Context) {
     fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>) {
         stop()
         waitForPreviousToDie()
+        chainReady = false
 
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+        nativeDirPath = nativeDir.absolutePath
         val bin = File(nativeDir, EngineEnv.ENGINE_BIN)
         preflight(bin, nativeDir)
 
@@ -119,6 +126,7 @@ class EngineProcessManager(private val context: Context) {
                 BufferedReader(InputStreamReader(p.inputStream)).use { reader ->
                     while (isActive) {
                         val line = reader.readLine() ?: break
+                        if (ChainReady.isReadyLine(line)) chainReady = true
                         RingLogBuffer.append(line) // memory only -- see RingLogBuffer
                         synchronized(tail) {
                             if (tail.size >= 20) tail.removeFirst()
@@ -137,6 +145,39 @@ class EngineProcessManager(private val context: Context) {
                 RingLogBuffer.append("[engine] exited unexpectedly with code $code")
             }
         }
+    }
+
+    /**
+     * With a chain on, the SOCKS port answers as soon as Psiphon/Tor's own local proxy is up, which is
+     * BEFORE the chain is connected. Waits (up to [timeoutMs]) for the core's "is ready" announcement, so
+     * the tunnel bridge is not attached to a chain that cannot carry anything yet.
+     * @return null when ready, or a reason when the engine died / the time ran out / the user cancelled.
+     */
+    fun awaitChainReady(timeoutMs: Long, cancelled: () -> Boolean): String? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (chainReady) return null
+            if (cancelled()) return "cancelled"
+            if (!isRunning) return failureReason() ?: "the engine process exited"
+            try { Thread.sleep(150) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
+        }
+        return "the privacy chain (Psiphon/Tor) did not become ready in ${timeoutMs / 1000}s"
+    }
+
+    /** Cumulative CPU ticks (utime+stime) of the engine and its Psiphon child, or null when unavailable. */
+    fun cpuTicks(): Long? {
+        val dir = nativeDirPath ?: return null
+        val pids = CoreProcessGuard.findOwnPids(
+            setOf(File(dir, EngineEnv.ENGINE_BIN).absolutePath, File(dir, EngineEnv.PSIPHON_BIN).absolutePath),
+            android.os.Process.myPid(), android.os.Process.myUid()
+        )
+        if (pids.isEmpty()) return null
+        var total = 0L
+        for (pid in pids) {
+            val text = try { File("/proc/$pid/stat").readText() } catch (_: IOException) { continue }
+            total += CpuSampler.parseTicks(text) ?: 0L
+        }
+        return total
     }
 
     /** A one-line, human-readable reason the engine is not running, or null if there is none. */

@@ -145,6 +145,12 @@ class AetherVpnService : VpnService() {
             active = active.copy(ech = false)
             attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
         }
+        if (attempt is Attempt.Failed && ConnectPolicy.shouldTryGoolH2(active, attempt.reason)) {
+            RingLogBuffer.append("[vpn] Gool over HTTP/3 did not connect (${attempt.reason}); trying the HTTP/2 (TCP) carrier")
+            engine.stop()
+            active = active.copy(masqueHttp2 = true)
+            attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
+        }
         if (attempt is Attempt.Failed && ConnectPolicy.shouldTryClassicGool(active, attempt.reason)) {
             RingLogBuffer.append("[vpn] Gool over MASQUE found no gateway (${attempt.reason}); trying classic Gool (no MASQUE gateway needed)")
             engine.stop()
@@ -178,8 +184,12 @@ class AetherVpnService : VpnService() {
         startHealthLoop(active)
     }
 
+    private fun isScreenOn(): Boolean =
+        runCatching { (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive }.getOrDefault(true)
+
     private fun markConnected(config: EngineConfig) {
         if (userRequestedStop) return
+        AetherController.setActive(config)
         AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
         updateNotification(getString(R.string.state_connected))
     }
@@ -195,6 +205,7 @@ class AetherVpnService : VpnService() {
             // EnginePreflightException propagates on purpose: it cannot work no matter
             // how often we retry, so connect() surfaces it as-is.
             engine.start(config, ruleWriter, secretEnv)
+            val deadlineMs = System.currentTimeMillis() + timeoutMs
             when (SocksProbe.awaitReady(
                 host = TunnelConfig.SOCKS_HOST,
                 port = config.socksPort,
@@ -202,7 +213,17 @@ class AetherVpnService : VpnService() {
                 engineAlive = { engine.isRunning },
                 cancelled = { job?.isActive == false }
             )) {
-                SocksProbe.Wait.READY -> Attempt.Ready
+                SocksProbe.Wait.READY -> {
+                    // With a chain on, the port answers before Psiphon/Tor are connected: wait for the
+                    // core's own "is ready" announcement before the tunnel bridge is attached.
+                    if (config.effectiveChain == PrivacyChain.NONE) Attempt.Ready
+                    else {
+                        val left = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(10_000L)
+                        engine.awaitChainReady(left) { job?.isActive == false }
+                            ?.let { if (it == "cancelled") throw CancellationException("connect cancelled") else Attempt.Failed(it) }
+                            ?: Attempt.Ready
+                    }
+                }
                 SocksProbe.Wait.ENGINE_DIED ->
                     Attempt.Failed(engine.failureReason() ?: "the engine process exited")
                 SocksProbe.Wait.TIMEOUT ->
@@ -365,19 +386,35 @@ class AetherVpnService : VpnService() {
             var recoveries = 0
             var wasDown = false
             var tick = 0
+            var lastCpuAt = 0L
+            var lastCpuTicks = 0L
+            var firstFailAt = 0L
             while (isActive) {
-                delay(HEALTH_CHECK_INTERVAL_MS)
+                val cadence = PowerPolicy.cadence(isScreenOn())
+                delay(cadence.healthMs)
                 try {
                     val ok = engine.isRunning &&
                         SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.
-                        if (tick++ % 6 == 1) {
+                        if (cadence.logCountersEveryTicks > 0 && tick++ % cadence.logCountersEveryTicks == 1) {
                             val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
                             if (s != null && s.size >= 4) {
                                 RingLogBuffer.append("[vpn] tunnel counters: ${s[0]} / ${s[1]} B / ${s[2]} / ${s[3]} B (hev order: tx pkts, tx bytes, rx pkts, rx bytes)")
                             }
+                        }
+                        // CPU use of the engine (and Psiphon), about once a minute, so heat/battery
+                        // complaints can be traced to a process instead of guessed.
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - lastCpuAt >= 60_000L) {
+                            val ticks = engine.cpuTicks()
+                            if (ticks != null && lastCpuAt != 0L) {
+                                val pct = CpuSampler.percent(lastCpuTicks, ticks, now - lastCpuAt)
+                                RingLogBuffer.append("[power] engine cpu %.1f%% of one core over the last %ds (screen %s)".format(
+                                    pct, (now - lastCpuAt) / 1000, if (isScreenOn()) "on" else "off"))
+                            }
+                            if (ticks != null) { lastCpuTicks = ticks; lastCpuAt = now }
                         }
                         consecutiveFailures = 0
                         if (wasDown) { // came back (core replaced its tunnel, or we restarted it)
@@ -388,7 +425,8 @@ class AetherVpnService : VpnService() {
                         continue
                     }
                     // One failed probe is a blip (the core may be swapping tunnels); two in a row is an outage.
-                    if (++consecutiveFailures < 2) continue
+                    if (++consecutiveFailures == 1) firstFailAt = android.os.SystemClock.elapsedRealtime()
+                    if (consecutiveFailures < 2) continue
 
                     if (!wasDown) {
                         wasDown = true
@@ -401,7 +439,8 @@ class AetherVpnService : VpnService() {
                     }
 
                     // An engine that is alive but has not answered for a full minute is hung.
-                    if (engine.isRunning && consecutiveFailures >= 12 && config.quickReconnect) {
+                    if (engine.isRunning && config.quickReconnect &&
+                        android.os.SystemClock.elapsedRealtime() - firstFailAt >= PowerPolicy.UNRESPONSIVE_RESTART_AFTER_MS) {
                         RingLogBuffer.append("[vpn] engine unresponsive for 60s, restarting it")
                         engine.stop()
                     }

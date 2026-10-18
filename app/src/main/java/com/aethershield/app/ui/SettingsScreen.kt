@@ -54,6 +54,12 @@ fun SettingsScreen(
                 onSelect = { p -> onUpdate { it.copy(protocol = p) } }
             )
             HelperText(stringResource(R.string.protocol_help))
+            if (config.protocol == Protocol.GOOL) {
+                SwitchRow(
+                    stringResource(R.string.sw_gool_h2), stringResource(R.string.sw_gool_h2_sub),
+                    config.masqueHttp2, { v -> onUpdate { it.copy(masqueHttp2 = v) } }
+                )
+            }
         }
 
         // ---------------------------------------------------------------- chain
@@ -95,6 +101,18 @@ fun SettingsScreen(
                 onSelect = { v -> onUpdate { it.copy(scanMode = v) } }
             )
             HelperText(stringResource(R.string.scan_help))
+
+            SubLabel(stringResource(R.string.lbl_perf))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.perf_auto) to "auto",
+                    stringResource(R.string.perf_medium) to "medium",
+                    stringResource(R.string.perf_low) to "low"
+                ),
+                CoreChoices.perfOrDefault(config.perfProfile),
+                onSelect = { v -> onUpdate { it.copy(perfProfile = v) } }
+            )
+            HelperText(stringResource(R.string.perf_help))
 
             SubLabel(stringResource(R.string.lbl_ip))
             ChoiceChips(

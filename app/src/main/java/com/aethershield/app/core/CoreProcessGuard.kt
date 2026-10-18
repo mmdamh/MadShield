@@ -62,6 +62,31 @@ object CoreProcessGuard {
         return killed
     }
 
+    /** PIDs of our own running processes whose executable is one of [expectedExecutables]. */
+    fun findOwnPids(
+        expectedExecutables: Set<String>,
+        selfPid: Int,
+        appUid: Int,
+        procRoot: File = File("/proc")
+    ): List<Int> {
+        val canonicalExpected = expectedExecutables.mapNotNull {
+            try { File(it).canonicalPath } catch (_: IOException) { null }
+        }.toSet()
+        if (canonicalExpected.isEmpty()) return emptyList()
+        val found = ArrayList<Int>()
+        for (entry in procRoot.listFiles() ?: return emptyList()) {
+            val pid = entry.name.toIntOrNull() ?: continue
+            if (pid == selfPid) continue
+            try {
+                val exe = File(entry, "exe").canonicalPath
+                if (isOwnedExecutable(exe, canonicalExpected, readHead(File(entry, "status")), appUid)) found += pid
+            } catch (_: IOException) {
+            } catch (_: SecurityException) {
+            }
+        }
+        return found
+    }
+
     private fun readHead(file: File): String = try {
         file.inputStream().use { input ->
             val buf = ByteArray(1024)
