@@ -37,3 +37,15 @@ Change the commit in `build.yml` (both the `fetch` step and its `test`), then
 re-read aether-core's `cli.rs` (flag names), `routing.rs` (rule file format) and
 `socks.rs` (SOCKS5 behaviour, DNS resolver parsing): `core/EngineEnvironment.kt`,
 `core/RuleFileWriter.kt` and `core/DnsConfig.kt` are written against those.
+
+## Privacy chains (WARP -> Psiphon / Tor)
+
+* **Tor** is built into the core: the workflow builds it with `--features tor`
+  (the same command upstream's Android release job runs).
+* **Psiphon** is a separate Go program. The workflow builds it with the core's own
+  `psiphon-build.sh` (pinned fork and commit, CGO off => a static ELF), checks that
+  it has no dynamic dependencies, and ships it as `libpsiphon.so` so Android extracts
+  it next to `libaether.so`. The app passes its path to the core as `AETHER_PSIPHON_BIN`.
+* With a chain on, the core's own WARP proxy moves to `127.0.0.1:1823` and the chain
+  listens on the normal SOCKS port. In VPN mode hev answers DNS itself (`mapdns`) because
+  Psiphon and Tor carry TCP only.

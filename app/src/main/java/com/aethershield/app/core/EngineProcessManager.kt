@@ -11,6 +11,7 @@ import java.io.InputStreamReader
 
 object EngineEnv {
     const val ENGINE_BIN = "libaether.so"
+    const val PSIPHON_BIN = "libpsiphon.so"
 }
 
 /** Thrown BEFORE the engine is launched when the shipped binary cannot possibly start. */
@@ -52,10 +53,24 @@ class EngineProcessManager(private val context: Context) {
         val bin = File(nativeDir, EngineEnv.ENGINE_BIN)
         preflight(bin, nativeDir)
 
+        val chain = config.effectiveChain
+        val psiphonBin = File(nativeDir, EngineEnv.PSIPHON_BIN)
+        if (chain == PrivacyChain.PSIPHON && !psiphonBin.isFile) {
+            throw EnginePreflightException(
+                "This build has no Psiphon engine for this CPU (libpsiphon.so missing). " +
+                    "Rebuild with the updated CI workflow, or turn the chain off in Settings."
+            )
+        }
+        val chainDir = when (chain) {
+            PrivacyChain.PSIPHON -> File(context.filesDir, "psiphon")
+            PrivacyChain.TOR -> File(context.filesDir, "tor")
+            PrivacyChain.NONE -> null
+        }?.also { it.mkdirs() }
+
         // Clean slate (pattern from AetherGUI): remove our own leftovers, then make
         // sure the port is really free before binding a new core to it.
         val reaped = CoreProcessGuard.reapOrphans(
-            expectedExecutables = setOf(bin.absolutePath),
+            expectedExecutables = setOf(bin.absolutePath, psiphonBin.absolutePath),
             selfPid = android.os.Process.myPid(),
             appUid = android.os.Process.myUid(),
             kill = { android.os.Process.killProcess(it) },
@@ -73,7 +88,9 @@ class EngineProcessManager(private val context: Context) {
             configFilePath = File(context.filesDir, "aether.toml").absolutePath,
             tmpDirPath = context.cacheDir.absolutePath,
             routesFilePath = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)?.absolutePath,
-            secretEnv = secretEnv
+            secretEnv = secretEnv,
+            chainBinPath = if (chain == PrivacyChain.PSIPHON) psiphonBin.absolutePath else null,
+            chainDirPath = chainDir?.absolutePath
         )
 
         val pb = ProcessBuilder(bin.absolutePath)
@@ -141,6 +158,13 @@ class EngineProcessManager(private val context: Context) {
             joined.contains("ECH key", ignoreCase = true) ->
                 "ECH is on but its key lookup failed (the ECH resolver is not reachable from this network). " +
                     "Turn ECH off in Settings or pick another ECH resolver in the DNS tab. " +
+                    (exit.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { "[${it.take(140)}]" } ?: "")
+            joined.contains("psiphon needs the psiphon-tunnel-core", ignoreCase = true) ->
+                "The Psiphon engine is missing from this build. Rebuild with the updated CI workflow or turn the chain off in Settings."
+            joined.contains("no tor support", ignoreCase = true) ->
+                "This build has no Tor support. Rebuild with the updated CI workflow or turn the chain off in Settings."
+            joined.contains("psiphon did not come up", ignoreCase = true) ->
+                "Psiphon could not connect through this network. Try another protocol underneath, or turn the chain off. " +
                     (exit.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { "[${it.take(140)}]" } ?: "")
             joined.contains("CANNOT LINK EXECUTABLE") ->
                 "Android could not load the engine binary: " +

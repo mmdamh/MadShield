@@ -142,4 +142,18 @@
     <string name="apps_all_tunneled">همه برنامه‌ها از تونل استفاده می‌کنند. برای انتخاب استثنا، حالت بالا را عوض کنید.</string>
     <string name="log_title">لاگ موتور</string>
     <string name="log_note">فقط در حافظه نگه داشته می‌شود، روی دیسک نوشته نمی‌شود و با هر قطع اتصال پاک می‌شود.</string>
+    <string name="sec_chain">زنجیرهٔ حریم خصوصی</string>
+    <string name="chain_needs_protocol">برای زنجیر کردن سایفون یا تور، بالا WireGuard، MASQUE یا گول را انتخاب کنید. حالت هوشمند قابل زنجیر شدن نیست.</string>
+    <string name="chain_none">خاموش</string>
+    <string name="chain_psiphon">وارپ ← سایفون</string>
+    <string name="chain_tor">وارپ ← تور</string>
+    <string name="chain_help">ترافیک بعد از تونل وارپ از سایفون یا تور هم عبور می‌کند. شبکهٔ شما فقط وارپ را می‌بیند و کشور خروجی از سایفون یا تور می‌آید، نه از وارپ.</string>
+    <string name="lbl_psiphon_region">کشور خروجی سایفون</string>
+    <string name="region_auto">خودکار</string>
+    <string name="chain_psiphon_help">کشوری که سایفون از آن خارج شود را انتخاب کنید. «خودکار» یعنی سایفون خودش انتخاب می‌کند. اتصال اول تا دو دقیقه بیشتر طول می‌کشد چون لیست سرورها را می‌گیرد. سایفون فقط TCP می‌برد: نام سایت‌ها در خروجی تبدیل به آی‌پی می‌شود و برنامه‌های UDP (QUIC، تماس) کار نمی‌کنند.</string>
+    <string name="chain_tor_help">تور کند است و شروع اول آن تا پنج دقیقه بیشتر طول می‌کشد چون اطلاعات شبکه را دانلود می‌کند. فقط TCP: نام سایت‌ها در خروجی تبدیل به آی‌پی می‌شود و برنامه‌های UDP (QUIC، تماس) کار نمی‌کنند.</string>
+    <string name="action_reset_identity">بازنشانی هویت وارپ</string>
+    <string name="identity_reset_done">%1$d فایل هویت ذخیره‌شدهٔ وارپ حذف شد. در اتصال بعدی هویت جدید ساخته می‌شود.</string>
+    <string name="identity_reset_none">هویت ذخیره‌شده‌ای پیدا نشد.</string>
+    <string name="identity_reset_help">اگر آی‌پی خروجی روی کشور ناخواسته گیر کرده از این استفاده کنید. حساب‌های ذخیره‌شدهٔ وارپ پاک می‌شوند و در اتصال بعدی حساب جدید ساخته می‌شود.</string>
 </resources>

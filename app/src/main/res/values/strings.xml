@@ -142,4 +142,18 @@
     <string name="apps_all_tunneled">Every app uses the tunnel. Change the mode above to pick exceptions.</string>
     <string name="log_title">Engine log</string>
     <string name="log_note">Kept in memory only, never written to disk, and wiped on every disconnect.</string>
+    <string name="sec_chain">Privacy chain</string>
+    <string name="chain_needs_protocol">Pick WireGuard, MASQUE or Gool above to chain Psiphon or Tor behind it. Smart mode cannot be chained.</string>
+    <string name="chain_none">Off</string>
+    <string name="chain_psiphon">WARP → Psiphon</string>
+    <string name="chain_tor">WARP → Tor</string>
+    <string name="chain_help">Send your traffic through Psiphon or Tor after the WARP tunnel. Your network only sees WARP, and the exit country comes from Psiphon or Tor instead of WARP.</string>
+    <string name="lbl_psiphon_region">Psiphon exit country</string>
+    <string name="region_auto">Automatic</string>
+    <string name="chain_psiphon_help">Choose where Psiphon should exit. Automatic lets Psiphon pick. First connect takes up to two extra minutes while it fetches a server list. Psiphon carries TCP only: website names are resolved at the exit and UDP apps (QUIC, calls) will not work.</string>
+    <string name="chain_tor_help">Tor is slow and its first start can take up to five extra minutes while it downloads the network consensus. TCP only: website names are resolved at the exit and UDP apps (QUIC, calls) will not work.</string>
+    <string name="action_reset_identity">Reset WARP identity</string>
+    <string name="identity_reset_done">Removed %1$d saved WARP identity file(s). A new one is registered on the next connect.</string>
+    <string name="identity_reset_none">No saved WARP identity found.</string>
+    <string name="identity_reset_help">Use this if the exit IP stays stuck on an unwanted country. It deletes the saved WARP accounts; new ones are made on the next connect.</string>
 </resources>

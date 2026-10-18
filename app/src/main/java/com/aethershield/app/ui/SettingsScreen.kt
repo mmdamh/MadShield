@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.aethershield.app.R
@@ -25,6 +26,7 @@ import com.aethershield.app.ui.theme.DarkMode
 import com.aethershield.app.ui.theme.Palettes
 import com.aethershield.app.ui.theme.UiPrefs
 import kotlin.math.roundToInt
+import android.widget.Toast
 
 @Composable
 fun SettingsScreen(
@@ -52,6 +54,37 @@ fun SettingsScreen(
                 onSelect = { p -> onUpdate { it.copy(protocol = p) } }
             )
             HelperText(stringResource(R.string.protocol_help))
+        }
+
+        // ---------------------------------------------------------------- chain
+        SectionCard(stringResource(R.string.sec_chain)) {
+            if (config.protocol == Protocol.SMART) {
+                HelperText(stringResource(R.string.chain_needs_protocol))
+            } else {
+                ChoiceChips(
+                    listOf(
+                        stringResource(R.string.chain_none) to PrivacyChain.NONE,
+                        stringResource(R.string.chain_psiphon) to PrivacyChain.PSIPHON,
+                        stringResource(R.string.chain_tor) to PrivacyChain.TOR
+                    ),
+                    config.privacyChain,
+                    onSelect = { v -> onUpdate { it.copy(privacyChain = v) } }
+                )
+                when (config.privacyChain) {
+                    PrivacyChain.NONE -> HelperText(stringResource(R.string.chain_help))
+                    PrivacyChain.PSIPHON -> {
+                        SubLabel(stringResource(R.string.lbl_psiphon_region))
+                        ChoiceChips(
+                            listOf(stringResource(R.string.region_auto) to (null as String?)) +
+                                Chain.REGIONS.map { regionLabel(it) to (it as String?) },
+                            Chain.normalizeRegion(config.psiphonRegion),
+                            onSelect = { v -> onUpdate { it.copy(psiphonRegion = v) } }
+                        )
+                        HelperText(stringResource(R.string.chain_psiphon_help))
+                    }
+                    PrivacyChain.TOR -> HelperText(stringResource(R.string.chain_tor_help))
+                }
+            }
         }
 
         // ---------------------------------------------------------------- tuning
@@ -115,6 +148,16 @@ fun SettingsScreen(
                 config.exitLoc?.contains("!IR") == true,
                 { v -> onUpdate { it.copy(exitLoc = if (v) "!IR" else null) } }
             )
+            val ctx = LocalContext.current
+            TextButton(onClick = {
+                val n = IdentityReset.reset(ctx.filesDir)
+                Toast.makeText(
+                    ctx,
+                    if (n > 0) ctx.getString(R.string.identity_reset_done, n) else ctx.getString(R.string.identity_reset_none),
+                    Toast.LENGTH_LONG
+                ).show()
+            }) { Text(stringResource(R.string.action_reset_identity)) }
+            HelperText(stringResource(R.string.identity_reset_help))
             SwitchRow(
                 stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
                 config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
@@ -199,4 +242,10 @@ private fun SubLabel(text: String) {
         text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
     )
+}
+
+/** "DE" -> flag emoji + code, so the chips are recognisable at a glance. */
+private fun regionLabel(code: String): String {
+    val flag = String(code.map { Character.toChars(0x1F1E6 + (it - 'A')) }.flatMap { it.asList() }.toCharArray())
+    return "$flag $code"
 }

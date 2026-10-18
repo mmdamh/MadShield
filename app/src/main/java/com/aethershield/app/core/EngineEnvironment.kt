@@ -27,7 +27,9 @@ object EngineEnvironment {
         configFilePath: String,
         tmpDirPath: String,
         routesFilePath: String?,
-        secretEnv: Map<String, String>
+        secretEnv: Map<String, String>,
+        chainBinPath: String? = null,
+        chainDirPath: String? = null
     ): Map<String, String> {
         val env = linkedMapOf<String, String>()
 
@@ -41,7 +43,30 @@ object EngineEnvironment {
         env["AETHER_IP"] = CoreChoices.ipOrDefault(config.ipMode)
         env["AETHER_NOIZE"] = CoreChoices.noizeOrDefault(config.noizeProfile)
         env["AETHER_LOG_LEVEL"] = "info"
-        env["AETHER_SOCKS"] = "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"
+        val publicSocks = "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"
+        val chain = config.effectiveChain
+        // With a chain on, the core's own WARP proxy moves to an internal port and Psiphon/Tor
+        // (the chain's final exit) takes the public one, so everything downstream is unchanged.
+        env["AETHER_SOCKS"] =
+            if (chain == PrivacyChain.NONE) publicSocks else "${TunnelConfig.SOCKS_HOST}:${Chain.UNDERLAY_PORT}"
+        when (chain) {
+            PrivacyChain.NONE -> Unit
+            PrivacyChain.PSIPHON -> {
+                env["AETHER_PSIPHON"] = "chain"
+                env["AETHER_PSIPHON_BIND"] = publicSocks
+                env["AETHER_PSIPHON_MODE"] = "auto"
+                Chain.normalizeRegion(config.psiphonRegion)?.let { env["AETHER_PSIPHON_REGION"] = it }
+                chainDirPath?.let { env["AETHER_PSIPHON_DIR"] = it }
+                chainBinPath?.let { env["AETHER_PSIPHON_BIN"] = it }
+            }
+            PrivacyChain.TOR -> {
+                env["AETHER_TOR"] = "chain"
+                env["AETHER_TOR_BIND"] = publicSocks
+                // Same as AetherGUI/Android chain mode: no bridges, the underlay carries tor directly.
+                env["AETHER_TOR_BRIDGES"] = "off"
+                chainDirPath?.let { env["AETHER_TOR_DIR"] = it }
+            }
+        }
         env["AETHER_CONFIG"] = configFilePath
         env["AETHER_QUICK_RECONNECT"] = if (config.quickReconnect) "1" else "0"
         env["TMPDIR"] = tmpDirPath

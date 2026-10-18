@@ -151,11 +151,11 @@ class AetherVpnService : VpnService() {
             active = active.copy(protocol = Protocol.GOOL_CLASSIC)
             attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
         }
-        if (attempt is Attempt.Failed) {
+        if (attempt is Attempt.Failed && ConnectPolicy.shouldTryHardened(active, attempt.reason)) {
             RingLogBuffer.append("[vpn] first pass failed (${attempt.reason}); retrying with anti-DPI hardening")
             engine.stop()
             active = active.hardened()
-            attempt = attemptConnect(active, HARDENED_PASS_TIMEOUT_MS)
+            attempt = attemptConnect(active, HARDENED_PASS_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(active))
         }
         if (userRequestedStop) return
 
@@ -239,8 +239,14 @@ class AetherVpnService : VpnService() {
             .setBlocking(false)
 
         // DNS: the user's resolvers (bare IPs; the VPN API takes no port) or a safe default.
-        val dnsToUse = config.dnsResolvers.mapNotNull { DnsConfig.vpnAddress(it) }.distinct()
-            .ifEmpty { TunnelConfig.DNS_SERVERS }
+        // With a chain on (Psiphon/Tor carry TCP only) the only DNS server is hev's mapped DNS,
+        // so name lookups are answered locally and resolved at the chain's exit over TCP.
+        val dnsToUse = if (config.effectiveChain != PrivacyChain.NONE) {
+            listOf(Chain.MAPDNS_ADDRESS)
+        } else {
+            config.dnsResolvers.mapNotNull { DnsConfig.vpnAddress(it) }.distinct()
+                .ifEmpty { TunnelConfig.DNS_SERVERS }
+        }
         dnsToUse.forEach { runCatching { builder.addDnsServer(it) } }
 
         // Per-app split tunneling -- enforced HERE, at the OS VPN layer,
@@ -276,6 +282,14 @@ class AetherVpnService : VpnService() {
         val file = File(cacheDir, "hev.yaml")
         // Same keys and values as ZedSecure's field-tested hev config (hev's own defaults for
         // everything else; no stack-size or timeout overrides that could starve a session).
+        val mapdns = if (config.effectiveChain == PrivacyChain.NONE) "" else """
+
+            mapdns:
+              address: ${Chain.MAPDNS_ADDRESS}
+              port: 53
+              network: 100.64.0.0
+              netmask: 255.192.0.0
+              cache-size: 10000"""
         val yaml = """
             tunnel:
               mtu: ${config.effectiveMtu}
@@ -291,7 +305,7 @@ class AetherVpnService : VpnService() {
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
               log-level: warn
-        """.trimIndent()
+        """.trimIndent() + mapdns.trimIndent().let { if (it.isEmpty()) "" else "\n\n$it" }
         file.writeText(yaml)
         return file
     }
@@ -397,7 +411,7 @@ class AetherVpnService : VpnService() {
                         RingLogBuffer.append("[vpn] restarting engine (attempt $recoveries/$MAX_RECOVERIES)")
                         AetherController.setState(ConnectionState.Connecting)
                         updateNotification(getString(R.string.notif_connecting))
-                        when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS)) {
+                        when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(config))) {
                             is Attempt.Ready -> consecutiveFailures = 0 // next healthy probe re-attaches the bridge
                             is Attempt.Failed -> AetherController.setState(ConnectionState.Error(r.reason))
                         }

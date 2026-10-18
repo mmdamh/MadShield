@@ -32,6 +32,41 @@ enum class Protocol {
 
 enum class AppSelectionMode { NONE, EXCLUDE_SELECTED, INCLUDE_ONLY_SELECTED }
 
+/**
+ * Privacy chain carried on top of the WARP tunnel (core: AETHER_PSIPHON=chain / AETHER_TOR=chain):
+ *   NONE     the tunnel's own exit is the exit
+ *   PSIPHON  app -> WARP -> Psiphon -> internet   (exit country selectable, see [Chain.REGIONS])
+ *   TOR      app -> WARP -> Tor -> internet       (slow; first start downloads the consensus)
+ * Psiphon and Tor carry TCP only. Not offered with SMART (the core decides the transport itself,
+ * and AetherGUI deliberately has no "smart + chain" entry either).
+ */
+enum class PrivacyChain {
+    NONE, PSIPHON, TOR;
+
+    companion object {
+        fun fromStored(name: String?): PrivacyChain =
+            name?.let { n -> entries.firstOrNull { it.name == n } } ?: NONE
+    }
+}
+
+object Chain {
+    /** Where the core's own (WARP) SOCKS listens when a chain is on; the chain takes the public port. */
+    const val UNDERLAY_PORT = 1823
+
+    /** hev "mapped DNS": answers app DNS locally with fake IPs so no UDP has to cross the chain. */
+    const val MAPDNS_ADDRESS = "198.18.0.2"
+
+    /** Psiphon exit countries offered in the UI (the core logs what is really on offer). */
+    val REGIONS = listOf(
+        "AT", "BE", "BG", "BR", "CA", "CH", "CZ", "DE", "DK", "ES", "FI", "FR", "GB",
+        "HU", "IE", "IN", "IT", "JP", "NL", "NO", "PL", "RO", "RS", "SE", "SG", "SK", "US"
+    )
+
+    /** Two letters A-Z, upper-cased; anything else means "automatic" (null). */
+    fun normalizeRegion(v: String?): String? =
+        v?.trim()?.uppercase()?.takeIf { it.length == 2 && it.all { c -> c in 'A'..'Z' } }
+}
+
 /** Values the core accepts for AETHER_SCAN / AETHER_IP / AETHER_NOIZE (checked against cli.rs, v2.3.0). */
 object CoreChoices {
     val SCAN_MODES = listOf("turbo", "balanced", "thorough", "verified", "ironclad")
@@ -114,8 +149,16 @@ data class EngineConfig(
     // Optional Cloudflare Zero Trust team. The secret lives in
     // Keystore-backed EncryptedSharedPreferences and reaches the core only
     // through its environment, never argv.
-    val zeroTrustTeam: String? = null
+    val zeroTrustTeam: String? = null,
+
+    // Chain WARP -> Psiphon / Tor. psiphonRegion = two-letter exit country, null = automatic.
+    val privacyChain: PrivacyChain = PrivacyChain.NONE,
+    val psiphonRegion: String? = null
 ) {
+    /** The chain that will really run (none for SMART). */
+    val effectiveChain: PrivacyChain
+        get() = if (protocol == Protocol.SMART) PrivacyChain.NONE else privacyChain
+
     /**
      * Tunnel MTU after clamping to what the chosen transport can carry
      * (caps copied from AetherGUI: nested WireGuard 1360, WireGuard 1420,
@@ -182,14 +225,36 @@ object ConnectPolicy {
     const val SCANNED_PASS_MS = 90_000L
     const val SIMPLE_PASS_MS = 45_000L
 
+    /** Extra startup time per chain (AetherGUI: psiphon 120 s for its server list, tor 300 s for the consensus). */
+    const val PSIPHON_ALLOWANCE_MS = 120_000L
+    const val TOR_ALLOWANCE_MS = 300_000L
+
+    fun chainAllowanceMs(c: EngineConfig): Long = when (c.effectiveChain) {
+        PrivacyChain.PSIPHON -> PSIPHON_ALLOWANCE_MS
+        PrivacyChain.TOR -> TOR_ALLOWANCE_MS
+        PrivacyChain.NONE -> 0L
+    }
+
     fun firstPassTimeoutMs(c: EngineConfig): Long =
-        if (c.protocol == Protocol.WIREGUARD) SIMPLE_PASS_MS else SCANNED_PASS_MS
+        (if (c.protocol == Protocol.WIREGUARD) SIMPLE_PASS_MS else SCANNED_PASS_MS) + chainAllowanceMs(c)
 
     fun isScanFailure(reason: String?): Boolean =
         reason != null && reason.contains("gateway scan failed", ignoreCase = true)
 
-    /** Gool over MASQUE failed in the way the classic topology can avoid. */
+    /** The failure came from the chain helper (psiphon/tor), not from the WARP transport. */
+    fun isChainFailure(reason: String?): Boolean =
+        reason != null && Regex("\\b(psiphon|tor)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason)
+
+    /**
+     * Gool over MASQUE failed in the way the classic topology can avoid. With a chain on, a plain
+     * timeout may just be a slow Psiphon/Tor start, so only an explicit scan failure counts.
+     */
     fun shouldTryClassicGool(c: EngineConfig, reason: String?): Boolean =
         c.protocol == Protocol.GOOL && reason != null &&
-            (isScanFailure(reason) || reason.startsWith("no answer from the engine"))
+            (isScanFailure(reason) ||
+                (c.effectiveChain == PrivacyChain.NONE && reason.startsWith("no answer from the engine")))
+
+    /** The anti-DPI retry changes the WARP transport; it cannot fix a failing chain helper. */
+    fun shouldTryHardened(c: EngineConfig, reason: String?): Boolean =
+        !(c.effectiveChain != PrivacyChain.NONE && isChainFailure(reason))
 }

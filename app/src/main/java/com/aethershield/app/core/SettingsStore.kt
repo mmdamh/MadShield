@@ -48,6 +48,8 @@ class SettingsStore(private val context: Context) {
         val MASQUE_H2 = booleanPreferencesKey("masque_http2")
         val MTU = intPreferencesKey("mtu")
         val QUICK_RECONNECT = booleanPreferencesKey("quick_reconnect")
+        val CHAIN = stringPreferencesKey("privacy_chain")
+        val PSIPHON_REGION = stringPreferencesKey("psiphon_region")
 
         // Appearance (never affects the tunnel)
         val THEME_ID = stringPreferencesKey("ui_theme_id")
@@ -91,7 +93,9 @@ class SettingsStore(private val context: Context) {
             echDns = p[Keys.ECH_DNS]?.takeIf { it.isNotBlank() },
             masqueHttp2 = p[Keys.MASQUE_H2] ?: false,
             mtu = (p[Keys.MTU] ?: CoreChoices.DEFAULT_MTU).coerceIn(CoreChoices.MIN_MTU, CoreChoices.MAX_MTU),
-            quickReconnect = p[Keys.QUICK_RECONNECT] ?: true
+            quickReconnect = p[Keys.QUICK_RECONNECT] ?: true,
+            privacyChain = PrivacyChain.fromStored(p[Keys.CHAIN]),
+            psiphonRegion = Chain.normalizeRegion(p[Keys.PSIPHON_REGION])
         )
     }
 
@@ -136,6 +140,9 @@ class SettingsStore(private val context: Context) {
             p[Keys.MASQUE_H2] = current.masqueHttp2
             p[Keys.MTU] = current.mtu.coerceIn(CoreChoices.MIN_MTU, CoreChoices.MAX_MTU)
             p[Keys.QUICK_RECONNECT] = current.quickReconnect
+            p[Keys.CHAIN] = current.privacyChain.name
+            val region = Chain.normalizeRegion(current.psiphonRegion)
+            if (region == null) p.remove(Keys.PSIPHON_REGION) else p[Keys.PSIPHON_REGION] = region
         }
     }
 

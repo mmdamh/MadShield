@@ -327,6 +327,13 @@ private fun FactChips(config: EngineConfig) {
         Chip("DNS · $dnsName")
         if (config.mode == ConnectionMode.VPN) Chip("MTU ${config.effectiveMtu}")
         if (config.exitLoc != null) Chip(stringResource(R.string.chip_exit_guard))
+        when (config.effectiveChain) {
+            PrivacyChain.PSIPHON -> Chip(
+                "Psiphon" + (Chain.normalizeRegion(config.psiphonRegion)?.let { " · $it" } ?: "")
+            )
+            PrivacyChain.TOR -> Chip("Tor")
+            PrivacyChain.NONE -> Unit
+        }
     }
 }
 

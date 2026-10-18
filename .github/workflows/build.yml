@@ -34,8 +34,12 @@ jobs:
         include:
           - abi: arm64-v8a
             target: aarch64-linux-android
+            goarch: arm64
+            goarm: ""
           - abi: armeabi-v7a
             target: armv7-linux-androideabi
+            goarch: arm
+            goarm: "7"
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +71,10 @@ jobs:
                    AETHER_CONFIG AETHER_QUICK_RECONNECT AETHER_MASQUE_HTTP2 \
                    AETHER_GOOL_MODE AETHER_EXIT_LOC AETHER_ECH AETHER_DNS \
                    AETHER_ROUTES_FILE AETHER_TEAM AETHER_MASQUE_H2_FRAGMENT \
-                   AETHER_MASQUE_MTU AETHER_ECH_DNS AETHER_EXIT_LOC_SECS; do
+                   AETHER_MASQUE_MTU AETHER_ECH_DNS AETHER_EXIT_LOC_SECS \
+                   AETHER_PSIPHON AETHER_PSIPHON_BIND AETHER_PSIPHON_MODE AETHER_PSIPHON_REGION \
+                   AETHER_PSIPHON_DIR AETHER_PSIPHON_BIN AETHER_TOR AETHER_TOR_BIND \
+                   AETHER_TOR_BRIDGES AETHER_TOR_DIR; do
             grep -rq "$v" "$SRC" || { echo "ERROR: core source no longer mentions $v"; exit 1; }
           done
           echo "OK: all AETHER_* variables the app sets exist in the pinned core"
@@ -121,7 +128,9 @@ jobs:
           set -e
           under=$(echo "${{ matrix.target }}" | tr '-' '_')
           export "BORING_BSSL_RUST_CPPLIB_${under}=static:-bundle=c++"
-          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release
+          # --features tor builds the Tor client (arti) into the core, needed for WARP -> Tor.
+          # This is the same command upstream's own Android release job runs.
+          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release --features tor
           bin="target/${{ matrix.target }}/release/aether"
           READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
           needed=$("$READELF" -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
@@ -130,17 +139,36 @@ jobs:
             echo "ERROR: aether still needs libc++_shared.so (static libc++ link failed)"; exit 1
           fi
 
+      # Psiphon is a separate Go program the core launches for WARP -> Psiphon. It is built from
+      # the exact fork + commit upstream pins in its own psiphon-build.sh (CGO off, so a static
+      # linux ELF that runs as-is on Android, same as upstream's Android release job).
+      - name: Build psiphon-tunnel-core
+        run: |
+          set -e
+          bash native/aether-core/psiphon-build.sh linux "${{ matrix.goarch }}" "$PWD/psiphon-out" "${{ matrix.goarm }}"
+          f=psiphon-out/psiphon-tunnel-core
+          test -s "$f" || { echo "ERROR: psiphon binary missing"; exit 1; }
+          READELF="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          "$READELF" -h "$f" | grep -E 'Class|Machine'
+          if "$READELF" -d "$f" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "ERROR: psiphon is dynamically linked; it would not start on Android"; exit 1
+          fi
+          echo "OK: psiphon-tunnel-core is a static ELF"
+
       - name: Rename to lib*.so (required for Android to extract+exec it) and stage
         run: |
           mkdir -p "staged/${{ matrix.abi }}"
           cp "native/aether-core/aether/target/${{ matrix.target }}/release/aether" \
              "staged/${{ matrix.abi }}/libaether.so"
+          cp psiphon-out/psiphon-tunnel-core "staged/${{ matrix.abi }}/libpsiphon.so"
 
       - name: Upload aether binary for this ABI
         uses: actions/upload-artifact@v4
         with:
           name: aether-${{ matrix.abi }}
-          path: staged/${{ matrix.abi }}/libaether.so
+          path: |
+            staged/${{ matrix.abi }}/libaether.so
+            staged/${{ matrix.abi }}/libpsiphon.so
           retention-days: 1
 
   build-native-tun2socks:
@@ -320,6 +348,7 @@ jobs:
           for abi in arm64-v8a armeabi-v7a; do
             mkdir -p "app/src/main/jniLibs/$abi"
             cp "dist-native/aether-$abi/libaether.so" "app/src/main/jniLibs/$abi/"
+            cp "dist-native/aether-$abi/libpsiphon.so" "app/src/main/jniLibs/$abi/"
             cp "dist-native/tun2socks-$abi/libhev-socks5-tunnel.so" "app/src/main/jniLibs/$abi/"
             cp "dist-native/tun2socks-$abi/libaethertun.so" "app/src/main/jniLibs/$abi/"
           done
