@@ -45,7 +45,7 @@ class SettingsStore(private val context: Context) {
         val FRAGMENT = booleanPreferencesKey("fragment")
         val ECH = booleanPreferencesKey("ech")
         val ECH_DNS = stringPreferencesKey("ech_dns")
-        val MASQUE_H2 = booleanPreferencesKey("masque_http2")
+        val MASQUE_H2 = booleanPreferencesKey("masque_http2_v2") // v2: older builds stored an unset "false" here, which would hide the new HTTP/2 default
         val MTU = intPreferencesKey("mtu")
         val QUICK_RECONNECT = booleanPreferencesKey("quick_reconnect")
         val CHAIN = stringPreferencesKey("privacy_chain")
