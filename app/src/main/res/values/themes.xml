@@ -1,7 +1,7 @@
 <resources>
     <!-- Window background before Compose draws: light by default, dark under night mode,
          so there is no dark flash on launch in light mode. -->
-    <style name="Theme.AetherShield" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.MadShield" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/transparent</item>
     </style>
 </resources>

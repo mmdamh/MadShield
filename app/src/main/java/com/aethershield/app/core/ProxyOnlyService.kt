@@ -252,7 +252,7 @@ class ProxyOnlyService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_stat_madshield)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()

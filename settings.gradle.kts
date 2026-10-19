@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AetherShieldVPN"
+rootProject.name = "MadShieldVPN"
 include(":app")

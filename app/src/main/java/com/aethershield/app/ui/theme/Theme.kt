@@ -19,7 +19,7 @@ val AetherShapes = Shapes(
 )
 
 @Composable
-fun AetherShieldTheme(prefs: UiPrefs = UiPrefs(), content: @Composable () -> Unit) {
+fun MadShieldTheme(prefs: UiPrefs = UiPrefs(), content: @Composable () -> Unit) {
     val dark = when (prefs.darkMode) {
         DarkMode.SYSTEM -> isSystemInDarkTheme()
         DarkMode.LIGHT -> false

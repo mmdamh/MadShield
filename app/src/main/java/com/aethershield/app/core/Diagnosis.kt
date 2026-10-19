@@ -288,7 +288,7 @@ object DiagnosticsReport {
         redact: (String) -> String
     ): String {
         val sb = StringBuilder()
-        sb.append("AetherShield diagnostics, version ").append(appVersion).append('\n')
+        sb.append("MadShield diagnostics, version ").append(appVersion).append('\n')
         sb.append("state: ").append(input.state.name.lowercase())
             .append(", for ").append(((nowMs - stats.stateSinceMs).coerceAtLeast(0)) / 1000).append(" s\n")
         sb.append("engine running: ").append(input.engineAlive)

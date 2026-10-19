@@ -7,4 +7,4 @@ import android.app.Application
  * WorkManager scheduling of anything that phones home -- there is nothing to
  * initialize here beyond what Android requires by default.
  */
-class AetherShieldApp : Application()
+class MadShieldApp : Application()

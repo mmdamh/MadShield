@@ -31,7 +31,7 @@ import com.aethershield.app.core.*
 import com.aethershield.app.ui.*
 import com.aethershield.app.ui.components.FloatingNavBar
 import com.aethershield.app.ui.components.Tab
-import com.aethershield.app.ui.theme.AetherShieldTheme
+import com.aethershield.app.ui.theme.MadShieldTheme
 import com.aethershield.app.ui.theme.DarkMode
 import com.aethershield.app.ui.theme.UiPrefs
 import com.aethershield.app.vpn.AetherVpnService
@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
                 onDispose { }
             }
 
-            AetherShieldTheme(uiPrefs) {
+            MadShieldTheme(uiPrefs) {
                 val nav = rememberNavController()
                 val config by settingsStore.configFlow.collectAsState(initial = EngineConfig())
                 // The single source of truth for "are we connected": the real service, health-checked.

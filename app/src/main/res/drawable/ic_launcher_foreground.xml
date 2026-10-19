@@ -1,10 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Placeholder mark. Swap for real branding whenever you like; this is just
-     here so the project builds out of the box without missing-resource errors. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path
-        android:fillColor="#5EE6C4"
-        android:pathData="M54,20 L80,32 V54 C80,72 68,84 54,90 C40,84 28,72 28,54 V32 Z" />
+    <path android:pathData="M27.40,30.05 L54.00,50.15 L80.60,30.05 L80.60,77.95 L70.90,69.35 L70.90,49.65 L54.00,62.85 L37.10,49.65 L37.10,69.35 L27.40,77.95 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear"
+                android:startX="29.30" android:startY="71.15"
+                android:endX="80.30" android:endY="31.15">
+                <item android:offset="0.0" android:color="#FF4F12FF" />
+                <item android:offset="0.5" android:color="#FF9013FC" />
+                <item android:offset="1.0" android:color="#FFE82BFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>

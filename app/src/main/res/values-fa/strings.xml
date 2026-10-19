@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AetherShield</string>
+    <string name="app_name">MadShield</string>
     <string name="notif_channel_tunnel">وضعیت تونل</string>
     <string name="notif_channel_proxy">وضعیت پروکسی</string>
     <string name="notif_connected">متصل — تونل فعال است</string>

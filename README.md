@@ -1,4 +1,4 @@
-# AetherShield
+# MadShield
 
 A from-scratch Android client (VPN mode + proxy-only mode) around
 [CluvexStudio/Aether](https://github.com/CluvexStudio/Aether), a user-space
@@ -192,7 +192,7 @@ Build with GitHub Actions only (no Android Studio needed):
 
 1. Create a GitHub repository and push this folder to it (step-by-step for
    Termux on a phone is in the chat guide that came with this project).
-2. The push starts the **Build AetherShield APK** workflow. It fetches the two
+2. The push starts the **Build MadShield APK** workflow. It fetches the two
    engines at pinned commits (see `native/README.md`), builds them with the
    NDK, builds the app and attaches the APK to a GitHub Release.
 3. Signing is optional for the first build: without the secrets below the APK

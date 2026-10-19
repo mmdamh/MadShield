@@ -1,5 +1,5 @@
 /*
- * aethertun-jni.c -- AetherShield's OWN JNI bridge to hev-socks5-tunnel.
+ * aethertun-jni.c -- MadShield's OWN JNI bridge to hev-socks5-tunnel.
  *
  * This exists because of a real, documented crash class: loading
  * hev-socks5-tunnel directly and relying on ITS bundled JNI glue

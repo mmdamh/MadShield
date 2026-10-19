@@ -5,7 +5,7 @@
 ## ۰. پیش‌نیاز
 - یک حساب GitHub (رایگان) — اگر ندارید در مرورگر گوشی در github.com بسازید.
 - Termux را از **F-Droid** نصب کنید (نسخهٔ Google Play قدیمی است و کار نمی‌کند).
-- فایل `AetherShieldVPN-main.zip` را در پوشهٔ Download گوشی بگذارید.
+- فایل `MadShieldVPN-main.zip` را در پوشهٔ Download گوشی بگذارید.
 
 ## ۱. آماده‌سازی Termux
 ```
@@ -31,8 +31,8 @@ git config --global user.email "ایمیل گیت‌هاب شما"
 ## ۳. باز کردن پروژه
 ```
 cd ~
-unzip ~/storage/downloads/AetherShieldVPN-main.zip
-cd AetherShieldVPN-main
+unzip ~/storage/downloads/MadShieldVPN-main.zip
+cd MadShieldVPN-main
 ```
 اگر بعد از unzip پوشهٔ داخلی دیگری هم ساخته شد، با `ls` ببینید و وارد پوشه‌ای شوید که `app` و `.github` در آن است.
 
@@ -57,7 +57,7 @@ gh run watch
 
 اگر بخواهید دوباره دستی اجرا کنید:
 ```
-gh workflow run "Build AetherShield APK"
+gh workflow run "Build MadShield APK"
 ```
 
 ## ۶. اگر خطا داد

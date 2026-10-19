@@ -254,7 +254,7 @@ class AetherVpnService : VpnService() {
     private fun establishTun(config: EngineConfig) {
         if (tunFd != null) return
         val builder = Builder()
-            .setSession("AetherShield")
+            .setSession("MadShield")
             .setMtu(config.effectiveMtu)
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
             .addAddress(TunnelConfig.TUN_IPV6, TunnelConfig.TUN_IPV6_PREFIX)
@@ -581,7 +581,7 @@ class AetherVpnService : VpnService() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_stat_madshield)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()
