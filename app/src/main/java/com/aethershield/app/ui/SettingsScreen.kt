@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -34,6 +35,7 @@ fun SettingsScreen(
     uiPrefs: UiPrefs,
     onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
     onUpdateUi: ((UiPrefs) -> UiPrefs) -> Unit,
+    onOpenDiagnostics: () -> Unit,
     contentPadding: PaddingValues
 ) {
     Column(
@@ -243,6 +245,12 @@ fun SettingsScreen(
         }
 
         // ---------------------------------------------------------------- privacy
+        NavRow(
+            Icons.Rounded.Speed,
+            stringResource(R.string.diag_title),
+            stringResource(R.string.diag_nav_sub),
+            onOpenDiagnostics
+        )
         SectionCard(stringResource(R.string.sec_privacy)) {
             Text(
                 stringResource(R.string.privacy_body),

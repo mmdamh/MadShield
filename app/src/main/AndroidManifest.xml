@@ -2,10 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Minimum permission set. No READ_PHONE_STATE, no location, no contacts,
-         no QUERY_ALL_PACKAGES (the app picker uses the scoped <queries> block
-         below plus PackageManager.getInstalledApplications, which does not
-         require it on modern Android). -->
+    <!-- Minimum permission set. No READ_PHONE_STATE, no location, no contacts. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -13,8 +10,14 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- Needed to enumerate installed apps for the per-app exclusion picker.
-         Scoped instead of QUERY_ALL_PACKAGES. -->
+    <!-- Per-app routing picker. The scoped <queries> block below is enough for apps that have a launcher
+         icon. The "Show system apps" switch also lists system packages without an icon (system services,
+         Google Play services), and Android 11+ hides those from an app unless it holds this permission.
+         It is only used to build that list on screen; nothing about the apps is stored or sent anywhere. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />

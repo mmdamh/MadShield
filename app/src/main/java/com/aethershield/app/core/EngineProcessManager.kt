@@ -35,6 +35,13 @@ data class EngineExit(val code: Int, val lastLines: List<String>)
  */
 class EngineProcessManager(private val context: Context) {
 
+    companion object {
+        private const val HASH_ASSET = "native_hashes.properties"
+        /** Result of the integrity check of this process; null until the first engine start. */
+        @Volatile var cachedIntegrity: BinaryIntegrity.Result? = null
+            private set
+    }
+
     @Volatile private var process: Process? = null
     @Volatile private var dying: Process? = null
     @Volatile var lastExit: EngineExit? = null
@@ -59,6 +66,7 @@ class EngineProcessManager(private val context: Context) {
         nativeDirPath = nativeDir.absolutePath
         val bin = File(nativeDir, EngineEnv.ENGINE_BIN)
         preflight(bin, nativeDir)
+        checkIntegrity(nativeDir)
 
         val chain = config.effectiveChain
         val psiphonBin = File(nativeDir, EngineEnv.PSIPHON_BIN)
@@ -143,6 +151,8 @@ class EngineProcessManager(private val context: Context) {
                 val lines = synchronized(tail) { tail.toList() }
                 lastExit = EngineExit(code, lines)
                 RingLogBuffer.append("[engine] exited unexpectedly with code $code")
+                // Keep the reason (redacted, in memory) before anything restarts the engine or clears the log.
+                DiagnosticsHub.recordExit("engine exited unexpectedly with code $code", lines)
             }
         }
     }
@@ -235,6 +245,30 @@ class EngineProcessManager(private val context: Context) {
             throw IllegalStateException("The previous engine process has not shut down yet. Try again in a moment.")
         }
         dying = null
+    }
+
+    /**
+     * Compares the installed native files with the hashes CI stamped into the APK (see [BinaryIntegrity]).
+     * Done once per process: hashing a few MB is cheap, but not worth repeating on every reconnect.
+     */
+    private fun checkIntegrity(nativeDir: File) {
+        val result = cachedIntegrity ?: run {
+            val expected = runCatching {
+                context.assets.open(HASH_ASSET).bufferedReader().use { NativeHashes.parse(it.readText()) }
+            }.map { NativeHashes.forDevice(it, Build.SUPPORTED_ABIS.toList()) }.getOrDefault(emptyMap())
+            BinaryIntegrity.verifyDir(nativeDir, expected).also {
+                cachedIntegrity = it
+                RingLogBuffer.append("[integrity] " + if (it.ok) "native files match the CI build (${expected.size} checked)"
+                    else it.details.filter { d -> !d.endsWith(": ok") }.joinToString("; "))
+            }
+        }
+        if (!result.ok) {
+            throw EnginePreflightException(
+                "A native file of this app does not match what the build produced " +
+                    "(${result.details.filter { !it.endsWith(": ok") }.joinToString("; ")}). " +
+                    "Reinstall the app from your own build."
+            )
+        }
     }
 
     /** See the class comment, step 1. */

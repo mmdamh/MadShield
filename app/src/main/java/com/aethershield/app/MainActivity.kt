@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
                                     Tab.Dns -> DnsScreen(config, { t -> updateConfig(t) }, padding)
                                     Tab.Routing -> RoutingScreen(
                                         config,
+                                        onUpdate = { t -> updateConfig(t) },
                                         onOpenBypass = { nav.navigate("bypass") },
                                         onOpenApps = { nav.navigate("apps") },
                                         contentPadding = padding
@@ -107,6 +108,7 @@ class MainActivity : ComponentActivity() {
                                         config, uiPrefs,
                                         onUpdate = { t -> updateConfig(t) },
                                         onUpdateUi = { t -> updateUi(t) },
+                                        onOpenDiagnostics = { nav.navigate("diagnostics") },
                                         contentPadding = padding
                                     )
                                 }
@@ -129,6 +131,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     composable("log") { LogScreen(onBack = { nav.popBackStack() }) }
+                    composable("diagnostics") {
+                        DiagnosticsScreen(config, connectionState, onBack = { nav.popBackStack() })
+                    }
                 }
             }
         }

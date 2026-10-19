@@ -62,7 +62,6 @@ class AetherVpnService : VpnService() {
         private const val HEALTH_CHECK_INTERVAL_MS = 5_000L
         private const val HARDENED_PASS_TIMEOUT_MS = 60_000L
         private const val RECOVERY_TIMEOUT_MS = 30_000L
-        private const val MAX_RECOVERIES = 5
         private const val BRIDGE_STOP_TIMEOUT_MS = 4_000L
     }
 
@@ -79,12 +78,15 @@ class AetherVpnService : VpnService() {
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
     private lateinit var settingsStore: SettingsStore
+    private lateinit var netWatcher: NetworkWatcher
 
     override fun onCreate() {
         super.onCreate()
         engine = EngineProcessManager(this)
         ruleWriter = RuleFileWriter(this)
         settingsStore = SettingsStore(this)
+        netWatcher = NetworkWatcher(this)
+        DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
         createNotificationChannel()
     }
 
@@ -95,6 +97,7 @@ class AetherVpnService : VpnService() {
             return START_NOT_STICKY
         }
         userRequestedStop = false
+        netWatcher.start()
         // Must happen within seconds of startForegroundService(); do it here,
         // not later inside the coroutine.
         AetherController.setState(ConnectionState.Connecting)
@@ -236,7 +239,7 @@ class AetherVpnService : VpnService() {
     private fun failStartup(reason: String) {
         if (userRequestedStop) return
         healthJob?.cancel()
-        runCatching { TProxyService.TProxyStopService() }
+        stopBridge()
         engine.stop()
         releaseTun()
         AetherController.setState(ConnectionState.Error(reason))
@@ -331,6 +334,18 @@ class AetherVpnService : VpnService() {
         return file
     }
 
+    /**
+     * Asks hev to stop, but only when it is running. hev REMEMBERS a stop request that arrives while it is
+     * not running and then ends the NEXT start immediately: that was the "tunnel bridge stopped right after
+     * start" on the first connect of a session (seen after every earlier disconnect or failed connect), which
+     * only worked on Retry. The native thread flag is exact, so this never races a start.
+     */
+    private fun stopBridge() {
+        if (runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)) {
+            runCatching { TProxyService.TProxyStopService() }
+        }
+    }
+
     /** @return true if hev accepted the TUN fd. Sets the Error state itself on failure. */
     private suspend fun bridgeTunToEngine(config: EngineConfig): Boolean {
         val fd = tunFd ?: return false
@@ -343,17 +358,25 @@ class AetherVpnService : VpnService() {
                 AetherController.setState(ConnectionState.Error("previous tunnel bridge still shutting down"))
                 return false
             }
-            val started = TProxyService.TProxyStartService(cfgFile.absolutePath, fd.fd)
-            if (!started) {
-                RingLogBuffer.append("[vpn] hev refused to start (config/fd rejected)")
-                AetherController.setState(ConnectionState.Error("tunnel start refused"))
-                return false
+            // Two tries: if the first one ends at once (a stop request left over from an earlier session
+            // is consumed by it), the second one starts cleanly.
+            var up = false
+            for (attempt in 1..2) {
+                val started = TProxyService.TProxyStartService(cfgFile.absolutePath, fd.fd)
+                if (!started) {
+                    RingLogBuffer.append("[vpn] hev refused to start (config/fd rejected)")
+                    AetherController.setState(ConnectionState.Error("tunnel start refused"))
+                    return false
+                }
+                // The native start only schedules a thread. If that thread exits at once the tunnel
+                // would be reported "connected" while carrying nothing ("connected, no internet").
+                delay(700)
+                up = runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)
+                if (up) break
+                RingLogBuffer.append("[vpn] tunnel bridge ended right after start (attempt $attempt/2)")
+                if (!awaitBridgeStopped()) break
             }
-            // The native start only schedules a thread. If that thread exits at once (bad config,
-            // bad fd) the tunnel would be reported "connected" while carrying nothing, which is
-            // exactly the "VPN says connected but the internet does not pass" symptom.
-            delay(700)
-            if (!runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)) {
+            if (!up) {
                 RingLogBuffer.append("[vpn] tunnel bridge stopped right after start (config: ${cfgFile.readText().replace('\n', ' ')})")
                 AetherController.setState(ConnectionState.Error("the tunnel bridge stopped right after starting"))
                 return false
@@ -389,6 +412,7 @@ class AetherVpnService : VpnService() {
             var lastCpuAt = 0L
             var lastCpuTicks = 0L
             var firstFailAt = 0L
+            var healthySince = 0L
             while (isActive) {
                 val cadence = PowerPolicy.cadence(isScreenOn())
                 delay(cadence.healthMs)
@@ -417,6 +441,10 @@ class AetherVpnService : VpnService() {
                             if (ticks != null) { lastCpuTicks = ticks; lastCpuAt = now }
                         }
                         consecutiveFailures = 0
+                        // Healthy for a full minute: the outage is over, so the next one starts the
+                        // retry schedule from the beginning instead of continuing the slow phase.
+                        if (healthySince == 0L) healthySince = now
+                        else if (now - healthySince >= ReconnectPolicy.STABLE_AFTER_MS) recoveries = 0
                         if (wasDown) { // came back (core replaced its tunnel, or we restarted it)
                             wasDown = false
                             if (tunFd == null) establishTun(config)
@@ -425,6 +453,7 @@ class AetherVpnService : VpnService() {
                         continue
                     }
                     // One failed probe is a blip (the core may be swapping tunnels); two in a row is an outage.
+                    healthySince = 0L
                     if (++consecutiveFailures == 1) firstFailAt = android.os.SystemClock.elapsedRealtime()
                     if (consecutiveFailures < 2) continue
 
@@ -434,7 +463,7 @@ class AetherVpnService : VpnService() {
                         AetherController.setState(
                             ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error))
                         )
-                        runCatching { TProxyService.TProxyStopService() }
+                        stopBridge()
                         if (!config.killSwitchEnabled) releaseTun() // fail-open until it recovers
                     }
 
@@ -445,9 +474,24 @@ class AetherVpnService : VpnService() {
                         engine.stop()
                     }
 
-                    if (!engine.isRunning && config.quickReconnect && recoveries < MAX_RECOVERIES) {
+                    if (!engine.isRunning && config.quickReconnect) {
                         recoveries++
-                        RingLogBuffer.append("[vpn] restarting engine (attempt $recoveries/$MAX_RECOVERIES)")
+                        // Increasing pauses (1, 2, 4, 8, 16, 30 s), then a slow waiting phase that goes on
+                        // for as long as it takes but never spins. A network change ends the pause at once.
+                        val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0))
+                        val waiting = ReconnectPolicy.phase(recoveries) == ReconnectPolicy.Phase.WAITING
+                        RingLogBuffer.append("[vpn] ${if (waiting) "waiting" else "retry"} #$recoveries in ${pause / 1000}s (or when the network changes)")
+                        if (waiting) {
+                            AetherController.setState(ConnectionState.Error(getString(R.string.state_waiting_retry, (pause / 60_000L).coerceAtLeast(1L).toInt())))
+                            updateNotification(getString(R.string.notif_waiting))
+                        }
+                        netWatcher.drain()
+                        if (netWatcher.awaitChangeOrTimeout(pause)) {
+                            RingLogBuffer.append("[vpn] network changed, retrying now")
+                            recoveries = 1
+                        }
+                        ensureActive()
+                        RingLogBuffer.append("[vpn] restarting engine (attempt $recoveries)")
                         AetherController.setState(ConnectionState.Connecting)
                         updateNotification(getString(R.string.notif_connecting))
                         when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(config))) {
@@ -473,7 +517,9 @@ class AetherVpnService : VpnService() {
         healthJob?.cancel()
         connectJob?.cancel()
         scope.cancel()
-        runCatching { TProxyService.TProxyStopService() }
+        netWatcher.stop()
+        DiagnosticsHub.engineCpuTicks = null
+        stopBridge()
         engine.stop()
         releaseTun()
         // A startup failure stops the service on purpose and must leave its Error visible;
@@ -483,7 +529,7 @@ class AetherVpnService : VpnService() {
         RingLogBuffer.append("[vpn] service destroyed, all state torn down")
         // Zero-log: nothing survives the session. The one exception is the log of a failed
         // start, kept in memory only, so the user can read why it failed.
-        if (!keepError) RingLogBuffer.clear()
+        if (!keepError) { RingLogBuffer.clear(); DiagnosticsHub.clear() }
         super.onDestroy()
     }
 
@@ -502,11 +548,12 @@ class AetherVpnService : VpnService() {
         healthJob?.cancel()
         connectJob?.cancel()
         Thread {
-            runCatching { TProxyService.TProxyStopService() }
+            stopBridge()
             runCatching { engine.stop() }
             runCatching { releaseTun() }
             AetherController.setState(ConnectionState.Idle)
             RingLogBuffer.clear()
+            DiagnosticsHub.clear()
             stopSelf()
         }.start()
     }

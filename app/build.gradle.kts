@@ -17,8 +17,8 @@ android {
         applicationId = "com.aethershield.app"
         minSdk = 26 // VpnService.Builder per-app APIs need 21+, but 26 keeps things sane/modern
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.3.1"
+        versionCode = 5
+        versionName = "0.3.2"
 
         // Stamped at CI build time from native/aether-core/CORE_VERSION and
         // native/hev-socks5-tunnel/CORE_VERSION -- see .github/workflows/build.yml.
@@ -91,6 +91,9 @@ android {
         // is only populated when libs are extracted at install time -- hence "true"
         // here rather than the newer compressed/non-extracted default.
         jniLibs.useLegacyPackaging = true
+        // CI stamps the SHA-256 of each native file and the app checks them at engine start
+        // (BinaryIntegrity). Stripping would rewrite the bytes after the hash was taken.
+        jniLibs.keepDebugSymbols += "**/*.so"
     }
 }
 

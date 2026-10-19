@@ -24,6 +24,11 @@ on:
   push:
     branches: [main]
 
+# Least privilege: nothing in this workflow may write to the repository, except the separate
+# "release" job at the end, which is the only one with contents: write and has no signing key.
+permissions:
+  contents: read
+
 jobs:
   build-native-aether:
     name: Build aether core (${{ matrix.abi }})
@@ -41,7 +46,9 @@ jobs:
             goarch: arm
             goarm: "7"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # The engine source is fetched by EXACT commit hash from native/aether-core.pin
       # (no submodule setup needed on your side). GitHub serves any commit by SHA, and
@@ -74,27 +81,30 @@ jobs:
                    AETHER_MASQUE_MTU AETHER_ECH_DNS AETHER_EXIT_LOC_SECS \
                    AETHER_PSIPHON AETHER_PSIPHON_BIND AETHER_PSIPHON_MODE AETHER_PSIPHON_REGION \
                    AETHER_PSIPHON_DIR AETHER_PSIPHON_BIN AETHER_TOR AETHER_TOR_BIND \
-                   AETHER_TOR_BRIDGES AETHER_TOR_DIR; do
+                   AETHER_TOR_BRIDGES AETHER_TOR_DIR AETHER_PERF_PROFILE; do
             grep -rq "$v" "$SRC" || { echo "ERROR: core source no longer mentions $v"; exit 1; }
           done
           echo "OK: all AETHER_* variables the app sets exist in the pinned core"
 
-      # Core v2.3.0 raised its minimum to Rust 1.98; "stable" satisfies that
-      # once 1.98+ is the stable channel (it is as of this release).
+      # Core v2.3.0 needs Rust 1.98 or newer. The exact version is pinned (1.98.1) so a new stable
+      # release can never change what the build produces; raise it on purpose when the core needs it.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
+          toolchain: 1.98.1
           targets: ${{ matrix.target }}
 
       # boring-sys (BoringSSL bindings, pulled in by quiche) needs Go to build
       # BoringSSL itself -- confirmed dependency, not optional.
       - name: Install Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.22"
 
       - name: Install CMake and Ninja
-        uses: lukka/get-cmake@latest
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
+        with:
+          cmakeVersion: 4.4.4
 
       # No separate system clang install here on purpose: the NDK ships its
       # own clang and cc-rs/bindgen use that automatically for Android
@@ -102,12 +112,12 @@ jobs:
       # system clang -- see upstream's Dockerfile.)
       - name: Install Android NDK
         id: ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r26d
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+        run: cargo install cargo-ndk --version 4.1.2 --locked
 
       # ROOT CAUSE of the on-device error
       #   CANNOT LINK EXECUTABLE ... library "libc++_shared.so" not found
@@ -163,7 +173,7 @@ jobs:
           cp psiphon-out/psiphon-tunnel-core "staged/${{ matrix.abi }}/libpsiphon.so"
 
       - name: Upload aether binary for this ABI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: aether-${{ matrix.abi }}
           path: |
@@ -179,7 +189,9 @@ jobs:
       matrix:
         abi: [arm64-v8a, armeabi-v7a]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       # Same exact-commit fetch as for the engine. hev has its own submodules
       # (lwip, yaml, hev-task-system, hev-socks5-core) that its Android.mk needs,
@@ -199,7 +211,7 @@ jobs:
 
       - name: Install Android NDK
         id: ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r26d
 
@@ -322,7 +334,7 @@ jobs:
           cp "native/hev-socks5-tunnel/libs/${{ matrix.abi }}/libaethertun.so" staged/${{ matrix.abi }}/
 
       - name: Upload native libs for this ABI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tun2socks-${{ matrix.abi }}
           path: staged/${{ matrix.abi }}/*.so
@@ -331,13 +343,16 @@ jobs:
   build-apk:
     needs: [build-native-aether, build-native-tun2socks]
     runs-on: ubuntu-latest
+    # Read-only. This job holds the signing key, so it must not be able to publish or write anything.
     permissions:
-      contents: write # needed to publish a GitHub Release below
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Download all native artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist-native
 
@@ -353,39 +368,37 @@ jobs:
             cp "dist-native/tun2socks-$abi/libaethertun.so" "app/src/main/jniLibs/$abi/"
           done
 
-      - name: Compute + record binary hashes (for BinaryIntegrity.kt)
+      # The app compares these at engine start (core/BinaryIntegrity.kt, EngineProcessManager).
+      # One line per file: <abi>/<file>=<sha256>. It covers every native file we ship, including
+      # libpsiphon.so. gradle keeps the .so bytes untouched (keepDebugSymbols), and the step after
+      # the build proves that against the finished APK.
+      - name: Stamp native hashes into the app
         run: |
           set -e
-          {
-            echo "arm64-v8a/libaether.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libaether.so | cut -d' ' -f1)"
-            echo "arm64-v8a/libaethertun.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libaethertun.so | cut -d' ' -f1)"
-            echo "arm64-v8a/libhev-socks5-tunnel.so=$(sha256sum app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so | cut -d' ' -f1)"
-          } > app/src/main/assets_hashes.properties || true
-          # This computes real hashes of what CI itself just built and is
-          # about to package, which is what BinaryIntegrity.kt needs to
-          # compare against at runtime. Wiring this properties file into
-          # BuildConfig/a generated resource that BinaryIntegrity.verify()
-          # reads is the one remaining manual step -- left explicit rather
-          # than faked with placeholder hashes.
+          mkdir -p app/src/main/assets
+          out=app/src/main/assets/native_hashes.properties
+          echo "# generated by CI, do not edit" > "$out"
+          for abi in arm64-v8a armeabi-v7a; do
+            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so; do
+              echo "$abi/$f=$(sha256sum "app/src/main/jniLibs/$abi/$f" | cut -d' ' -f1)" >> "$out"
+            done
+          done
+          cat "$out"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: 17
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
 
-      # No gradlew/gradle-wrapper.jar in this repo -- generating one needs
-      # network access to download the wrapper jar, which wasn't available
-      # wherever this project was first put together. Using the official
-      # setup-gradle action instead sidesteps that entirely: it installs a
-      # real Gradle distribution and caches it, so "gradle" (not "./gradlew")
-      # is what gets called below.
+      # No gradlew/gradle-wrapper.jar in this repo, so the setup-gradle action installs a real
+      # Gradle distribution. The version is pinned.
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           gradle-version: 8.9
 
@@ -395,6 +408,7 @@ jobs:
         run: |
           if [ -n "$SIGNING_KEY_BASE64" ]; then
             echo "$SIGNING_KEY_BASE64" | base64 -d > release.keystore
+            chmod 600 release.keystore
           fi
 
       - name: Build release APK
@@ -404,23 +418,54 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease
 
+      # The signing key is not needed after the build: remove it even if the build failed.
+      - name: Remove signing key
+        if: always()
+        run: rm -f release.keystore
+
+      # Fails the build (so it never ships) if the native files inside the finished APK are not
+      # byte-identical to the stamped hashes. That would make the on-device check reject a good install.
+      - name: Verify the APK carries exactly the stamped native files
+        run: |
+          set -e
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -n1)"
+          echo "checking $apk"
+          while IFS='=' read -r key hash; do
+            case "$key" in ''|\#*) continue;; esac
+            got="$(unzip -p "$apk" "lib/$key" | sha256sum | cut -d' ' -f1)"
+            if [ "$got" != "$hash" ]; then
+              echo "ERROR: lib/$key in the APK differs from the stamped hash"; exit 1
+            fi
+          done < app/src/main/assets/native_hashes.properties
+          echo "OK: every stamped native file is byte-identical inside the APK"
+
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: AetherShield-release
           path: app/build/outputs/apk/release/*.apk
 
-      # Publishes a real GitHub Release (not just a build artifact) on every
-      # successful build, so the APK is easy to find and doesn't expire in
-      # 90 days the way Actions artifacts do. Each build gets its own unique
-      # tag (the run number), so nothing ever collides or overwrites a
-      # previous release; "make_latest: true" keeps the newest one marked
-      # Latest so a plain /releases/latest link always points at it.
+  # Publishing is a separate job on purpose: it is the only one allowed to write to the repository,
+  # and it never sees the signing key or the source tree, only the finished APK.
+  release:
+    needs: build-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+    steps:
+      - name: Download the APK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: AetherShield-release
+          path: release-apk
+
+      # Each build gets its own tag (the run number), so nothing collides or overwrites an older release;
+      # "make_latest" keeps the newest one marked Latest.
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ github.run_number }}
           name: AetherShield build ${{ github.run_number }}
-          files: app/build/outputs/apk/release/*.apk
+          files: release-apk/*.apk
           make_latest: true
           generate_release_notes: true

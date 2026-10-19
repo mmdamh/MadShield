@@ -52,6 +52,8 @@ enum class PrivacyChain {
 object Chain {
     /** Where the core's own (WARP) SOCKS listens when a chain is on; the chain takes the public port. */
     const val UNDERLAY_PORT = 1823
+    const val GO_MAX_PROCS = "2"
+    const val GO_MEMORY_LIMIT = "256MiB"
 
     /** hev "mapped DNS": answers app DNS locally with fake IPs so no UDP has to cross the chain. */
     const val MAPDNS_ADDRESS = "198.18.0.2"

@@ -393,12 +393,15 @@ private fun ProxyAddressPill(port: Int, visible: Boolean) {
 
 // ---------------------------------------------------------------------- stats
 
+/** The counters are cumulative, so a slower poll only changes how often the tiles refresh, not their accuracy. */
+private const val TRAFFIC_POLL_MS = 2_500L
+
 private data class Traffic(val downBps: Long = 0, val upBps: Long = 0, val totalDown: Long = 0, val totalUp: Long = 0)
 
 /**
  * Live throughput from hev-socks5-tunnel's own counters. Direction mapping
  * (stats[1] = bytes uploaded by apps, stats[3] = bytes downloaded) follows the
- * reference app's field-tested fix. Polled once a second ONLY while connected
+ * reference app's field-tested fix. Polled every 2.5 s ONLY while connected
  * and on screen, so it costs nothing in the background.
  */
 @Composable
@@ -409,18 +412,22 @@ private fun rememberTraffic(active: Boolean): State<Traffic> {
         if (!active) { state.value = Traffic(); return@LaunchedEffect }
         if (!foreground) return@LaunchedEffect
         var last: LongArray? = null
+        var lastAt = 0L
         while (true) {
             val s = if (TProxyService.available) runCatching { TProxyService.TProxyGetStats() }.getOrNull() else null
             if (s != null && s.size >= 4) {
+                val now = android.os.SystemClock.elapsedRealtime()
                 val prev = last
+                val secs = ((now - lastAt) / 1000.0).coerceAtLeast(0.5)
                 state.value = Traffic(
-                    downBps = if (prev != null) (s[3] - prev[3]).coerceAtLeast(0) else 0,
-                    upBps = if (prev != null) (s[1] - prev[1]).coerceAtLeast(0) else 0,
+                    downBps = if (prev != null) ((s[3] - prev[3]).coerceAtLeast(0) / secs).toLong() else 0,
+                    upBps = if (prev != null) ((s[1] - prev[1]).coerceAtLeast(0) / secs).toLong() else 0,
                     totalDown = s[3], totalUp = s[1]
                 )
                 last = s
+                lastAt = now
             }
-            delay(1000)
+            delay(TRAFFIC_POLL_MS)
         }
     }
     return state

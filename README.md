@@ -150,16 +150,41 @@ stack-swapping coroutines and crashes with a native SIGSEGV.
   ever silently falling back to the raw network. See `AetherVpnService.kt`
   for the exact sequencing.
 - **Zero-log**: `util/RingLogBuffer.kt` is in-memory only, capped, and wiped
-  on every disconnect. `android.util.Log` calls are stripped from release
+  on every disconnect. The one exception: after an unexpected engine stop a
+  short tail (IPs and keys removed) stays in memory for the Diagnostics page
+  until you clear it or the process ends. `android.util.Log` calls are stripped from release
   builds by ProGuard as a second, independent layer. No analytics or crash
   reporting SDK is in the dependency list at all — check
   `app/build.gradle.kts`, it's short enough to read end to end.
-- **Binary integrity**: `core/BinaryIntegrity.kt` checks the installed
-  native libraries' SHA-256 against hashes CI computed from what it just
-  built, catching a repackaged/tampered APK at first run. See
-  `.github/workflows/build.yml`'s "Compute + record binary hashes" step for
-  the one remaining wiring step (feeding those hashes into
-  `BinaryIntegrity.verify()` at app start).
+- **Binary integrity**: CI stamps the SHA-256 of every shipped native file
+  (`libaether.so`, `libpsiphon.so`, `libhev-socks5-tunnel.so`, `libaethertun.so`)
+  into `assets/native_hashes.properties`, and a CI step proves the finished APK
+  carries exactly those bytes. At the first engine start of each run,
+  `core/BinaryIntegrity.kt` hashes the installed files and refuses to start the
+  engine on a mismatch. This catches corruption and a native file swapped after
+  the build; it does not stop someone who can re-sign a modified APK, so the
+  real trust anchors are the pinned upstream commits and your signing key.
+- **CI hardening**: every Action is pinned to a full commit SHA, Rust (1.98.1),
+  cargo-ndk (4.1.2), CMake (4.4.4), NDK (r26d) and Gradle (8.9) are fixed
+  versions, the workflow is read-only by default, and publishing the Release is
+  a separate job that has write access but never sees the signing key.
+
+- **Diagnostics**: Settings > Diagnostics explains probable causes with a
+  confidence level and the evidence (DNS, TCP, handshake, stalled tunnel,
+  repeated drops, CPU during real transfer versus CPU while idle). Live CPU
+  sampling is a switch that is off by default; the connection tests run only
+  when you press the button; the shareable report has no log lines, IPs or
+  tokens unless you opt in to a redacted log tail.
+- **Reconnect policy**: after the engine dies, retries wait 1, 2, 4, 8, 16, 30 s,
+  then a slow waiting phase (2 min screen on, 5 min off) that never spins.
+  A network change (Wi-Fi to mobile, link back) ends the wait at once.
+- **Logs and polling**: appending a log line costs nothing and publishes
+  nothing; the log page polls twice a second only while it is visible, and the
+  traffic tiles poll every 2.5 s only while the app is in the foreground.
+- **Per-app routing**: each app is labelled as going through the VPN,
+  connecting directly, or not confirmable right now (disconnected, proxy mode,
+  rule changed since connecting). The leak-protection card explains what the
+  kill switch cannot cover and links to Android's Always-on VPN lockdown.
 
 ## Setup
 
@@ -191,9 +216,6 @@ Material 3, not copied (ZedSecure is AGPL-3.0). Fonts are OFL, see
 - Zero Trust settings UI only wires up `team` name + service-token secret;
   `--access-email` and `--access-id` exist in the engine but aren't exposed
   in `SettingsScreen.kt` yet — same pattern, just not built out.
-- `BinaryIntegrity`'s expected-hash map isn't wired to CI output yet (see
-  above) — currently `verify()` just no-ops on debug builds until that's
-  connected.
 - No automated tests written for the Kotlin/Compose side. The Rust engine's
   own test suite (`cargo test` inside `native/aether-core/aether`) is
   extensive and worth running on its own, independent of anything in this app.

@@ -7,7 +7,7 @@ and refuses to build if the downloaded commit differs from the pin:
 | Engine | Source | Pinned commit |
 |---|---|---|
 | aether-core (v2.3.0) | https://github.com/CluvexStudio/Aether | `6175b67df370ab856bcee07fe85b524031903956` |
-| hev-socks5-tunnel | https://github.com/heiher/hev-socks5-tunnel | `64cc609f945253b0e9ebc56317d544268f3c68c1` |
+| hev-socks5-tunnel | https://github.com/heiher/hev-socks5-tunnel | `d9dca26c7ad0e494492244f0309e80ee583e739e` (tag 2.18.0) |
 
 The aether-core commit is the one shown on the official v2.3.0 release page and
 the `sourceCommit` pinned by the AetherGUI reference project. (Fetching by SHA

@@ -59,6 +59,12 @@ object EngineEnvironment {
                 Chain.normalizeRegion(config.psiphonRegion)?.let { env["AETHER_PSIPHON_REGION"] = it }
                 chainDirPath?.let { env["AETHER_PSIPHON_DIR"] = it }
                 chainBinPath?.let { env["AETHER_PSIPHON_BIN"] = it }
+                // libpsiphon is a Go program and inherits the core's environment. Cap its worker
+                // threads so a burst can't spread over every big core, and give the Go runtime a
+                // generous soft memory ceiling as a safety net. The ceiling is far above Psiphon's
+                // normal heap on purpose: a limit set too low is what causes a GC death spiral.
+                env["GOMAXPROCS"] = Chain.GO_MAX_PROCS
+                env["GOMEMLIMIT"] = Chain.GO_MEMORY_LIMIT
             }
             PrivacyChain.TOR -> {
                 env["AETHER_TOR"] = "chain"

@@ -38,6 +38,7 @@ class ProxyOnlyService : Service() {
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
     private lateinit var settingsStore: SettingsStore
+    private lateinit var netWatcher: NetworkWatcher
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -46,6 +47,8 @@ class ProxyOnlyService : Service() {
         engine = EngineProcessManager(this)
         ruleWriter = RuleFileWriter(this)
         settingsStore = SettingsStore(this)
+        netWatcher = NetworkWatcher(this)
+        DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel_proxy), NotificationManager.IMPORTANCE_LOW)
@@ -61,11 +64,13 @@ class ProxyOnlyService : Service() {
                 runCatching { engine.stop() }
                 AetherController.setState(ConnectionState.Idle)
                 RingLogBuffer.clear()
+                DiagnosticsHub.clear()
                 stopSelf()
             }.start()
             return START_NOT_STICKY
         }
         userRequestedStop = false
+        netWatcher.start()
         AetherController.setState(ConnectionState.Connecting)
         startForeground(NOTIF_ID, notification(getString(R.string.notif_connecting)))
 
@@ -126,7 +131,7 @@ class ProxyOnlyService : Service() {
                             ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")
                         )
                         postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
-                        watch(config)
+                        watch(active, secretEnv)
                     }
                     SocksProbe.Wait.ENGINE_DIED -> fail(engine.failureReason() ?: "the engine process exited")
                     SocksProbe.Wait.TIMEOUT -> fail("no answer from the engine after ${ConnectPolicy.firstPassTimeoutMs(config) / 1000}s")
@@ -141,24 +146,79 @@ class ProxyOnlyService : Service() {
         return START_STICKY
     }
 
-    /** Marks the proxy as failed when the engine dies later on (the core handles its own tunnel swaps). */
-    private suspend fun watch(config: EngineConfig) {
+    /**
+     * Watches the engine after it came up. If it dies, the same retry schedule as the VPN mode applies
+     * (see [ReconnectPolicy]) when "quick reconnect" is on; otherwise the proxy is only marked as failed.
+     */
+    private suspend fun watch(config: EngineConfig, secretEnv: Map<String, String>) {
         var misses = 0
+        var recoveries = 0
+        var healthySince = 0L
         while (currentCoroutineContext().isActive) {
             delay(PowerPolicy.cadence(isScreenOn()).healthMs)
             val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
             if (ok) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (healthySince == 0L) healthySince = now
+                else if (now - healthySince >= ReconnectPolicy.STABLE_AFTER_MS) recoveries = 0
                 if (misses >= 2) {
                     AetherController.setState(
                         ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")
                     )
                 }
                 misses = 0
-            } else if (++misses == 2) {
+                continue
+            }
+            healthySince = 0L
+            if (++misses == 2) {
                 RingLogBuffer.append("[proxy] health check failed")
                 AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
             }
+            if (misses < 2 || engine.isRunning || !config.quickReconnect) continue
+
+            recoveries++
+            val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0))
+            val waiting = ReconnectPolicy.phase(recoveries) == ReconnectPolicy.Phase.WAITING
+            RingLogBuffer.append("[proxy] ${if (waiting) "waiting" else "retry"} #$recoveries in ${pause / 1000}s (or when the network changes)")
+            if (waiting) {
+                AetherController.setState(ConnectionState.Error(getString(R.string.state_waiting_retry, (pause / 60_000L).coerceAtLeast(1L).toInt())))
+                postNotification(getString(R.string.notif_waiting))
+            }
+            netWatcher.drain()
+            if (netWatcher.awaitChangeOrTimeout(pause)) {
+                RingLogBuffer.append("[proxy] network changed, retrying now")
+                recoveries = 1
+            }
+            currentCoroutineContext().ensureActive()
+            AetherController.setState(ConnectionState.Connecting)
+            postNotification(getString(R.string.notif_connecting))
+            if (restartEngine(config, secretEnv)) {
+                misses = 0
+                AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
+                postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
+            } else {
+                AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
+            }
         }
+    }
+
+    private suspend fun restartEngine(c: EngineConfig, secretEnv: Map<String, String>): Boolean {
+        val self = currentCoroutineContext()[Job]
+        try {
+            engine.start(c, ruleWriter, secretEnv)
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            RingLogBuffer.append("[proxy] restart failed: ${t.message}")
+            return false
+        }
+        val timeout = 30_000L + ConnectPolicy.chainAllowanceMs(c)
+        val w = SocksProbe.awaitReady(
+            TunnelConfig.SOCKS_HOST, c.socksPort, timeout,
+            engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
+        )
+        if (w != SocksProbe.Wait.READY) return false
+        if (c.effectiveChain == PrivacyChain.NONE) return true
+        return engine.awaitChainReady(timeout) { self?.isActive == false } == null
     }
 
     private fun isScreenOn(): Boolean =
@@ -175,11 +235,13 @@ class ProxyOnlyService : Service() {
     override fun onDestroy() {
         job?.cancel()
         scope.cancel()
+        netWatcher.stop()
+        DiagnosticsHub.engineCpuTicks = null
         engine.stop()
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
         if (!keepError) AetherController.setState(ConnectionState.Idle)
         RingLogBuffer.append("[proxy] service destroyed")
-        if (!keepError) RingLogBuffer.clear()
+        if (!keepError) { RingLogBuffer.clear(); DiagnosticsHub.clear() }
         super.onDestroy()
     }
 

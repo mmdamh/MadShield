@@ -27,8 +27,25 @@ object AetherController {
     val state = _state.asStateFlow()
 
     fun setState(newState: ConnectionState) {
-        _state.value = newState
+        synchronized(tracker) {
+            val old = _state.value.kind()
+            _state.value = newState
+            _stats.value = tracker.onTransition(old, newState.kind(), System.currentTimeMillis())
+        }
         if (newState !is ConnectionState.Connected && newState !is ConnectionState.Connecting) _active.value = null
+    }
+
+    /** Retries, errors and the time of the last state change, for the Diagnostics page (cheap: a few counters). */
+    private val tracker = ConnStatsTracker()
+    private val _stats = MutableStateFlow(ConnStats())
+    val stats = _stats.asStateFlow()
+
+    private fun ConnectionState.kind(): StateKind = when (this) {
+        ConnectionState.Idle -> StateKind.IDLE
+        ConnectionState.Connecting -> StateKind.CONNECTING
+        is ConnectionState.Connected -> StateKind.CONNECTED
+        ConnectionState.Disconnecting -> StateKind.DISCONNECTING
+        is ConnectionState.Error -> StateKind.ERROR
     }
 
     /** The protocol/carrier that is REALLY running, which differs from the setting after a fallback. */
