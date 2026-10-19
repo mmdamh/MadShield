@@ -17,8 +17,8 @@ android {
         applicationId = "com.aethershield.app"
         minSdk = 26 // VpnService.Builder per-app APIs need 21+, but 26 keeps things sane/modern
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.2"
+        versionCode = 6
+        versionName = "1.0"
 
         // Stamped at CI build time from native/aether-core/CORE_VERSION and
         // native/hev-socks5-tunnel/CORE_VERSION -- see .github/workflows/build.yml.

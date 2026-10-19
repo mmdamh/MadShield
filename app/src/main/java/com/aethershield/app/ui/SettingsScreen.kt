@@ -182,6 +182,10 @@ fun SettingsScreen(
                 stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
                 config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
             )
+            SwitchRow(
+                stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
+                config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
+            )
             Spacer(Modifier.height(8.dp))
             var team by remember(config.zeroTrustTeam) { mutableStateOf(config.zeroTrustTeam ?: "") }
             OutlinedTextField(

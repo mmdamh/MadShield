@@ -254,4 +254,9 @@
     <string name="diag_cpu_unknown_b">در حالت پروکسی نرخ ترافیک قابل اندازه‌گیری نیست، پس مصرف واقعی از سوختن در حالت بیکار قابل تشخیص نیست. با میزان استفادهٔ واقعی‌ات از پروکسی مقایسه کن.</string>
     <string name="diag_ok_t">مشکلی دیده نشد</string>
     <string name="diag_ok_b">هیچ‌چیز در اندازه‌گیری‌ها به خرابی اشاره نمی‌کند. اگر باز هم چیزی کار نمی‌کند تست‌ها را اجرا کن تا جواب مطمئن‌تری بگیری.</string>
+    <string name="notif_disconnect">قطع اتصال</string>
+    <string name="sw_notif_speed">سرعت در نوتیفیکیشن</string>
+    <string name="sw_notif_speed_sub">سرعت آپلود و دانلود را در نوتیفیکیشن نشان می‌دهد، مثل sing-box. فقط وقتی صفحه روشن است به‌روز می‌شود، پس در جیب هیچ هزینه‌ای ندارد. فقط حالت VPN.</string>
+    <string name="tile_off">خاموش</string>
+    <string name="tile_on">روشن</string>
 </resources>

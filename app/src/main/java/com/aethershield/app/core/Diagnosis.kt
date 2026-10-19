@@ -28,6 +28,24 @@ data class Finding(val kind: DiagKind, val confidence: Confidence, val evidence:
 /** Which kinds of trouble the recent log lines mention. Counts only, never the lines themselves. */
 data class LogSignals(val dns: Int = 0, val tcp: Int = 0, val handshake: Int = 0, val timeouts: Int = 0) {
     companion object {
+        /**
+         * Log lines that mean "the tunnel works again". Anything before the LAST one of these is history:
+         * it was already recovered from and must not be blamed for the current state.
+         */
+        val RECOVERY_MARKERS = listOf("tunnel bridge running", "tunnel recovered", "[proxy] engine up")
+
+        /** Only the lines since the last recovery (or all of them when there was none). */
+        fun sinceLastRecovery(lines: List<String>): List<String> {
+            val last = lines.indexOfLast { l ->
+                val low = l.lowercase(Locale.ROOT)
+                RECOVERY_MARKERS.any { it in low }
+            }
+            return if (last < 0) lines else lines.subList(last + 1, lines.size)
+        }
+
+        /** [scan] over [sinceLastRecovery]: what the Diagnostics page uses. */
+        fun scanRecent(lines: List<String>): LogSignals = scan(sinceLastRecovery(lines))
+
         /** Lower-cased phrases; the core and the app are the only writers of these lines. */
         fun scan(lines: List<String>): LogSignals {
             var dns = 0; var tcp = 0; var hs = 0; var to = 0
@@ -37,11 +55,15 @@ data class LogSignals(val dns: Int = 0, val tcp: Int = 0, val handshake: Int = 0
                 val timedOut = "timed out" in l || "timeout" in l
                 if (timedOut) to++
                 if ("dns" in l && (failed || timedOut || "servfail" in l)) dns++
+                // "broken pipe" is deliberately NOT here: it is what a connection that the other side closed
+                // (or a stalled outer tunnel) looks like, not a sign that TCP through the tunnel is failing.
                 if ("connection refused" in l || "connection reset" in l || "unreachable" in l ||
-                    "broken pipe" in l || "tcp connect" in l && (failed || timedOut)
+                    "tcp connect" in l && (failed || timedOut)
                 ) tcp++
+                // A lone TLS alert / BAD_DECRYPT line is normal noise when a connection is torn down, so TLS
+                // alerts alone do not count; only a handshake, certificate or gateway failure does.
                 if (("handshake" in l && (failed || timedOut)) || "certificate" in l && failed ||
-                    "gateway scan failed" in l || "no gateway" in l || "alert" in l && "tls" in l
+                    "gateway scan failed" in l || "no gateway" in l
                 ) hs++
             }
             return LogSignals(dns, tcp, hs, to)
@@ -79,6 +101,9 @@ object Diagnosis {
     const val STALL_SAMPLES_HIGH = 6
     const val MIN_CPU_WINDOW_MS = 8_000L
 
+    /** While connected, fewer failed-handshake lines than this are noise, not a finding. */
+    const val HANDSHAKE_MIN_WHEN_CONNECTED = 3
+
     fun diagnose(i: DiagInput): List<Finding> {
         val out = mutableListOf<Finding>()
         val p = i.probes
@@ -111,9 +136,15 @@ object Diagnosis {
         // Handshake with the gateway / WARP
         if (i.state != StateKind.IDLE && i.signals.handshake > 0) {
             val notUp = i.state != StateKind.CONNECTED
-            out += Finding(DiagKind.HANDSHAKE_FAILING,
-                if (i.signals.handshake >= 5 && notUp) Confidence.HIGH else Confidence.MEDIUM,
-                listOf("${i.signals.handshake} recent log lines mention a failed handshake or gateway search", "state ${i.state.name.lowercase()}"))
+            if (notUp || i.signals.handshake >= HANDSHAKE_MIN_WHEN_CONNECTED) {
+                val conf = when {
+                    i.signals.handshake >= 5 && notUp -> Confidence.HIGH
+                    i.signals.handshake >= 2 -> Confidence.MEDIUM
+                    else -> Confidence.LOW
+                }
+                out += Finding(DiagKind.HANDSHAKE_FAILING, conf,
+                    listOf("${i.signals.handshake} recent log lines mention a failed handshake or gateway search", "state ${i.state.name.lowercase()}"))
+            }
         }
 
         // Tunnel up but data stopped

@@ -83,7 +83,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
             Triple(
                 DiagnosticsHub.engineCpuTicks?.invoke() != null,
                 if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null,
-                LogSignals.scan(RingLogBuffer.tail(200))
+                LogSignals.scanRecent(RingLogBuffer.tail(200))
             )
         }
         engineAlive = snap.first
@@ -111,7 +111,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                 val ticks = DiagnosticsHub.engineCpuTicks?.invoke()
                 val st = if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyGetStats() }.getOrNull() else null
                 val up = if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null
-                listOf(ticks, st, up, LogSignals.scan(RingLogBuffer.tail(200)))
+                listOf(ticks, st, up, LogSignals.scanRecent(RingLogBuffer.tail(200)))
             }
             val ticks = snap[0] as Long?
             @Suppress("UNCHECKED_CAST")
@@ -242,7 +242,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                                 Triple(
                                     DiagnosticsHub.engineCpuTicks?.invoke() != null,
                                     if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null,
-                                    LogSignals.scan(RingLogBuffer.tail(200))
+                                    LogSignals.scanRecent(RingLogBuffer.tail(200))
                                 )
                             }
                             probes = result

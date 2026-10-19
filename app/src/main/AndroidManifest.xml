@@ -77,6 +77,18 @@
                 android:value="censorship-circumvention-local-proxy" />
         </service>
 
+        <!-- Quick Settings tile: switch the VPN on/off from the notification shade. -->
+        <service
+            android:name=".vpn.VpnTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_madshield"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".vpn.BootReceiver"
             android:exported="false"

@@ -18,6 +18,9 @@ class NetworkWatcher(private val context: Context) {
     private val changes = Channel<Unit>(Channel.CONFLATED)
     private var callback: ConnectivityManager.NetworkCallback? = null
 
+    /** Called (from a system thread) whenever a new network shows up; lets other loops cut a long sleep short. */
+    @Volatile var onChanged: (() -> Unit)? = null
+
     @Synchronized
     fun start() {
         if (callback != null) return
@@ -28,6 +31,7 @@ class NetworkWatcher(private val context: Context) {
                 if (network != current) {
                     current = network // a new network, or the link coming back after "no network"
                     changes.trySend(Unit)
+                    onChanged?.invoke()
                 }
             }
 

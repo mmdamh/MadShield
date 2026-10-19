@@ -254,4 +254,9 @@
     <string name="diag_cpu_unknown_b">In proxy mode the traffic rate cannot be measured, so real use cannot be told apart from idle burning. Compare with how much you are actually using the proxy.</string>
     <string name="diag_ok_t">No problem seen</string>
     <string name="diag_ok_b">Nothing in the measurements points to a fault. If something still fails, run the tests for a firmer answer.</string>
+    <string name="notif_disconnect">Disconnect</string>
+    <string name="sw_notif_speed">Speed in notification</string>
+    <string name="sw_notif_speed_sub">Shows upload and download speed in the status notification, like sing-box. Updates only while the screen is on, so it costs nothing in your pocket. VPN mode only.</string>
+    <string name="tile_off">Off</string>
+    <string name="tile_on">On</string>
 </resources>

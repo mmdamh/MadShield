@@ -164,7 +164,10 @@ data class EngineConfig(
 
     // Core resource profile (AETHER_PERF_PROFILE). Lighter than the core's own pick on big phones:
     // smaller buffers and a capped scan, which means less heat and battery use.
-    val perfProfile: String = CoreChoices.DEFAULT_PERF
+    val perfProfile: String = CoreChoices.DEFAULT_PERF,
+
+    /** Show upload/download speed in the status notification (VPN mode, only while the screen is on). */
+    val notifSpeed: Boolean = true
 ) {
     /** The chain that will really run (none for SMART). */
     val effectiveChain: PrivacyChain

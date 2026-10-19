@@ -39,6 +39,7 @@ class ProxyOnlyService : Service() {
     private lateinit var ruleWriter: RuleFileWriter
     private lateinit var settingsStore: SettingsStore
     private lateinit var netWatcher: NetworkWatcher
+    private lateinit var screen: ScreenWatcher
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +49,7 @@ class ProxyOnlyService : Service() {
         ruleWriter = RuleFileWriter(this)
         settingsStore = SettingsStore(this)
         netWatcher = NetworkWatcher(this)
+        screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -70,7 +72,9 @@ class ProxyOnlyService : Service() {
             return START_NOT_STICKY
         }
         userRequestedStop = false
+        netWatcher.onChanged = { screen.poke() }
         netWatcher.start()
+        screen.start()
         AetherController.setState(ConnectionState.Connecting)
         startForeground(NOTIF_ID, notification(getString(R.string.notif_connecting)))
 
@@ -127,6 +131,7 @@ class ProxyOnlyService : Service() {
                 when (wait) {
                     SocksProbe.Wait.READY -> {
                         AetherController.setActive(active)
+                        RingLogBuffer.append("[proxy] engine up")
                         AetherController.setState(
                             ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")
                         )
@@ -154,8 +159,14 @@ class ProxyOnlyService : Service() {
         var misses = 0
         var recoveries = 0
         var healthySince = 0L
+        val idleTracker = IdleTracker()
+        var idle = false
+        screen.drain()
         while (currentCoroutineContext().isActive) {
-            delay(PowerPolicy.cadence(isScreenOn()).healthMs)
+            // Long sleep while idle (screen off, quiet); a screen-on or network change cuts it short.
+            if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
+            // No byte counters in proxy-only mode, so only the screen decides.
+            idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), isScreenOn(), null)
             val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
@@ -170,6 +181,7 @@ class ProxyOnlyService : Service() {
                 continue
             }
             healthySince = 0L
+            idleTracker.wake(); idle = false
             if (++misses == 2) {
                 RingLogBuffer.append("[proxy] health check failed")
                 AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
@@ -194,6 +206,7 @@ class ProxyOnlyService : Service() {
             postNotification(getString(R.string.notif_connecting))
             if (restartEngine(config, secretEnv)) {
                 misses = 0
+                RingLogBuffer.append("[proxy] engine up")
                 AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
                 postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
             } else {
@@ -235,7 +248,9 @@ class ProxyOnlyService : Service() {
     override fun onDestroy() {
         job?.cancel()
         scope.cancel()
+        netWatcher.onChanged = null
         netWatcher.stop()
+        screen.stop()
         DiagnosticsHub.engineCpuTicks = null
         engine.stop()
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
@@ -245,18 +260,11 @@ class ProxyOnlyService : Service() {
         super.onDestroy()
     }
 
-    private fun notification(text: String): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+    private fun notification(text: String): Notification =
+        StatusNotification.build(
+            this, CHANNEL_ID, text = text, subText = null,
+            stopIntent = Intent(this, ProxyOnlyService::class.java).setAction(ACTION_STOP)
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
-            .setSmallIcon(R.drawable.ic_stat_madshield)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
-    }
 
     private fun postNotification(text: String) {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(text))

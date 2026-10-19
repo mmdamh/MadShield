@@ -11,7 +11,11 @@ import com.aethershield.app.R
 import com.aethershield.app.core.*
 import com.aethershield.app.util.RingLogBuffer
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import java.io.File
 
 /**
@@ -79,6 +83,10 @@ class AetherVpnService : VpnService() {
     private lateinit var ruleWriter: RuleFileWriter
     private lateinit var settingsStore: SettingsStore
     private lateinit var netWatcher: NetworkWatcher
+    private lateinit var screen: ScreenWatcher
+    private var speedJob: Job? = null
+    private var statusText: String = ""
+    @Volatile private var speedText: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -86,6 +94,7 @@ class AetherVpnService : VpnService() {
         ruleWriter = RuleFileWriter(this)
         settingsStore = SettingsStore(this)
         netWatcher = NetworkWatcher(this)
+        screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
         createNotificationChannel()
     }
@@ -97,11 +106,14 @@ class AetherVpnService : VpnService() {
             return START_NOT_STICKY
         }
         userRequestedStop = false
+        netWatcher.onChanged = { screen.poke() }
         netWatcher.start()
+        screen.start()
         // Must happen within seconds of startForegroundService(); do it here,
         // not later inside the coroutine.
         AetherController.setState(ConnectionState.Connecting)
         startForeground(NOTIF_ID, buildNotification(getString(R.string.notif_connecting)))
+        startSpeedLoop()
 
         healthJob?.cancel()
         connectJob?.cancel()
@@ -413,9 +425,18 @@ class AetherVpnService : VpnService() {
             var lastCpuTicks = 0L
             var firstFailAt = 0L
             var healthySince = 0L
+            val idleTracker = IdleTracker()
+            var idle = false
+            screen.drain()
             while (isActive) {
-                val cadence = PowerPolicy.cadence(isScreenOn())
-                delay(cadence.healthMs)
+                // Sleep; a screen-on or a network change cuts the sleep short and ends idle mode at once.
+                if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
+                val screenNow = isScreenOn()
+                // Traffic counters are only read with the screen off (that is when idle is decided).
+                val idleBytes = if (screenNow) null else runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                    ?.takeIf { it.size >= 4 }?.let { it[1] + it[3] }
+                idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), screenNow, idleBytes)
+                val cadence = PowerPolicy.cadence(screenNow, idle)
                 try {
                     val ok = engine.isRunning &&
                         SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
@@ -431,7 +452,10 @@ class AetherVpnService : VpnService() {
                         // CPU use of the engine (and Psiphon), about once a minute, so heat/battery
                         // complaints can be traced to a process instead of guessed.
                         val now = android.os.SystemClock.elapsedRealtime()
-                        if (now - lastCpuAt >= 60_000L) {
+                        // Screen off / idle: no CPU sampling at all, and the baseline is dropped so the next
+                        // sample (screen on again) measures a clean window.
+                        if (!cadence.sampleCpu) lastCpuAt = 0L
+                        else if (now - lastCpuAt >= 60_000L) {
                             val ticks = engine.cpuTicks()
                             if (ticks != null && lastCpuAt != 0L) {
                                 val pct = CpuSampler.percent(lastCpuTicks, ticks, now - lastCpuAt)
@@ -449,11 +473,13 @@ class AetherVpnService : VpnService() {
                             wasDown = false
                             if (tunFd == null) establishTun(config)
                             if (bridgeTunToEngine(config)) markConnected(config)
+                            RingLogBuffer.append("[vpn] tunnel recovered")
                         }
                         continue
                     }
                     // One failed probe is a blip (the core may be swapping tunnels); two in a row is an outage.
                     healthySince = 0L
+                    idleTracker.wake(); idle = false // a failed probe: back to normal checking at once
                     if (++consecutiveFailures == 1) firstFailAt = android.os.SystemClock.elapsedRealtime()
                     if (consecutiveFailures < 2) continue
 
@@ -516,8 +542,11 @@ class AetherVpnService : VpnService() {
         // Cancel first so an in-flight connect() cannot start an engine after we stop it.
         healthJob?.cancel()
         connectJob?.cancel()
+        speedJob?.cancel()
         scope.cancel()
+        netWatcher.onChanged = null
         netWatcher.stop()
+        screen.stop()
         DiagnosticsHub.engineCpuTicks = null
         stopBridge()
         engine.stop()
@@ -545,6 +574,7 @@ class AetherVpnService : VpnService() {
      * be left on "Disconnecting". Runs off the main thread so a slow step cannot freeze the app.
      */
     private fun teardownAndStop() {
+        speedJob?.cancel()
         healthJob?.cancel()
         connectJob?.cancel()
         Thread {
@@ -574,20 +604,68 @@ class AetherVpnService : VpnService() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+        statusText = text
+        return buildNotification()
+    }
+
+    private fun buildNotification(): Notification {
+        val speed = speedText
+        return StatusNotification.build(
+            this, CHANNEL_ID,
+            text = speed ?: statusText,
+            subText = if (speed != null) statusText else null,
+            stopIntent = Intent(this, AetherVpnService::class.java).setAction(ACTION_DISCONNECT)
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
-            .setSmallIcon(R.drawable.ic_stat_madshield)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
     }
 
     private fun updateNotification(text: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(text))
+        statusText = text
+        if (text != getString(R.string.state_connected)) speedText = null
+        postNotification()
+    }
+
+    private fun postNotification() {
+        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
+    }
+
+    /**
+     * sing-box style speed line in the notification. Runs ONLY while connected, the screen is on and the
+     * user wants it; with the screen off the job is simply suspended (no timer, no wake-up).
+     */
+    private fun startSpeedLoop() {
+        speedJob?.cancel()
+        speedJob = scope.launch {
+            val wantSpeed = settingsStore.configFlow.map { it.notifSpeed }.distinctUntilChanged()
+            combine(screen.screenOn, wantSpeed, AetherController.state) { on, want, st ->
+                on && want && st is ConnectionState.Connected
+            }.distinctUntilChanged().collectLatest { active ->
+                if (!active) {
+                    if (speedText != null) { speedText = null; postNotification() }
+                    return@collectLatest
+                }
+                var prev: LongArray? = null
+                var prevAt = 0L
+                try {
+                    while (true) {
+                        val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (s != null && s.size >= 4) {
+                            val p = prev
+                            if (p != null) {
+                                speedText = NotificationText.speedLine(
+                                    upBps = NotificationText.bps(p[1], s[1], now - prevAt),
+                                    downBps = NotificationText.bps(p[3], s[3], now - prevAt)
+                                )
+                                postNotification()
+                            }
+                            prev = s; prevAt = now
+                        }
+                        delay(2_000)
+                    }
+                } finally {
+                    speedText = null
+                }
+            }
+        }
     }
 }
