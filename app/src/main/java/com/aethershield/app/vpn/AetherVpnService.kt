@@ -81,6 +81,9 @@ class AetherVpnService : VpnService() {
     private var healthJob: Job? = null
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
+
+    /** The last failed start was the privacy chain (Psiphon/Tor), not the WARP tunnel: retry slowly, see [ReconnectPolicy]. */
+    @Volatile private var lastFailureWasChain = false
     private lateinit var settingsStore: SettingsStore
     private lateinit var netWatcher: NetworkWatcher
     private lateinit var screen: ScreenWatcher
@@ -182,6 +185,9 @@ class AetherVpnService : VpnService() {
 
         if (attempt is Attempt.Failed) {
             RingLogBuffer.append("[vpn] engine did not become healthy: ${attempt.reason}")
+            lastFailureWasChain = ConnectPolicy.isChainFailure(attempt.reason)
+            // Nothing is bridged anyway; do not leave the WireGuard tunnel and a blocked Psiphon spinning through the wait.
+            if (lastFailureWasChain) engine.stop()
             if (!baseConfig.killSwitchEnabled) {
                 failStartup(attempt.reason)
                 return
@@ -504,7 +510,7 @@ class AetherVpnService : VpnService() {
                         recoveries++
                         // Increasing pauses (1, 2, 4, 8, 16, 30 s), then a slow waiting phase that goes on
                         // for as long as it takes but never spins. A network change ends the pause at once.
-                        val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0))
+                        val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0), lastFailureWasChain)
                         val waiting = ReconnectPolicy.phase(recoveries) == ReconnectPolicy.Phase.WAITING
                         RingLogBuffer.append("[vpn] ${if (waiting) "waiting" else "retry"} #$recoveries in ${pause / 1000}s (or when the network changes)")
                         if (waiting) {
@@ -521,8 +527,12 @@ class AetherVpnService : VpnService() {
                         AetherController.setState(ConnectionState.Connecting)
                         updateNotification(getString(R.string.notif_connecting))
                         when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(config))) {
-                            is Attempt.Ready -> consecutiveFailures = 0 // next healthy probe re-attaches the bridge
-                            is Attempt.Failed -> AetherController.setState(ConnectionState.Error(r.reason))
+                            is Attempt.Ready -> { consecutiveFailures = 0; lastFailureWasChain = false } // next healthy probe re-attaches the bridge
+                            is Attempt.Failed -> {
+                                AetherController.setState(ConnectionState.Error(r.reason))
+                                lastFailureWasChain = ConnectPolicy.isChainFailure(r.reason)
+                                if (lastFailureWasChain) engine.stop()
+                            }
                         }
                     }
                 } catch (c: CancellationException) {

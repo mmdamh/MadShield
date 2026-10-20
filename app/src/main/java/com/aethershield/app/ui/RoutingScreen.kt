@@ -12,6 +12,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -20,6 +22,8 @@ import com.aethershield.app.R
 import com.aethershield.app.core.AppSelectionMode
 import com.aethershield.app.core.ConnectionMode
 import com.aethershield.app.core.EngineConfig
+import com.aethershield.app.core.RuleLists
+import com.aethershield.app.core.RuleTarget
 import com.aethershield.app.ui.components.HelperText
 import com.aethershield.app.ui.components.NavClearance
 import com.aethershield.app.ui.components.NavRow
@@ -35,6 +39,10 @@ fun RoutingScreen(
     onOpenApps: () -> Unit,
     contentPadding: PaddingValues
 ) {
+    val ctx = LocalContext.current
+    val sources by RuleLists.get(ctx).sources.collectAsState()
+    val importedDirect = sources.filter { it.enabled && it.target == RuleTarget.DIRECT }.sumOf { it.count }
+    val importedBlock = sources.filter { it.enabled && it.target == RuleTarget.BLOCK }.sumOf { it.count }
     Column(
         Modifier
             .fillMaxSize()
@@ -47,7 +55,7 @@ fun RoutingScreen(
         NavRow(
             Icons.Rounded.Language,
             stringResource(R.string.routing_rules_title),
-            stringResource(R.string.routing_rules_sub, config.directRules.size, config.blockRules.size),
+            stringResource(R.string.routing_rules_sub, config.directRules.size + importedDirect, config.blockRules.size + importedBlock),
             onOpenBypass
         )
         NavRow(
@@ -65,7 +73,6 @@ fun RoutingScreen(
         if (config.mode == ConnectionMode.PROXY_ONLY) {
             HelperText(stringResource(R.string.routing_proxy_note))
         }
-        val ctx = LocalContext.current
         SectionCard(stringResource(R.string.sec_leak)) {
             SwitchRow(
                 stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),

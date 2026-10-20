@@ -81,6 +81,37 @@ fun main() {
     check("bps backwards counter", NotificationText.bps(100, 50, 1_000) == 0L)
     check("bps zero time", NotificationText.bps(0, 50, 0) == 0L)
 
+    // ---- RuleParser: hosts, AdGuard/ABP, domain lists, engine syntax
+    fun rules(vararg lines: String): List<String> { val o = ArrayList<String>(); lines.forEach { l -> RuleParser.parse(l) { o.add(it) } }; return o }
+    check("hosts line", rules("0.0.0.0 ads.example.com") == listOf("ads.example.com"))
+    check("hosts 127.0.0.1 + comment", rules("127.0.0.1 Track.Example.COM # note") == listOf("track.example.com"))
+    check("hosts several names", rules("0.0.0.0 a.com b.net") == listOf("a.com", "b.net"))
+    check("hosts localhost skipped", rules("127.0.0.1 localhost", "::1 ip6-localhost", "0.0.0.0 0.0.0.0").isEmpty())
+    check("hosts with other ip is not a block", rules("192.168.1.5 nas.home").isEmpty())
+    check("abp domain rule", rules("||ads.example.com^") == listOf("ads.example.com"))
+    check("abp important", rules("||ads.example.com^\$important") == listOf("ads.example.com"))
+    check("abp third-party option skipped", rules("||ads.example.com^\$third-party").isEmpty())
+    check("abp path skipped", rules("||example.com/ads/banner").isEmpty())
+    check("abp exception skipped", rules("@@||example.com^").isEmpty())
+    check("cosmetic filter skipped", rules("example.com##.ad-banner", "##.ad").isEmpty())
+    check("comments and headers skipped", rules("# c", "! c", "[Adblock Plus 2.0]", "", "   ").isEmpty())
+    check("plain domain + wildcard", rules("Example.org", "*.cdn.example.org.") == listOf("example.org", "cdn.example.org"))
+    check("single label rejected", rules("intranet").isEmpty())
+    check("junk rejected", rules("exa mple", "http://example.com/x", "-bad.com", "a..com").isEmpty())
+    check("idn to punycode", rules("bücher.de") == listOf("xn--bcher-kva.de"))
+    check("engine syntax passes through", rules("full:Bank.Example.IR", "keyword:Sheba", "10.0.0.0/8", "private", "port:443", "regexp:^a.*#b") ==
+        listOf("full:bank.example.ir", "keyword:sheba", "10.0.0.0/8", "private", "port:443", "regexp:^a.*#b"))
+    check("collapse drops covered subdomains", RuleParser.collapse(listOf("a.b.com", "b.com", "x.y.com", "full:a.b.com")) == listOf("b.com", "x.y.com", "full:a.b.com"))
+    check("collapse keeps unrelated suffix", RuleParser.collapse(listOf("notb.com", "b.com")) == listOf("notb.com", "b.com"))
+    check("manual keeps unknown lines", RuleParser.normalizeManual("0.0.0.0 ads.com\nintranet\n# c\nads.com") == listOf("ads.com", "intranet"))
+
+    // ---- ReconnectPolicy: slow retries for a blocked chain; flapping no longer resets the counter
+    check("normal first retry 1 s", ReconnectPolicy.delayMs(1, true) == 1_000L)
+    check("chain failure first retry 20 s", ReconnectPolicy.delayMs(1, true, 0.0, true) == 20_000L)
+    check("chain failure third retry 3 min", ReconnectPolicy.delayMs(3, true, 0.0, true) == 180_000L)
+    check("chain failure then waiting phase", ReconnectPolicy.delayMs(4, false, 0.0, true) == ReconnectPolicy.WAIT_SCREEN_OFF_MS)
+    check("stable window is 10 min", ReconnectPolicy.STABLE_AFTER_MS == 600_000L)
+
     println(if (fails == 0) "ALL PASSED" else "$fails FAILED")
     if (fails > 0) kotlin.system.exitProcess(1)
 }
