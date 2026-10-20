@@ -122,10 +122,35 @@ fun BypassListScreen(config: EngineConfig, onUpdate: ((EngineConfig) -> EngineCo
                 ) { Icon(Icons.Rounded.Add, stringResource(R.string.rules_url_add)) }
             }
             HelperText(stringResource(R.string.rules_url_help))
-            if (tab == 1) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { url = PRESET_STEVENBLACK }) { Text("StevenBlack hosts") }
-                    TextButton(onClick = { url = PRESET_ADGUARD }) { Text("AdGuard DNS filter") }
+            // ---- recommended lists
+            val recommended = RECOMMENDED.filter { it.target == target }
+            fun isAdded(r: Recommended) = sources.any { it.url.equals(r.url, ignoreCase = true) && it.target == target }
+            val toAdd = recommended.filter { it.default && !isAdded(it) }
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    stringResource(R.string.rules_recommended_title), style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { lists.addMany(toAdd.map { it.url to it.name }, target, tunnelPort()) },
+                    enabled = toAdd.isNotEmpty() && !status.busy
+                ) { Text(stringResource(R.string.rules_add_all)) }
+            }
+            recommended.forEach { r ->
+                val added = isAdded(r)
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(r.name, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+                        Text(
+                            stringResource(r.descRes), style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    TextButton(
+                        onClick = { lists.addUrl(r.url, target, tunnelPort(), r.name) },
+                        enabled = !added && !status.busy
+                    ) { Text(stringResource(if (added) R.string.rules_added else R.string.rules_add)) }
                 }
             }
             if (status.busy) {
@@ -170,8 +195,52 @@ fun BypassListScreen(config: EngineConfig, onUpdate: ((EngineConfig) -> EngineCo
     }
 }
 
-private const val PRESET_STEVENBLACK = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
-private const val PRESET_ADGUARD = "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
+private class Recommended(
+    val url: String,
+    val name: String,
+    val descRes: Int,
+    val target: RuleTarget,
+    /** Part of "Add all". The AdGuard DNS filter overlaps heavily with Hagezi and 1Hosts, so it is opt-in. */
+    val default: Boolean = true
+)
+
+/**
+ * Built-in list of known-good links. Nothing is downloaded until the user taps Add (or Add all): a list is
+ * several MB, and fetching it unasked would cost data and battery.
+ *  - Chocolate4U .dat files are v2ray geoip/geosite databases; only their Iran entries are used (see GeoDat).
+ *  - Hagezi Pro (adblock format) and 1Hosts Lite (plain domains) are the general ad/tracker/malware lists.
+ *  - The two AdGuard annoyance lists are mostly page-level rules; only their domain-based part can work here.
+ */
+private val RECOMMENDED = listOf(
+    Recommended(
+        "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geoip.dat",
+        "Iran IPs (Chocolate4U)", R.string.rec_ir_ip, RuleTarget.DIRECT
+    ),
+    Recommended(
+        "https://raw.githubusercontent.com/Chocolate4U/Iran-v2ray-rules/release/geosite.dat",
+        "Iran sites (Chocolate4U)", R.string.rec_ir_sites, RuleTarget.DIRECT
+    ),
+    Recommended(
+        "https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.txt",
+        "Hagezi Pro", R.string.rec_hagezi, RuleTarget.BLOCK
+    ),
+    Recommended(
+        "https://raw.githubusercontent.com/badmojr/1Hosts/master/Lite/domains.txt",
+        "1Hosts Lite", R.string.rec_1hosts, RuleTarget.BLOCK
+    ),
+    Recommended(
+        "https://raw.githubusercontent.com/AdguardTeam/FiltersRegistry/master/filters/filter_19_Annoyances_Popups/filter.txt",
+        "AdGuard Popups", R.string.rec_popups, RuleTarget.BLOCK
+    ),
+    Recommended(
+        "https://filters.adtidy.org/android/filters/18_optimized.txt",
+        "AdGuard Cookie Notices", R.string.rec_cookies, RuleTarget.BLOCK
+    ),
+    Recommended(
+        "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+        "AdGuard DNS filter", R.string.rec_adguard_dns, RuleTarget.BLOCK, default = false
+    )
+)
 
 @Composable
 private fun SourceRow(

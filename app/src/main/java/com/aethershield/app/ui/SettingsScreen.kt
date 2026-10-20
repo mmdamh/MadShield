@@ -64,37 +64,6 @@ fun SettingsScreen(
             }
         }
 
-        // ---------------------------------------------------------------- chain
-        SectionCard(stringResource(R.string.sec_chain)) {
-            if (config.protocol == Protocol.SMART) {
-                HelperText(stringResource(R.string.chain_needs_protocol))
-            } else {
-                ChoiceChips(
-                    listOf(
-                        stringResource(R.string.chain_none) to PrivacyChain.NONE,
-                        stringResource(R.string.chain_psiphon) to PrivacyChain.PSIPHON,
-                        stringResource(R.string.chain_tor) to PrivacyChain.TOR
-                    ),
-                    config.privacyChain,
-                    onSelect = { v -> onUpdate { it.copy(privacyChain = v) } }
-                )
-                when (config.privacyChain) {
-                    PrivacyChain.NONE -> HelperText(stringResource(R.string.chain_help))
-                    PrivacyChain.PSIPHON -> {
-                        SubLabel(stringResource(R.string.lbl_psiphon_region))
-                        ChoiceChips(
-                            listOf(stringResource(R.string.region_auto) to (null as String?)) +
-                                Chain.REGIONS.map { regionLabel(it) to (it as String?) },
-                            Chain.normalizeRegion(config.psiphonRegion),
-                            onSelect = { v -> onUpdate { it.copy(psiphonRegion = v) } }
-                        )
-                        HelperText(stringResource(R.string.chain_psiphon_help))
-                    }
-                    PrivacyChain.TOR -> HelperText(stringResource(R.string.chain_tor_help))
-                }
-            }
-        }
-
         // ---------------------------------------------------------------- tuning
         SectionCard(stringResource(R.string.sec_engine)) {
             SubLabel(stringResource(R.string.lbl_scan))
@@ -272,10 +241,4 @@ private fun SubLabel(text: String) {
         text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
     )
-}
-
-/** "DE" -> flag emoji + code, so the chips are recognisable at a glance. */
-private fun regionLabel(code: String): String {
-    val flag = String(code.map { Character.toChars(0x1F1E6 + (it - 'A')) }.flatMap { it.asList() }.toCharArray())
-    return "$flag $code"
 }

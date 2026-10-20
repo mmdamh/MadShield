@@ -57,8 +57,12 @@ class RuleLists private constructor(private val context: Context) {
     companion object {
         /** Per-download cap: keeps a wrong link from filling storage or the heap. */
         const val MAX_BYTES = 40L * 1024 * 1024
-        /** All imported rules of one kind together. The engine matches every connection against them. */
-        const val MAX_RULES_PER_TARGET = 300_000
+        /** One imported list (after cleaning). Hagezi Pro is ~190k, 1Hosts Lite ~210k. */
+        const val MAX_RULES_PER_SOURCE = 300_000
+        /** What RuleFileWriter hands the engine per tab after removing duplicates between lists: the engine matches every connection against them. */
+        const val MAX_RULES_WRITTEN = 500_000
+        /** geoip.dat / geosite.dat are a few MB; refuse anything much bigger. */
+        const val MAX_GEO_BYTES = 25L * 1024 * 1024
 
         @Volatile private var instance: RuleLists? = null
         fun get(context: Context): RuleLists =
@@ -97,9 +101,11 @@ class RuleLists private constructor(private val context: Context) {
     fun importFile(uri: Uri, target: RuleTarget) {
         launchJob {
             val name = queryName(uri) ?: "list"
+            val geo = GeoDat.isGeoFile(name)
+            if (geo && target != RuleTarget.DIRECT) throw IOException(context.getString(R.string.rules_geo_direct_only))
             val stream = context.contentResolver.openInputStream(uri) ?: throw IOException("cannot open file")
             val id = UUID.randomUUID().toString().substring(0, 8)
-            val result = stream.use { ingest(it, id, target) }
+            val result = stream.use { ingest(it, id, target, geo) }
             commit(RuleSource(id, name, null, target, result.count, System.currentTimeMillis(), true, result.dropped))
             done(name, result.count)
         }
@@ -110,19 +116,53 @@ class RuleLists private constructor(private val context: Context) {
      * is kept out of the VPN, and many list hosts are unreachable from a filtered network, so the download
      * goes through the tunnel first and falls back to the plain connection.
      */
-    fun addUrl(url: String, target: RuleTarget, viaSocksPort: Int?) {
+    fun addUrl(url: String, target: RuleTarget, viaSocksPort: Int?, displayName: String? = null) {
         val clean = normalizeUrl(url)
         if (!isHttps(clean)) { fail(context.getString(R.string.rules_https_only)); return }
+        if (GeoDat.isGeoFile(clean) && target != RuleTarget.DIRECT) { fail(context.getString(R.string.rules_geo_direct_only)); return }
         if (_sources.value.any { it.url.equals(clean, ignoreCase = true) && it.target == target }) {
             fail(context.getString(R.string.rules_already_added)); return
         }
         launchJob {
-            val id = UUID.randomUUID().toString().substring(0, 8)
-            val name = runCatching { URL(clean).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: clean
-            val result = fetch(clean, viaSocksPort) { ingest(it, id, target) }
-            commit(RuleSource(id, name, clean, target, result.count, System.currentTimeMillis(), true, result.dropped))
-            done(name, result.count)
+            val src = download(clean, target, viaSocksPort, displayName)
+            done(src.name, src.count)
         }
+    }
+
+    /**
+     * Adds several links one after another (the "Add all recommended" button). One failing link does not stop
+     * the others; the result line says how many worked.
+     */
+    fun addMany(items: List<Pair<String, String>>, target: RuleTarget, viaSocksPort: Int?) {
+        val todo = items.filter { (url, _) ->
+            _sources.value.none { it.url.equals(url, ignoreCase = true) && it.target == target }
+        }
+        if (todo.isEmpty()) { fail(context.getString(R.string.rules_already_added)); return }
+        launchJob {
+            var ok = 0
+            var failed = 0
+            for ((url, name) in todo) {
+                try {
+                    _status.value = RuleStatus(true, context.getString(R.string.rules_working_named, name), false)
+                    download(url, target, viaSocksPort, name)
+                    ok++
+                } catch (t: Throwable) {
+                    failed++
+                }
+            }
+            _status.value = RuleStatus(false, context.getString(R.string.rules_batch_done, ok, failed), failed > 0)
+        }
+    }
+
+    /** Downloads, cleans and stores one list; must run inside [launchJob]. */
+    private fun download(url: String, target: RuleTarget, viaSocksPort: Int?, displayName: String?): RuleSource {
+        val id = UUID.randomUUID().toString().substring(0, 8)
+        val geo = GeoDat.isGeoFile(url)
+        val name = displayName ?: runCatching { URL(url).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: url
+        val result = fetch(url, viaSocksPort) { ingest(it, id, target, geo) }
+        val src = RuleSource(id, name, url, target, result.count, System.currentTimeMillis(), true, result.dropped)
+        commit(src)
+        return src
     }
 
     /** Downloads a link-based list again and replaces its rules. */
@@ -130,7 +170,7 @@ class RuleLists private constructor(private val context: Context) {
         val src = _sources.value.firstOrNull { it.id == id } ?: return
         val url = src.url ?: return
         launchJob {
-            val result = fetch(url, viaSocksPort) { ingest(it, id, src.target) }
+            val result = fetch(url, viaSocksPort) { ingest(it, id, src.target, GeoDat.isGeoFile(url)) }
             commit(src.copy(count = result.count, updatedAt = System.currentTimeMillis(), dropped = result.dropped))
             done(src.name, result.count)
         }
@@ -183,21 +223,28 @@ class RuleLists private constructor(private val context: Context) {
      * Reads the list line by line (never the whole text at once), cleans it and writes rules/<id>.txt through a
      * temp file, so a failed or interrupted import leaves the previous version of the list untouched.
      */
-    private fun ingest(input: InputStream, id: String, target: RuleTarget): Ingested {
-        val limited = LimitedInputStream(input, MAX_BYTES)
+    private fun ingest(input: InputStream, id: String, target: RuleTarget, geo: Boolean): Ingested {
         val seen = LinkedHashSet<String>()
-        val otherLists = _sources.value.filter { it.enabled && it.target == target && it.id != id }.sumOf { it.count }
-        val room = (MAX_RULES_PER_TARGET - otherLists).coerceAtLeast(0)
         var overflow = 0
-        BufferedReader(InputStreamReader(limited, Charsets.UTF_8), 64 * 1024).use { r ->
-            while (true) {
-                val line = r.readLine() ?: break
-                RuleParser.parse(line) { rule ->
-                    if (seen.size < room) seen.add(rule) else overflow++
+        if (geo) {
+            // v2ray geoip.dat / geosite.dat: a binary protobuf. Only the Iran entries are taken.
+            val bytes = LimitedInputStream(input, MAX_GEO_BYTES).readBytes()
+            for (r in GeoDat.extract(bytes, GeoDat.IRAN_CODES)) {
+                if (seen.size < MAX_RULES_PER_SOURCE) seen.add(r) else overflow++
+            }
+            if (seen.isEmpty()) throw IOException(context.getString(R.string.rules_geo_none))
+        } else {
+            val limited = LimitedInputStream(input, MAX_BYTES)
+            BufferedReader(InputStreamReader(limited, Charsets.UTF_8), 64 * 1024).use { r ->
+                while (true) {
+                    val line = r.readLine() ?: break
+                    RuleParser.parse(line) { rule ->
+                        if (seen.size < MAX_RULES_PER_SOURCE) seen.add(rule) else overflow++
+                    }
                 }
             }
+            if (seen.isEmpty()) throw IOException(context.getString(R.string.rules_nothing_found))
         }
-        if (seen.isEmpty()) throw IOException(context.getString(R.string.rules_nothing_found))
         val rules = RuleParser.collapse(seen)
         val tmp = File(dir, "$id.tmp")
         tmp.bufferedWriter().use { w -> rules.forEach { w.write(it); w.write("\n") } }

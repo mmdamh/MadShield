@@ -8,7 +8,7 @@ import java.util.Locale
  *
  * Understood input:
  *  - hosts files:          0.0.0.0 ads.example.com   (127.0.0.1, ::, ::1 too; several names per line)
- *  - AdGuard / ABP rules:  ||ads.example.com^        (only plain domain rules; see [abpDomain])
+ *  - AdGuard / ABP rules:  ||ads.example.com^        (plain domain rules, a few safe options; see [abpDomain])
  *  - plain domain lists:   ads.example.com, *.ads.example.com
  *  - engine syntax:        full:, exact:, keyword:, regexp:, regex:, ip:, cidr:, port:, bare CIDR, "private"
  *
@@ -102,9 +102,17 @@ object RuleParser {
     }
 
     /**
-     * "||example.com^" and "||example.com^$important" are domain blocks. Anything with a path, wildcard,
-     * port or another option ("$third-party", "$domain=...") is more specific than a domain, so it is not
-     * turned into a (much broader) domain rule.
+     * Modifiers after "$" that still describe "this whole domain": "$important", "$third-party" (a tracker domain is
+     * third-party everywhere), "$popup" and "$document" (page-level blocks of an ad domain), "$all". Everything
+     * else is narrower than a domain ("$script", "$image", "$domain=...", "$redirect=...") and is skipped, because
+     * turning it into a domain rule would block far more than the list intends.
+     */
+    private val ABP_DOMAIN_OPTIONS = setOf("important", "third-party", "3p", "all", "popup", "document", "doc")
+
+    /**
+     * "||example.com^" with optional "$important,third-party,popup,..." (see [ABP_DOMAIN_OPTIONS]) is a domain
+     * block. A path, wildcard, port or any other option makes the rule more specific than a domain, so it is
+     * not turned into a (much broader) domain rule.
      */
     private fun abpDomain(body: String): String? {
         var end = body.length
@@ -112,9 +120,20 @@ object RuleParser {
             val ch = body[i]
             if (ch == '^' || ch == '/' || ch == '$' || ch == '*' || ch == '|' || ch == ':' || ch == '?') { end = i; break }
         }
-        val rest = body.substring(end)
-        val ok = rest.isEmpty() || rest == "^" || rest == "^|" || rest == "^\$important" || rest == "\$important"
-        if (!ok) return null
+        var rest = body.substring(end)
+        var options: String? = null
+        val dollar = rest.indexOf('$')
+        if (dollar >= 0) {
+            options = rest.substring(dollar + 1)
+            rest = rest.substring(0, dollar)
+        }
+        if (!(rest.isEmpty() || rest == "^" || rest == "^|")) return null
+        if (options != null) {
+            if (options.isEmpty()) return null
+            for (o in options.split(',')) {
+                if (o.trim().lowercase(Locale.ROOT) !in ABP_DOMAIN_OPTIONS) return null
+            }
+        }
         return domain(body.substring(0, end))
     }
 

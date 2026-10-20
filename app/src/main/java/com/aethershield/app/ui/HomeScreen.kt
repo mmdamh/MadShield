@@ -61,6 +61,7 @@ fun HomeScreen(
     config: EngineConfig,
     connectionState: ConnectionState,
     onSetMode: (ConnectionMode) -> Unit,
+    onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenLog: () -> Unit,
@@ -96,6 +97,8 @@ fun HomeScreen(
                 onSelect = onSetMode
             )
         }
+        Spacer(Modifier.height(12.dp))
+        ProfileCard(config, connectionState, onUpdate)
         Spacer(Modifier.height(12.dp))
 
         if (connectionState is ConnectionState.Error) {

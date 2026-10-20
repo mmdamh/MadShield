@@ -1,6 +1,7 @@
 package com.aethershield.app.core
 
 import android.content.Context
+import com.aethershield.app.util.RingLogBuffer
 import java.io.BufferedWriter
 import java.io.File
 
@@ -48,11 +49,26 @@ class RuleFileWriter(private val context: Context) {
         return f
     }
 
+    /**
+     * Typed rules first, then each imported list in turn. Exact duplicates between lists (Hagezi, 1Hosts and
+     * AdGuard share most of their entries) are written once, and a tab never gets more than
+     * [RuleLists.MAX_RULES_WRITTEN] rules, so memory and matching time in the engine stay bounded.
+     */
     private fun writeSection(w: BufferedWriter, header: String, typed: List<String>, imported: List<RuleSource>, lists: RuleLists) {
         w.write(header); w.newLine()
+        val seen = RuleDedupe()
+        var written = 0
+        var duplicates = 0
+        var overLimit = 0
+        fun emit(line: String) {
+            if (written >= RuleLists.MAX_RULES_WRITTEN) { overLimit++; return }
+            if (!seen.add(line)) { duplicates++; return }
+            w.write(line); w.newLine()
+            written++
+        }
         for (r in typed) {
             val t = r.trim()
-            if (t.isNotEmpty()) { w.write(t); w.newLine() }
+            if (t.isNotEmpty()) emit(t)
         }
         for (src in imported) {
             val file = lists.fileOf(src)
@@ -60,15 +76,16 @@ class RuleFileWriter(private val context: Context) {
             file.bufferedReader().use { r ->
                 while (true) {
                     val line = r.readLine() ?: break
-                    if (line.isNotEmpty()) { w.write(line); w.newLine() }
+                    if (line.isNotEmpty()) emit(line)
                 }
             }
         }
+        RingLogBuffer.append("[rules] $header $written written, $duplicates duplicates removed, $overLimit over the limit")
     }
 
     private fun signature(direct: List<String>, block: List<String>, sources: List<RuleSource>): String =
         buildString {
-            append("v2|").append(direct.size).append(':').append(direct.hashCode())
+            append("v3|").append(direct.size).append(':').append(direct.hashCode())
             append('|').append(block.size).append(':').append(block.hashCode())
             sources.sortedBy { it.id }.forEach {
                 append('|').append(it.id).append(':').append(it.target.name).append(':').append(it.count).append(':').append(it.updatedAt)

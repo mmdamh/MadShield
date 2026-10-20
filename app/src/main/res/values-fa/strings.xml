@@ -138,7 +138,7 @@
     <string name="rules_manual_title">قوانین دستی</string>
     <string name="rules_url_add">افزودن لینک</string>
     <string name="rules_url_help">لینک لیست (فقط https). یک بار دانلود می‌شود و برای به‌روزرسانی باید دکمه تازه‌سازی را بزنید. هیچ چیز در پس‌زمینه به‌روز نمی‌شود.</string>
-    <string name="rules_size_note">لیست‌های بزرگ موقع وارد کردن پاک‌سازی می‌شوند: کامنت، تکراری و دامنه‌هایی که دامنه والدشان در لیست هست حذف می‌شوند. حداکثر ۳۰۰٬۰۰۰ قانون در هر زبانه؛ لیست بیشتر یعنی حافظه بیشتر و شروع کندتر.</string>
+    <string name="rules_size_note">لیست‌های بزرگ موقع وارد کردن پاک‌سازی می‌شوند: کامنت، تکراری و دامنه‌هایی که دامنه والدشان در لیست هست حذف می‌شوند. محدودیت: ۳۰۰٬۰۰۰ قانون برای هر لیست و ۵۰۰٬۰۰۰ برای هر تب (تکراری‌های بین لیست‌ها یک بار حساب می‌شوند). قانون بیشتر یعنی حافظه بیشتر و شروع کندتر.</string>
     <string name="rules_source_sub">%1$d قانون · %2$s</string>
     <string name="rules_source_dropped">%1$d قانون به‌خاطر محدودیت حجم کنار گذاشته شد</string>
     <string name="rules_source_refresh">تازه‌سازی</string>
@@ -276,4 +276,28 @@
     <string name="sw_notif_speed_sub">سرعت آپلود و دانلود را در نوتیفیکیشن نشان می‌دهد، مثل sing-box. فقط وقتی صفحه روشن است به‌روز می‌شود، پس در جیب هیچ هزینه‌ای ندارد. فقط حالت VPN.</string>
     <string name="tile_off">خاموش</string>
     <string name="tile_on">روشن</string>
+    <string name="sec_profile">پروفایل</string>
+    <string name="profile_direct">مستقیم</string>
+    <string name="profile_direct_sub">فقط WARP</string>
+    <string name="profile_psiphon">سایفون</string>
+    <string name="profile_psiphon_sub">انتخاب کشور</string>
+    <string name="profile_tor">تور</string>
+    <string name="profile_tor_sub">کند، خصوصی</string>
+    <string name="profile_protocol_note">سایفون و تور به پروتکل ثابت نیاز دارند. اگر Smart انتخاب شده بود، به MASQUE (HTTP/2) تغییر می‌کند؛ از تنظیمات می‌توانید پروتکل دیگری بگذارید.</string>
+    <string name="profile_apply_next">پروفایل جدید در اتصال بعدی اعمال می‌شود.</string>
+    <string name="rules_recommended_title">لیست‌های پیشنهادی</string>
+    <string name="rules_add_all">افزودن همه</string>
+    <string name="rules_add">افزودن</string>
+    <string name="rules_added">اضافه شد</string>
+    <string name="rec_ir_ip">محدوده آی‌پی‌های ایران (geoip.dat). فقط ورودی‌های ایران خوانده می‌شود.</string>
+    <string name="rec_ir_sites">سایت‌های ایرانی (geosite.dat). فقط ورودی‌های ایران خوانده می‌شود.</string>
+    <string name="rec_hagezi">تبلیغات، ردیاب و بدافزار. متعادل و با هشدار اشتباه کم.</string>
+    <string name="rec_1hosts">تبلیغات، ردیاب و بدافزار. لیست بزرگ.</string>
+    <string name="rec_popups">قوانین پاپ‌آپ AdGuard. بیشترشان در سطح صفحه‌اند، پس اینجا فقط چند دامنه اعمال می‌شود.</string>
+    <string name="rec_cookies">قوانین بنر کوکی AdGuard. بیشترشان در سطح صفحه‌اند، پس اینجا فقط چند دامنه اعمال می‌شود.</string>
+    <string name="rec_adguard_dns">فیلتر DNS ادگارد. با لیست‌های بالا هم‌پوشانی دارد، برای همین در «افزودن همه» نیست.</string>
+    <string name="rules_geo_direct_only">فایل‌های geo با پسوند dat فقط در تب مستقیم قابل‌استفاده‌اند.</string>
+    <string name="rules_geo_none">در این فایل dat ورودی ایران پیدا نشد.</string>
+    <string name="rules_working_named">در حال دانلود %1$s…</string>
+    <string name="rules_batch_done">%1$d لیست اضافه شد، %2$d ناموفق</string>
 </resources>

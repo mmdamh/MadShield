@@ -138,7 +138,7 @@
     <string name="rules_manual_title">Typed rules</string>
     <string name="rules_url_add">Add link</string>
     <string name="rules_url_help">Link to a list (https only). It is downloaded once; tap refresh to update it later. Nothing updates in the background.</string>
-    <string name="rules_size_note">Big lists are cleaned on import: comments, duplicates and entries already covered by a parent domain are dropped. At most 300,000 rules per tab; more lists means more memory and a slower start.</string>
+    <string name="rules_size_note">Big lists are cleaned on import: comments, duplicates and entries already covered by a parent domain are dropped. Limits: 300,000 rules per list and 500,000 per tab (duplicates between lists count once). More rules mean more memory and a slower start.</string>
     <string name="rules_source_sub">%1$d rules · %2$s</string>
     <string name="rules_source_dropped">%1$d rules left out (size limit)</string>
     <string name="rules_source_refresh">Refresh</string>
@@ -276,4 +276,28 @@
     <string name="sw_notif_speed_sub">Shows upload and download speed in the status notification, like sing-box. Updates only while the screen is on, so it costs nothing in your pocket. VPN mode only.</string>
     <string name="tile_off">Off</string>
     <string name="tile_on">On</string>
+    <string name="sec_profile">Profile</string>
+    <string name="profile_direct">Direct</string>
+    <string name="profile_direct_sub">WARP only</string>
+    <string name="profile_psiphon">Psiphon</string>
+    <string name="profile_psiphon_sub">Pick a country</string>
+    <string name="profile_tor">Tor</string>
+    <string name="profile_tor_sub">Slow, private</string>
+    <string name="profile_protocol_note">Psiphon and Tor need a fixed protocol. If Smart was selected, it is switched to MASQUE (HTTP/2); change it in Settings if you prefer another.</string>
+    <string name="profile_apply_next">The new profile is used the next time you connect.</string>
+    <string name="rules_recommended_title">Recommended lists</string>
+    <string name="rules_add_all">Add all</string>
+    <string name="rules_add">Add</string>
+    <string name="rules_added">Added</string>
+    <string name="rec_ir_ip">Iranian IP ranges (v2ray geoip.dat). Only the Iran entries are read.</string>
+    <string name="rec_ir_sites">Iranian websites (v2ray geosite.dat). Only the Iran entries are read.</string>
+    <string name="rec_hagezi">Ads, trackers and malware. Balanced, few false alarms.</string>
+    <string name="rec_1hosts">Ads, trackers and malware. Large list.</string>
+    <string name="rec_popups">AdGuard pop-up rules. Most are page-level, so only a few domains apply here.</string>
+    <string name="rec_cookies">AdGuard cookie-notice rules. Most are page-level, so only a few domains apply here.</string>
+    <string name="rec_adguard_dns">AdGuard DNS filter. Overlaps with the lists above, so it is not in Add all.</string>
+    <string name="rules_geo_direct_only">.dat geo files can only be used in the Direct tab.</string>
+    <string name="rules_geo_none">No Iran entries found in this .dat file.</string>
+    <string name="rules_working_named">Downloading %1$s…</string>
+    <string name="rules_batch_done">%1$d lists added, %2$d failed</string>
 </resources>

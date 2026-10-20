@@ -91,6 +91,7 @@ class MainActivity : ComponentActivity() {
                                         config = config,
                                         connectionState = connectionState,
                                         onSetMode = { m -> updateConfig { it.copy(mode = m) } },
+                                        onUpdate = { t -> updateConfig(t) },
                                         onConnect = { requestConnect(config) },
                                         onDisconnect = { disconnect(config) },
                                         onOpenLog = { nav.navigate("log") },

@@ -90,7 +90,12 @@ fun main() {
     check("hosts with other ip is not a block", rules("192.168.1.5 nas.home").isEmpty())
     check("abp domain rule", rules("||ads.example.com^") == listOf("ads.example.com"))
     check("abp important", rules("||ads.example.com^\$important") == listOf("ads.example.com"))
-    check("abp third-party option skipped", rules("||ads.example.com^\$third-party").isEmpty())
+    check("abp third-party accepted", rules("||ads.example.com^\$third-party") == listOf("ads.example.com"))
+    check("abp popup + third-party accepted", rules("||pop.example.net^\$popup,third-party") == listOf("pop.example.net"))
+    check("abp document accepted", rules("||bad.example.org^\$document") == listOf("bad.example.org"))
+    check("abp script option skipped", rules("||cdn.example.com^\$script").isEmpty())
+    check("abp domain= option skipped", rules("||ads.example.com^\$domain=site.com").isEmpty())
+    check("abp mixed with narrow option skipped", rules("||ads.example.com^\$third-party,image").isEmpty())
     check("abp path skipped", rules("||example.com/ads/banner").isEmpty())
     check("abp exception skipped", rules("@@||example.com^").isEmpty())
     check("cosmetic filter skipped", rules("example.com##.ad-banner", "##.ad").isEmpty())
@@ -104,6 +109,36 @@ fun main() {
     check("collapse drops covered subdomains", RuleParser.collapse(listOf("a.b.com", "b.com", "x.y.com", "full:a.b.com")) == listOf("b.com", "x.y.com", "full:a.b.com"))
     check("collapse keeps unrelated suffix", RuleParser.collapse(listOf("notb.com", "b.com")) == listOf("notb.com", "b.com"))
     check("manual keeps unknown lines", RuleParser.normalizeManual("0.0.0.0 ads.com\nintranet\n# c\nads.com") == listOf("ads.com", "intranet"))
+
+    // ---- GeoDat: v2ray geoip.dat / geosite.dat (protobuf), Iran entries only
+    fun bytesOf(vararg v: Int) = ByteArray(v.size) { v[it].toByte() }
+    // GeoIP "IR" with 10.0.0.0/8 and an IPv6 2001:db8::/32; GeoIP "US" with 1.2.3.0/24 (must be ignored)
+    val v6 = ByteArray(16).also { it[0] = 0x20; it[1] = 0x01; it[2] = 0x0d; it[3] = 0xb8.toByte() }
+    val cidr4 = bytesOf(0x0A, 4, 10, 0, 0, 0, 0x10, 8)
+    val cidr6 = bytesOf(0x0A, 16) + v6 + bytesOf(0x10, 32)
+    val irIp = bytesOf(0x0A, 2, 'I'.code, 'R'.code, 0x12, cidr4.size) + cidr4 + bytesOf(0x12, cidr6.size) + cidr6
+    val usIp = bytesOf(0x0A, 2, 'U'.code, 'S'.code, 0x12, 8) + bytesOf(0x0A, 4, 1, 2, 3, 0, 0x10, 24)
+    val geoip = bytesOf(0x0A, irIp.size) + irIp + bytesOf(0x0A, usIp.size) + usIp
+    check("geoip: only IR entries, v4 and v6", GeoDat.extract(geoip, GeoDat.IRAN_CODES) == listOf("10.0.0.0/8", "2001:db8:0:0:0:0:0:0/32"))
+    // GeoSite "IR": domain example.ir (type 2), full:pay.example.ir (3), keyword shop (0, field 1 omitted), regexp (1)
+    fun dom(type: Int, v: String): ByteArray {
+        val bytes = v.toByteArray()
+        val body = (if (type != 0) bytesOf(0x08, type) else ByteArray(0)) + bytesOf(0x12, bytes.size) + bytes
+        return bytesOf(0x12, body.size) + body
+    }
+    val irSite = bytesOf(0x0A, 2, 'I'.code, 'R'.code) + dom(2, "Example.ir") + dom(3, "pay.example.ir") + dom(0, "shop") + dom(1, "^a.*\\.ir\$") + dom(2, "ir")
+    val geosite = bytesOf(0x0A, irSite.size) + irSite
+    check("geosite: domain, full, keyword, regexp, single-label TLD",
+        GeoDat.extract(geosite, GeoDat.IRAN_CODES) == listOf("example.ir", "full:pay.example.ir", "keyword:shop", "regexp:^a.*\\.ir\$", "ir"))
+    check("geo: other code finds nothing", GeoDat.extract(geosite, setOf("CN")).isEmpty())
+    check("geo: lowercase code matches", GeoDat.extract(geoip, setOf("ir")).size == 2)
+    check("geo: truncated file throws", try { GeoDat.extract(geoip.copyOf(geoip.size - 3), GeoDat.IRAN_CODES); false } catch (e: java.io.IOException) { true })
+    check("geo file detection", GeoDat.isGeoFile("https://x.org/release/geoip.dat?raw=1") && !GeoDat.isGeoFile("https://x.org/hosts"))
+
+    // ---- RuleDedupe
+    val dd = RuleDedupe(10)
+    check("dedupe: new then duplicate", dd.add("a.com") && !dd.add("a.com") && dd.add("b.com"))
+    check("dedupe: stops when half full", run { val t = RuleDedupe(4); var ok = 0; for (i in 0 until 20) if (t.add("r$i")) ok++; ok == 8 })
 
     // ---- ReconnectPolicy: slow retries for a blocked chain; flapping no longer resets the counter
     check("normal first retry 1 s", ReconnectPolicy.delayMs(1, true) == 1_000L)
