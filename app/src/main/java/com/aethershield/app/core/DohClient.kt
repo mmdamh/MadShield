@@ -53,10 +53,12 @@ class DohClient(private val spec: DohSpec, private val socksPort: Int?) : DnsTra
     private fun build(): OkHttpClient {
         val bytes = spec.addressBytes()
         val name = spec.tlsName
-        val dns = Dns { hostname ->
-            // Exactly one answer: the pinned address. Any other name (a redirect, a bug) is refused.
-            if (!hostname.equals(name, ignoreCase = true)) throw UnknownHostException("not the pinned DoH host")
-            listOf(InetAddress.getByAddress(name, bytes))
+        // Exactly one answer: the pinned address. Any other name (a redirect, a bug) is refused.
+        val dns = object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> {
+                if (!hostname.equals(name, ignoreCase = true)) throw UnknownHostException("not the pinned DoH host")
+                return listOf(InetAddress.getByAddress(name, bytes))
+            }
         }
         return OkHttpClient.Builder()
             .proxy(Proxy.NO_PROXY)               // the SocketFactory below does the proxying; never the system proxy
