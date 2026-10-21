@@ -18,3 +18,10 @@
     public static *** w(...);
     public static *** e(...);
 }
+
+# OkHttp (core/DohClient.kt). It ships its own consumer rules; these only silence optional TLS providers that
+# are not on the classpath (OkHttp checks for them at runtime and falls back to the platform).
+-dontwarn okhttp3.internal.platform.**
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**

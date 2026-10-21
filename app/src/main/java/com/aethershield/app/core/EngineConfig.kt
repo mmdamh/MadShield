@@ -170,8 +170,30 @@ data class EngineConfig(
     val perfProfile: String = CoreChoices.DEFAULT_PERF,
 
     /** Show upload/download speed in the status notification (VPN mode, only while the screen is on). */
-    val notifSpeed: Boolean = true
+    val notifSpeed: Boolean = true,
+
+    // Local DoH (update11): names are resolved by the app itself through DoH, in every mode, instead of by
+    // the core. Off by default; with it off the behaviour is exactly that of update10.
+    val dohOn: Boolean = false,
+    /** DohSpec strings, tried in order; plain DNS is never a fallback. */
+    val dohResolvers: List<String> = emptyList(),
+    /** With a Tor chain: ALSO resolve through DoH (the resolver you chose then sees the names, not Tor's exit). */
+    val dohViaTor: Boolean = true,
+    /** Answer from a recently expired cache entry when no DoH resolver can be reached (max 10 minutes). */
+    val dohServeStale: Boolean = false,
+    /** Also resolve names of DIRECT rules with DoH (from the phone's own network, outside the tunnel). */
+    val dohForDirect: Boolean = false
 ) {
+    /** DoH switched on AND at least one resolver written. */
+    val dohEnabled: Boolean get() = dohOn && dohResolvers.isNotEmpty()
+
+    /**
+     * DoH that will really run for this connection: not for Tor when the user turned "DoH through Tor" off
+     * (Tor then resolves the names at its exit, as before).
+     */
+    val dohActive: Boolean
+        get() = dohEnabled && !(effectiveChain == PrivacyChain.TOR && !dohViaTor)
+
     /** The chain that will really run (none for SMART). */
     val effectiveChain: PrivacyChain
         get() = if (protocol == Protocol.SMART) PrivacyChain.NONE else privacyChain

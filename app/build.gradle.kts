@@ -17,8 +17,8 @@ android {
         applicationId = "com.aethershield.app"
         minSdk = 26 // VpnService.Builder per-app APIs need 21+, but 26 keeps things sane/modern
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.2.1"
+        versionCode = 10
+        versionName = "1.3.0"
 
         // Stamped at CI build time from native/aether-core/CORE_VERSION and
         // native/hev-socks5-tunnel/CORE_VERSION -- see .github/workflows/build.yml.
@@ -117,6 +117,10 @@ dependencies {
     // Keystore-backed encryption for the few secrets that exist (e.g. an optional
     // Zero Trust service token), never stored in plaintext prefs.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // Local DoH client (core/DohClient.kt). It is the ONLY network library in the app, it never touches the
+    // network on its own, and it only ever connects through the engine's SOCKS port (or, for "DoH for Direct",
+    // to the DoH resolver the user chose). 4.12.0 dates from 2023 (well over two weeks old).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

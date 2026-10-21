@@ -30,7 +30,7 @@ object EngineEnvironment {
         secretEnv: Map<String, String>,
         chainBinPath: String? = null,
         chainDirPath: String? = null,
-        routedChain: Boolean = false
+        plan: FrontPlan
     ): Map<String, String> {
         val env = linkedMapOf<String, String>()
 
@@ -45,15 +45,12 @@ object EngineEnvironment {
         env["AETHER_NOIZE"] = CoreChoices.noizeOrDefault(config.noizeProfile)
         env["AETHER_LOG_LEVEL"] = "info"
         CoreChoices.perfOrDefault(config.perfProfile).takeIf { it != "auto" }?.let { env["AETHER_PERF_PROFILE"] = it }
-        val publicSocks = "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"
         val chain = config.effectiveChain
-        // Routing rules + chain: the chain moves to an internal port and RouteFront (in the app) takes the
-        // public one, so block/direct rules apply to chain traffic too. See RouteFront.
-        val chainBind = if (routedChain) "${TunnelConfig.SOCKS_HOST}:${Chain.CHAIN_PORT}" else publicSocks
-        // With a chain on, the core's own WARP proxy moves to an internal port and Psiphon/Tor
-        // (the chain's final exit) takes the public one, so everything downstream is unchanged.
-        env["AETHER_SOCKS"] =
-            if (chain == PrivacyChain.NONE) publicSocks else "${TunnelConfig.SOCKS_HOST}:${Chain.UNDERLAY_PORT}"
+        // [plan] decides every port. When RouteFront owns the public port (local DoH, or routing rules with a
+        // chain) the chain moves to CHAIN_PORT; with a chain on, the core's own WARP proxy is always on an
+        // internal port and Psiphon/Tor (the chain's final exit) take the next one up. See FrontPlan.
+        val chainBind = "${TunnelConfig.SOCKS_HOST}:${plan.chainPort ?: config.socksPort}"
+        env["AETHER_SOCKS"] = "${TunnelConfig.SOCKS_HOST}:${plan.corePort}"
         when (chain) {
             PrivacyChain.NONE -> Unit
             PrivacyChain.PSIPHON -> {

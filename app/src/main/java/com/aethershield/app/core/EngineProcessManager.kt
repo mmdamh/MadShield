@@ -57,6 +57,14 @@ class EngineProcessManager(private val context: Context) {
 
     @Volatile private var front: RouteFront? = null
 
+    /**
+     * The port that really belongs to the engine side (the core, or the chain), set by [start]. Health probes
+     * must ask THIS port: RouteFront answers the SOCKS greeting on the public port by itself, even before the
+     * core is ready or after it hung.
+     */
+    @Volatile var probePort: Int = TunnelConfig.SOCKS_PORT
+        private set
+
     val isRunning: Boolean get() = process?.isAlive == true
 
     fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>) {
@@ -101,19 +109,40 @@ class EngineProcessManager(private val context: Context) {
         }
 
         val routesFile = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)
-        // With a chain on the core never sees app traffic, so the rules are applied by RouteFront instead.
-        val routedChain = chain != PrivacyChain.NONE && routesFile != null
-        val frontMatcher = if (routedChain) RouteMatcher.fromFile(routesFile!!) else null
+        // Who owns which port, and whether RouteFront runs at all (see FrontPlan). With a chain on and no local
+        // DoH this is exactly update10: the front only exists when routing rules need it.
+        val dohActive = config.dohActive
+        val ruleMatcher = if (routesFile != null && (chain != PrivacyChain.NONE || dohActive)) RouteMatcher.fromFile(routesFile) else null
+        val plan = FrontPlan.of(chain, dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort)
+        probePort = plan.upstreamPort
+
+        // DoH resolvers are built BEFORE the engine is launched, so a bad setting can never leave a process behind.
+        val frontOptions: RouteFront.Options? = if (!plan.frontOn) null else if (!plan.localDoh) RouteFront.Options() else {
+            val specs = DohSpec.parseList(config.dohResolvers.joinToString("\n")).valid
+            if (specs.isEmpty()) {
+                throw IllegalStateException("Local DoH is on but none of the resolvers is valid. Fix them in the DNS tab.")
+            }
+            RouteFront.Options(
+                resolver = FrontResolver(DohTransports.create(specs, plan.upstreamPort), config.ipMode, config.dohServeStale),
+                directResolver = if (config.dohForDirect) {
+                    FrontResolver(DohTransports.create(specs, null), config.ipMode, config.dohServeStale)
+                } else null,
+                udpPassThrough = plan.udpPassThrough,
+                guardFakeIps = true,
+                allowOnion = chain == PrivacyChain.TOR
+            )
+        }
+
         val env = EngineEnvironment.build(
             config = config,
             configFilePath = File(context.filesDir, "aether.toml").absolutePath,
             tmpDirPath = context.cacheDir.absolutePath,
-            // Applied once, by RouteFront, when a chain is on (the core would only see the chain's own traffic).
-            routesFilePath = if (frontMatcher != null && !frontMatcher.isEmpty) null else routesFile?.absolutePath,
+            // With a chain the core never sees app traffic, so the rules are applied by RouteFront instead.
+            routesFilePath = if (plan.coreGetsRoutes) routesFile?.absolutePath else null,
             secretEnv = secretEnv,
             chainBinPath = if (chain == PrivacyChain.PSIPHON) psiphonBin.absolutePath else null,
             chainDirPath = chainDir?.absolutePath,
-            routedChain = frontMatcher != null && !frontMatcher.isEmpty
+            plan = plan
         )
 
         val pb = ProcessBuilder(bin.absolutePath)
@@ -137,12 +166,14 @@ class EngineProcessManager(private val context: Context) {
         runCatching { p.outputStream.close() } // closed stdin => EOF, never a blocked prompt
         process = p
 
-        if (frontMatcher != null && !frontMatcher.isEmpty) {
-            val f = RouteFront(config.socksPort, Chain.CHAIN_PORT, frontMatcher) { RingLogBuffer.append(it) }
+        if (frontOptions != null) {
+            val f = RouteFront(config.socksPort, plan.upstreamPort, ruleMatcher ?: RouteMatcher.parse(""), frontOptions) { RingLogBuffer.append(it) }
             try {
                 f.start()
                 front = f
             } catch (e: IOException) {
+                frontOptions.resolver?.clear()
+                frontOptions.directResolver?.clear()
                 p.destroy()
                 process = null
                 dying = p
@@ -245,6 +276,9 @@ class EngineProcessManager(private val context: Context) {
                 (exit.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { ": ${it.take(160)}" } ?: "")
         }
     }
+
+    /** Screen off and the tunnel quiet: lets the local DoH client drop its idle connection. Starts no timer. */
+    fun onIdle() { front?.onIdle() }
 
     fun stop() {
         pumpJob?.cancel()

@@ -93,7 +93,7 @@ class ProxyOnlyService : Service() {
                     val timeout = ConnectPolicy.firstPassTimeoutMs(c)
                     val t0 = System.currentTimeMillis()
                     val w = SocksProbe.awaitReady(
-                        TunnelConfig.SOCKS_HOST, c.socksPort, timeout,
+                        TunnelConfig.SOCKS_HOST, engine.probePort, timeout,
                         engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
                     )
                     if (w != SocksProbe.Wait.READY || c.effectiveChain == PrivacyChain.NONE) return w
@@ -166,8 +166,10 @@ class ProxyOnlyService : Service() {
             // Long sleep while idle (screen off, quiet); a screen-on or network change cuts it short.
             if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
             // No byte counters in proxy-only mode, so only the screen decides.
+            val wasIdle = idle
             idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), isScreenOn(), null)
-            val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
+            if (idle && !wasIdle) engine.onIdle() // screen off: the DoH client drops its idle connection
+            val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (healthySince == 0L) healthySince = now
@@ -226,7 +228,7 @@ class ProxyOnlyService : Service() {
         }
         val timeout = 30_000L + ConnectPolicy.chainAllowanceMs(c)
         val w = SocksProbe.awaitReady(
-            TunnelConfig.SOCKS_HOST, c.socksPort, timeout,
+            TunnelConfig.SOCKS_HOST, engine.probePort, timeout,
             engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
         )
         if (w != SocksProbe.Wait.READY) return false

@@ -53,6 +53,14 @@ class SettingsStore(private val context: Context) {
         val PERF = stringPreferencesKey("perf_profile")
         val NOTIF_SPEED = booleanPreferencesKey("notif_speed")
 
+        // Local DoH (update11). The resolver list is ONE newline-separated string, not a set: order is the
+        // order they are tried in, and a string set would lose it.
+        val DOH_ON = booleanPreferencesKey("doh_on")
+        val DOH_RESOLVERS = stringPreferencesKey("doh_resolvers")
+        val DOH_VIA_TOR = booleanPreferencesKey("doh_via_tor")
+        val DOH_SERVE_STALE = booleanPreferencesKey("doh_serve_stale")
+        val DOH_FOR_DIRECT = booleanPreferencesKey("doh_for_direct")
+
         // Appearance (never affects the tunnel)
         val THEME_ID = stringPreferencesKey("ui_theme_id")
         val DARK_MODE = stringPreferencesKey("ui_dark_mode")
@@ -99,7 +107,12 @@ class SettingsStore(private val context: Context) {
             privacyChain = PrivacyChain.fromStored(p[Keys.CHAIN]),
             psiphonRegion = Chain.normalizeRegion(p[Keys.PSIPHON_REGION]),
             perfProfile = CoreChoices.perfOrDefault(p[Keys.PERF]),
-            notifSpeed = p[Keys.NOTIF_SPEED] ?: true
+            notifSpeed = p[Keys.NOTIF_SPEED] ?: true,
+            dohOn = p[Keys.DOH_ON] ?: false,
+            dohResolvers = (p[Keys.DOH_RESOLVERS] ?: "").split('\n').map { it.trim() }.filter { it.isNotEmpty() },
+            dohViaTor = p[Keys.DOH_VIA_TOR] ?: true,
+            dohServeStale = p[Keys.DOH_SERVE_STALE] ?: false,
+            dohForDirect = p[Keys.DOH_FOR_DIRECT] ?: false
         )
     }
 
@@ -147,6 +160,11 @@ class SettingsStore(private val context: Context) {
             p[Keys.CHAIN] = current.privacyChain.name
             p[Keys.PERF] = CoreChoices.perfOrDefault(current.perfProfile)
             p[Keys.NOTIF_SPEED] = current.notifSpeed
+            p[Keys.DOH_ON] = current.dohOn
+            if (current.dohResolvers.isEmpty()) p.remove(Keys.DOH_RESOLVERS) else p[Keys.DOH_RESOLVERS] = current.dohResolvers.joinToString("\n")
+            p[Keys.DOH_VIA_TOR] = current.dohViaTor
+            p[Keys.DOH_SERVE_STALE] = current.dohServeStale
+            p[Keys.DOH_FOR_DIRECT] = current.dohForDirect
             val region = Chain.normalizeRegion(current.psiphonRegion)
             if (region == null) p.remove(Keys.PSIPHON_REGION) else p[Keys.PSIPHON_REGION] = region
         }

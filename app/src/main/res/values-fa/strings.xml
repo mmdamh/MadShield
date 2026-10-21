@@ -102,7 +102,28 @@
     <string name="sw_amoled_sub">پس‌زمینه کاملاً مشکی در حالت تیره.</string>
     <string name="sec_privacy">حریم خصوصی</string>
     <string name="privacy_body">• هیچ SDK آمار یا گزارش خطا در برنامه نیست.\n• لاگ موتور فقط در حافظه می‌ماند و با قطع اتصال پاک می‌شود.\n• تنظیمات هرگز از دستگاه خارج نمی‌شوند؛ سروری وجود ندارد.\n• پشتیبان‌گیری و انتقال ابری داده‌های برنامه غیرفعال است.</string>
-    <string name="dns_subtitle">دی‌ان‌اس، تست سرعت و جستجوی ECH</string>
+    <string name="dns_subtitle">DoH محلی، دی‌ان‌اس، تست سرعت و جستجوی ECH</string>
+    <!-- DoH محلی (1.3.0) -->
+    <string name="sec_doh">DoH محلی</string>
+    <string name="doh_sw">resolve نام‌ها با DoH داخل برنامه</string>
+    <string name="doh_sw_sub">خود برنامه در همهٔ حالت‌ها نام‌ها را با DoH پیدا می‌کند. هسته و خروجی chain دیگر نام برنامه‌ها را resolve نمی‌کنند. خاموش = مثل قبل. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="doh_need_resolver">پایین حداقل یک resolver بنویس و ذخیره کن، وگرنه DoH خاموش می‌ماند.</string>
+    <string name="lbl_doh_resolvers">resolverهای DoH (تا ۳ تا، به ترتیب امتحان می‌شوند)</string>
+    <string name="doh_rejected">%1$s قابل استفاده نیست: %2$s</string>
+    <string name="doh_help">قالب: ‎https://host/dns-query@address=IP‎. نوشتن IP اجباری است، چون برای پیدا کردن resolver هرگز از DNS معمولی استفاده نمی‌شود. اگر همهٔ resolverها شکست بخورند اتصال شکست می‌خورد و به DNS معمولی برنمی‌گردد.</string>
+    <string name="doh_via_tor">از طریق Tor هم</string>
+    <string name="doh_via_tor_sub">resolverی که انتخاب کرده‌ای نام‌ها را می‌بیند، نه خروجی Tor. خاموش = با Tor نام‌ها مثل قبل در خروجی Tor resolve می‌شوند.</string>
+    <string name="doh_stale">وقتی resolver در دسترس نیست از پاسخ منقضی‌شده استفاده کن</string>
+    <string name="doh_stale_sub">حداکثر ۱۰ دقیقه قدیمی. هیچ چیز در پس‌زمینه تازه‌سازی نمی‌شود.</string>
+    <string name="doh_direct">DoH برای قوانین Direct هم</string>
+    <string name="doh_direct_sub">نام‌های لیست Direct هم با DoH و از شبکهٔ خودت resolve می‌شوند. خاموش (پیشنهادی): دی‌ان‌اس خود گوشی استفاده می‌شود که سایت‌های داخلی به آن نیاز دارند.</string>
+    <string name="doh_test_btn">تست DoH</string>
+    <string name="doh_test_not_connected">اول وصل شو: این تست از داخل تونل می‌گذرد.</string>
+    <string name="doh_test_reconnect">DoH در اتصال فعلی فعال نیست (بعد از اتصال روشن شده، یا Tor بدون «از طریق Tor هم»). برای اعمال دوباره وصل شو.</string>
+    <string name="doh_test_ok">DoH کار می‌کند: یک نام resolve شد و اتصال برقرار شد.</string>
+    <string name="doh_test_doh_fail">تونل کار می‌کند ولی resolve نام با DoH شکست خورد. resolver و IP آن را بررسی کن.</string>
+    <string name="doh_test_tunnel_fail">خود تونل الان ترافیک نمی‌برد.</string>
+    <string name="doh_limits">محدودیت‌ها: برنامه‌هایی که DoH/DoT خودشان را دارند و Private DNS اندروید کنترل نمی‌شوند. نام‌هایی که با UDP (مثل QUIC) و بدون chain استفاده می‌شوند هنوز با دی‌ان‌اس هسته resolve می‌شوند: آی‌پی ساده‌ی همان resolver را در بخش دی‌ان‌اس پایین بگذار. IPv6 و رکوردهای HTTPS جواب داده نمی‌شوند. حالت Proxy Only: فقط برنامه‌هایی که نام را به proxy می‌دهند (socks5h) از DoH رد می‌شوند. تا وقتی این قابلیت روشن است بازهٔ 100.64.0.0/10 برای آن رزرو است.</string>
     <string name="sec_dns_presets">انتخاب سریع</string>
     <string name="dns_presets_help">فقط آی‌پی ساده، چون موتور فقط همین را می‌فهمد. «پیش‌فرض» یعنی موتور از دی‌ان‌اس خودش استفاده کند.</string>
     <string name="sec_dns_custom">دی‌ان‌اس سفارشی</string>

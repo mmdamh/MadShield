@@ -22,6 +22,7 @@ import java.io.File
  * Full-device VPN mode. Data path:
  *   apps -> Android TUN (this service) -> TProxyService (JNI bridge, hev-socks5-tunnel)
  *        -> 127.0.0.1:<socksPort> -> EngineProcessManager (aether core) -> internet
+ *   (with a chain, or with local DoH, RouteFront owns <socksPort>; see FrontPlan)
  *
  * Connection logic follows the pattern of the field-tested AetherGUI reference
  * (re-implemented here, not copied):
@@ -229,7 +230,8 @@ class AetherVpnService : VpnService() {
             val deadlineMs = System.currentTimeMillis() + timeoutMs
             when (SocksProbe.awaitReady(
                 host = TunnelConfig.SOCKS_HOST,
-                port = config.socksPort,
+                // the engine side's own port: RouteFront (public port) greets before the core is ready
+                port = engine.probePort,
                 timeoutMs = timeoutMs,
                 engineAlive = { engine.isRunning },
                 cancelled = { job?.isActive == false }
@@ -283,7 +285,9 @@ class AetherVpnService : VpnService() {
         // DNS: the user's resolvers (bare IPs; the VPN API takes no port) or a safe default.
         // With a chain on (Psiphon/Tor carry TCP only) the only DNS server is hev's mapped DNS,
         // so name lookups are answered locally and resolved at the chain's exit over TCP.
-        val dnsToUse = if (config.effectiveChain != PrivacyChain.NONE) {
+        // With local DoH (update11) it is hev's mapped DNS in EVERY mode: apps get a fake address, RouteFront
+        // receives the NAME and resolves it through DoH. With DoH off, behaviour is exactly update10.
+        val dnsToUse = if (config.effectiveChain != PrivacyChain.NONE || config.dohActive) {
             listOf(Chain.MAPDNS_ADDRESS)
         } else {
             config.dnsResolvers.mapNotNull { DnsConfig.vpnAddress(it) }.distinct()
@@ -324,7 +328,7 @@ class AetherVpnService : VpnService() {
         val file = File(cacheDir, "hev.yaml")
         // Same keys and values as ZedSecure's field-tested hev config (hev's own defaults for
         // everything else; no stack-size or timeout overrides that could starve a session).
-        val mapdns = if (config.effectiveChain == PrivacyChain.NONE) "" else """
+        val mapdns = if (config.effectiveChain == PrivacyChain.NONE && !config.dohActive) "" else """
 
             mapdns:
               address: ${Chain.MAPDNS_ADDRESS}
@@ -441,11 +445,13 @@ class AetherVpnService : VpnService() {
                 // Traffic counters are only read with the screen off (that is when idle is decided).
                 val idleBytes = if (screenNow) null else runCatching { TProxyService.TProxyGetStats() }.getOrNull()
                     ?.takeIf { it.size >= 4 }?.let { it[1] + it[3] }
+                val wasIdle = idle
                 idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), screenNow, idleBytes)
+                if (idle && !wasIdle) engine.onIdle() // screen off + quiet: the DoH client drops its idle connection
                 val cadence = PowerPolicy.cadence(screenNow, idle)
                 try {
                     val ok = engine.isRunning &&
-                        SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, config.socksPort)
+                        SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.

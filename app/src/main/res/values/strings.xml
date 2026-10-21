@@ -102,7 +102,28 @@
     <string name="sw_amoled_sub">Pure black background in dark mode.</string>
     <string name="sec_privacy">Privacy</string>
     <string name="privacy_body">• No analytics or crash-reporting SDK is built into this app.\n• Engine logs stay in memory only and are wiped on disconnect.\n• Settings never leave the device; there is no backend.\n• App backup and cloud transfer of app data are disabled.</string>
-    <string name="dns_subtitle">Resolvers, speed test and the ECH lookup</string>
+    <string name="dns_subtitle">Local DoH, resolvers, speed test and the ECH lookup</string>
+    <!-- Local DoH (1.3.0) -->
+    <string name="sec_doh">Local DoH</string>
+    <string name="doh_sw">Resolve names with DoH in the app</string>
+    <string name="doh_sw_sub">This app looks names up itself, over DoH, in every mode. The engine and the chain exit no longer resolve names for apps. Off = same as before. Applies on the next connect.</string>
+    <string name="doh_need_resolver">Add and save at least one resolver below, otherwise DoH stays off.</string>
+    <string name="lbl_doh_resolvers">DoH resolvers (up to 3, tried in order)</string>
+    <string name="doh_rejected">Cannot use %1$s: %2$s</string>
+    <string name="doh_help">Format: https://host/dns-query@address=IP. The IP is required, because ordinary DNS is never used to find the resolver. If every resolver fails, the connection fails: there is no fallback to normal DNS.</string>
+    <string name="doh_via_tor">Also through Tor</string>
+    <string name="doh_via_tor_sub">The resolver you chose sees the names, not the Tor exit. Off = with Tor the names are resolved at the Tor exit, as before.</string>
+    <string name="doh_stale">Use expired answers when the resolver is unreachable</string>
+    <string name="doh_stale_sub">At most 10 minutes old. Nothing is refreshed in the background.</string>
+    <string name="doh_direct">DoH for Direct rules too</string>
+    <string name="doh_direct_sub">Names on your Direct list are also resolved by DoH, from your own network. Off (recommended): the phone\'s DNS is used, which domestic sites need.</string>
+    <string name="doh_test_btn">Test DoH</string>
+    <string name="doh_test_not_connected">Connect first: the test goes through the tunnel.</string>
+    <string name="doh_test_reconnect">DoH is not active in the running connection (it was turned on after connecting, or Tor without “Also through Tor”). Reconnect to apply.</string>
+    <string name="doh_test_ok">DoH works: a name was resolved and reached.</string>
+    <string name="doh_test_doh_fail">The tunnel works, but resolving a name through DoH failed. Check the resolver and its IP.</string>
+    <string name="doh_test_tunnel_fail">The tunnel itself is not carrying traffic right now.</string>
+    <string name="doh_limits">Limits: apps with their own DoH/DoT, and Android\'s Private DNS, are not controlled. Names used over UDP (QUIC) with no chain are still resolved by the engine\'s DNS: put the plain IP of the same resolver in the resolvers below. IPv6 and HTTPS records are not answered. Proxy-only mode: only apps that send the NAME to the proxy (socks5h) use DoH. 100.64.0.0/10 is reserved for this feature while it is on.</string>
     <string name="sec_dns_presets">Quick choice</string>
     <string name="dns_presets_help">Plain-IP resolvers, which is the only kind the engine understands. “Default” lets the engine use its own.</string>
     <string name="sec_dns_custom">Custom resolvers</string>

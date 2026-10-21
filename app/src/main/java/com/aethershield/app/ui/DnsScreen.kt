@@ -23,7 +23,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * DNS tab. Two different things are configured here and the text says so:
+ * DNS tab. Three different things are configured here and the text says so:
+ *  0. Local DoH (update11): names resolved by THIS APP through DoH, in every mode. Independent of the core.
  *  1. Resolvers (AETHER_DNS): plain IPs only -- the stock core ignores anything else,
  *     so every entry is validated here and rejected ones are listed instead of vanishing.
  *  2. The ECH resolver (AETHER_ECH_DNS): the one place the core speaks DoH.
@@ -42,6 +43,15 @@ fun DnsScreen(
     val canonical = parsed.valid.map { it.canonical }
     val dirty = canonical != config.dnsResolvers
 
+    // ---- local DoH (update11)
+    var dohText by remember(config.dohResolvers) { mutableStateOf(config.dohResolvers.joinToString("\n")) }
+    val dohParsed = remember(dohText) { DohSpec.parseList(dohText) }
+    val dohCanonical = dohParsed.valid.map { it.canonical }
+    val dohDirty = dohCanonical != config.dohResolvers
+    val activeConfig by AetherController.active.collectAsState()
+    var dohTesting by remember { mutableStateOf(false) }
+    var dohResult by remember { mutableStateOf<Int?>(null) }
+
     var testing by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<Pair<DnsEntry, Long?>>>(emptyList()) }
     val mono = MaterialTheme.typography.bodyMedium.copy(fontFamily = MonoFamily, textDirection = TextDirection.Ltr)
@@ -58,6 +68,101 @@ fun DnsScreen(
 
         // ------------------------------------------------------------ exit profile (moved from Home in 1.2.1)
         ProfileCard(config, connectionState, onUpdate)
+
+        // ------------------------------------------------------------ local DoH
+        SectionCard(stringResource(R.string.sec_doh)) {
+            SwitchRow(
+                label = stringResource(R.string.doh_sw),
+                sub = stringResource(R.string.doh_sw_sub),
+                checked = config.dohOn,
+                onCheckedChange = { v -> onUpdate { it.copy(dohOn = v) } }
+            )
+            if (config.dohOn && config.dohResolvers.isEmpty()) HelperText(stringResource(R.string.doh_need_resolver), error = true)
+            Spacer(Modifier.height(8.dp))
+            ChoiceChips(
+                DohPresets.ALL.map { (name, value) -> name to value },
+                selected = dohText.trim(),
+                onSelect = { dohText = it }
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = dohText,
+                onValueChange = { dohText = it },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+                label = { Text(stringResource(R.string.lbl_doh_resolvers)) },
+                placeholder = { Text("https://cloudflare-dns.com/dns-query@address=1.1.1.1", style = mono) },
+                textStyle = mono,
+                isError = dohParsed.errors.isNotEmpty()
+            )
+            dohParsed.errors.forEach { (token, why) ->
+                HelperText(stringResource(R.string.doh_rejected, ltr(token), why), error = true)
+            }
+            HelperText(stringResource(R.string.doh_help))
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onUpdate { it.copy(dohResolvers = dohCanonical) } },
+                    enabled = dohDirty && dohParsed.errors.isEmpty()
+                ) { Text(stringResource(R.string.action_save)) }
+                OutlinedButton(onClick = { dohText = config.dohResolvers.joinToString("\n") }, enabled = dohDirty) {
+                    Text(stringResource(R.string.action_revert))
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            SwitchRow(
+                label = stringResource(R.string.doh_via_tor),
+                sub = stringResource(R.string.doh_via_tor_sub),
+                checked = config.dohViaTor,
+                onCheckedChange = { v -> onUpdate { it.copy(dohViaTor = v) } }
+            )
+            SwitchRow(
+                label = stringResource(R.string.doh_stale),
+                sub = stringResource(R.string.doh_stale_sub),
+                checked = config.dohServeStale,
+                onCheckedChange = { v -> onUpdate { it.copy(dohServeStale = v) } }
+            )
+            SwitchRow(
+                label = stringResource(R.string.doh_direct),
+                sub = stringResource(R.string.doh_direct_sub),
+                checked = config.dohForDirect,
+                onCheckedChange = { v -> onUpdate { it.copy(dohForDirect = v) } }
+            )
+            Spacer(Modifier.height(6.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        val live = activeConfig
+                        when {
+                            connectionState !is ConnectionState.Connected -> dohResult = R.string.doh_test_not_connected
+                            live?.dohActive != true -> dohResult = R.string.doh_test_reconnect
+                            else -> {
+                                dohTesting = true
+                                dohResult = null
+                                val port = live?.socksPort ?: config.socksPort
+                                // A literal IP tests the tunnel alone; a name also needs the DoH lookup.
+                                val (ipOk, nameOk) = withContext(Dispatchers.IO) {
+                                    SocksProbe.connectThrough(TunnelConfig.SOCKS_HOST, port, "1.1.1.1", 443) to
+                                        SocksProbe.connectThrough(TunnelConfig.SOCKS_HOST, port, "www.cloudflare.com", 443)
+                                }
+                                dohResult = when {
+                                    nameOk -> R.string.doh_test_ok
+                                    ipOk -> R.string.doh_test_doh_fail
+                                    else -> R.string.doh_test_tunnel_fail
+                                }
+                                dohTesting = false
+                            }
+                        }
+                    }
+                },
+                enabled = !dohTesting
+            ) { Text(stringResource(if (dohTesting) R.string.dns_testing else R.string.doh_test_btn)) }
+            if (dohTesting) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            dohResult?.let { HelperText(stringResource(it), error = it != R.string.doh_test_ok) }
+            HelperText(stringResource(R.string.doh_limits))
+        }
 
         // ------------------------------------------------------------ presets
         SectionCard(stringResource(R.string.sec_dns_presets)) {

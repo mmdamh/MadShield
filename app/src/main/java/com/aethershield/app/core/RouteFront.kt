@@ -17,32 +17,61 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Minimal SOCKS5 front that applies the routing rules when a Psiphon/Tor chain is on.
+ * SOCKS5 front inside the app. It owns the public SOCKS port and sits between hev-socks5-tunnel and the
+ * upstream (the core, or the Psiphon/Tor chain). It exists for two reasons:
  *
- *   hev-socks5-tunnel -> RouteFront (public SOCKS port)
- *        PROXY  -> chain (Psiphon/Tor) on [upstreamPort]
- *        DIRECT -> straight to the target from this app (the app is excluded from the VPN, exactly like the
- *                  core's own "direct" action, so there is no loop)
- *        BLOCK  -> refused with SOCKS reply 0x02
+ *  1. ROUTING RULES WITH A CHAIN (update10). With a chain on, the chain owns the public port and the core's
+ *     own routing never sees app traffic. The front applies block/direct before anything is forwarded.
+ *  2. LOCAL DoH (update11). When [Options.resolver] is set, every PROXY connection to a NAME is resolved
+ *     by the app through DoH and forwarded to the upstream as a CONNECT to the IP. The core / the chain's
+ *     exit never resolve a name themselves. There is NO fallback to ordinary DNS: if DoH cannot answer, the
+ *     connection is refused with a SOCKS error.
  *
- * Without this, the chain owns the public port and the core's routing never sees app traffic (the 1.2.0 bug).
+ *        hev -> RouteFront (public port)
+ *             BLOCK  -> refused, SOCKS reply 0x02
+ *             DIRECT -> straight from this app (the app is excluded from the VPN, so there is no loop).
+ *                       Names use the system DNS (the connection leaves the tunnel anyway, and domestic
+ *                       sites need a domestic answer) unless [Options.directResolver] is set.
+ *             PROXY  -> upstream on [upstreamPort]; names via DoH when [Options.resolver] is set
+ *             UDP ASSOCIATE -> relayed to the upstream untouched when [Options.udpPassThrough] (no chain),
+ *                       otherwise refused (0x07): the chains carry TCP only
  *
  * Safety properties:
  *  - fail closed: a connection that cannot be classified or reached is refused, never silently sent direct;
- *  - only CONNECT is served (the chains carry TCP only; hev answers DNS itself through mapdns);
+ *  - with local DoH, a fake address that arrives as an IP (hev forgot its name) is refused, never forwarded;
  *  - one thread per active connection, no polling, no timers: nothing runs while the tunnel is idle;
- *  - logging is batched: a single summary line when the front stops.
+ *  - logging is batched: a single summary line when the front stops; domain names are never logged.
  */
 class RouteFront(
     private val listenPort: Int,
     private val upstreamPort: Int,
     private val matcher: RouteMatcher,
+    private val options: Options = Options(),
     private val log: (String) -> Unit
 ) {
+    /**
+     * @property resolver DoH for PROXY names (through the upstream); null = names are forwarded unresolved (update10).
+     * @property directResolver DoH for DIRECT names, from the phone's own network; null = system DNS.
+     * @property udpPassThrough relay UDP ASSOCIATE to the upstream (only valid without a chain).
+     * @property guardFakeIps refuse IP destinations in hev's fake-IP network and DNS range (see [FrontGuard]).
+     * @property allowOnion pass *.onion names to the upstream unresolved (Tor chain only); otherwise refused.
+     */
+    class Options(
+        val resolver: FrontResolver? = null,
+        val directResolver: FrontResolver? = null,
+        val udpPassThrough: Boolean = false,
+        val guardFakeIps: Boolean = false,
+        val allowOnion: Boolean = false
+    )
+
     private companion object {
         const val HANDSHAKE_MS = 10_000
         const val CONNECT_MS = 15_000
+        const val MULTI_TRY_CONNECT_MS = 8_000
+        const val MAX_ADDRESSES_TRIED = 3
         const val LINGER_AFTER_HALF_CLOSE_MS = 30_000L
+        const val CMD_CONNECT = 1
+        const val CMD_UDP_ASSOCIATE = 3
     }
 
     @Volatile private var server: ServerSocket? = null
@@ -54,6 +83,10 @@ class RouteFront(
     private val nDirect = AtomicLong()
     private val nBlock = AtomicLong()
     private val nFailed = AtomicLong()
+    private val nUdp = AtomicLong()
+    private val nRefusedFake = AtomicLong()
+    private val nRefusedOther = AtomicLong()
+    private val nResolveFailed = AtomicLong()
 
     /** Binds the public port. Throws IOException if it cannot (the caller must treat that as a failed start). */
     fun start() {
@@ -67,7 +100,17 @@ class RouteFront(
                 try { pool.execute { handle(c) } } catch (_: Exception) { closeQuietly(c) }
             }
         }
-        log("[route] front on $listenPort -> chain on $upstreamPort (${matcher.blockCount} block, ${matcher.directCount} direct rules)")
+        log(
+            "[route] front on $listenPort -> upstream on $upstreamPort (${matcher.blockCount} block, ${matcher.directCount} direct rules; " +
+                "doh=${if (options.resolver != null) "on" else "off"}, doh-direct=${if (options.directResolver != null) "on" else "off"}, " +
+                "udp=${if (options.udpPassThrough) "pass-through" else "refused"})"
+        )
+    }
+
+    /** Screen off and quiet: drop idle DoH connections. Cheap, starts nothing. */
+    fun onIdle() {
+        options.resolver?.closeIdle()
+        options.directResolver?.closeIdle()
     }
 
     fun stop() {
@@ -77,7 +120,15 @@ class RouteFront(
         live.toList().forEach { closeQuietly(it) }
         live.clear()
         pool.shutdownNow()
-        log("[route] front stopped: ${nProxy.get()} via chain, ${nDirect.get()} direct, ${nBlock.get()} blocked, ${nFailed.get()} failed")
+        log("[route] front stopped: ${nProxy.get()} via upstream, ${nDirect.get()} direct, ${nBlock.get()} blocked, ${nFailed.get()} failed" +
+            if (options.udpPassThrough) ", ${nUdp.get()} udp associations" else "")
+        if (options.resolver != null || options.guardFakeIps) {
+            log("[route] ${options.resolver?.summary() ?: "doh off"}; ${nResolveFailed.get()} refused after a failed lookup, " +
+                "${nRefusedFake.get()} stale fake addresses refused, ${nRefusedOther.get()} reserved addresses refused")
+        }
+        // Answers learned through this tunnel may not hold for the next one, and the DoH connection must not outlive it.
+        options.resolver?.clear()
+        options.directResolver?.clear()
     }
 
     private fun handle(client: Socket) {
@@ -125,9 +176,34 @@ class RouteFront(
             raw.write(pb)
             val port = ((pb[0].toInt() and 0xff) shl 8) or (pb[1].toInt() and 0xff)
 
-            if (cmd != 1) { reply(cout, 0x07); return }
+            when (cmd) {
+                CMD_CONNECT -> {}
+                CMD_UDP_ASSOCIATE -> {
+                    if (!options.udpPassThrough) { reply(cout, 0x07); return }
+                    val control = associateUdp(cout, raw.toByteArray()) ?: return
+                    remote = control
+                    client.soTimeout = 0
+                    control.soTimeout = 0
+                    pipe(client, control) // the control connection: closing it ends the association in the core
+                    return
+                }
+                else -> { reply(cout, 0x07); return }
+            }
 
-            val action = if (domain != null) matcher.decideDomain(domain, port) else matcher.decideIp(addr, port)
+            // ---- CONNECT. Destinations that must never be forwarded (only meaningful with mapped DNS).
+            if (domain == null && options.guardFakeIps) {
+                val v = FrontGuard.check(addr)
+                if (v != FrontGuard.Verdict.OK) {
+                    if (v == FrontGuard.Verdict.STALE_FAKE_IP) nRefusedFake.incrementAndGet() else nRefusedOther.incrementAndGet()
+                    reply(cout, FrontGuard.replyCode(v))
+                    return
+                }
+            }
+
+            val onion = domain != null && options.resolver != null && domain.lowercase().endsWith(".onion")
+            var action = if (domain != null) matcher.decideDomain(domain, port) else matcher.decideIp(addr, port)
+            if (onion && action == RouteAction.DIRECT) action = RouteAction.PROXY // a .onion name has no clear-net address
+
             when (action) {
                 RouteAction.BLOCK -> {
                     nBlock.incrementAndGet()
@@ -135,48 +211,45 @@ class RouteFront(
                     return
                 }
                 RouteAction.DIRECT -> {
-                    val target = try {
-                        if (domain != null) InetSocketAddress(domain, port)
-                        else InetSocketAddress(InetAddress.getByAddress(addr), port)
-                    } catch (_: Exception) { null }
-                    if (target == null || target.isUnresolved) { nFailed.incrementAndGet(); reply(cout, 0x04); return }
-                    val r = Socket()
-                    remote = r
-                    live.add(r)
-                    try {
-                        r.connect(target, CONNECT_MS)
-                    } catch (e: ConnectException) {
-                        nFailed.incrementAndGet(); reply(cout, 0x05); return
-                    } catch (_: IOException) {
-                        nFailed.incrementAndGet(); reply(cout, 0x04); return
-                    }
+                    remote = connectDirect(cout, domain, addr, port) ?: return
                     nDirect.incrementAndGet()
                     reply(cout, 0x00)
                 }
                 RouteAction.PROXY -> {
-                    val r = Socket()
-                    remote = r
-                    live.add(r)
-                    try {
-                        r.connect(InetSocketAddress(TunnelConfig.SOCKS_HOST, upstreamPort), CONNECT_MS)
-                        r.soTimeout = HANDSHAKE_MS
-                        val rout = r.getOutputStream()
-                        val rin = r.getInputStream()
-                        rout.write(byteArrayOf(5, 1, 0)); rout.flush()
-                        val hello = ByteArray(2)
-                        readFully(rin, hello)
-                        if (hello[0].toInt() != 5 || hello[1].toInt() != 0) { nFailed.incrementAndGet(); reply(cout, 0x01); return }
-                        rout.write(raw.toByteArray()); rout.flush()
-                    } catch (_: IOException) {
-                        nFailed.incrementAndGet(); reply(cout, 0x01); return
+                    val resolver = options.resolver
+                    if (domain != null && resolver != null && !onion) {
+                        remote = connectResolved(cout, resolver, domain, port) ?: return
+                    } else if (onion && !options.allowOnion) {
+                        nFailed.incrementAndGet()
+                        reply(cout, 0x04) // .onion needs Tor; never leak the name anywhere else
+                        return
+                    } else {
+                        // IP destination, or a name the upstream resolves itself (update10 behaviour, .onion on Tor)
+                        val r = Socket()
+                        remote = r
+                        live.add(r)
+                        try {
+                            r.connect(InetSocketAddress(TunnelConfig.SOCKS_HOST, upstreamPort), CONNECT_MS)
+                            r.soTimeout = HANDSHAKE_MS
+                            val rout = r.getOutputStream()
+                            val rin = r.getInputStream()
+                            rout.write(byteArrayOf(5, 1, 0)); rout.flush()
+                            val hello = ByteArray(2)
+                            readFully(rin, hello)
+                            if (hello[0].toInt() != 5 || hello[1].toInt() != 0) { nFailed.incrementAndGet(); reply(cout, 0x01); return }
+                            rout.write(raw.toByteArray()); rout.flush()
+                        } catch (_: IOException) {
+                            nFailed.incrementAndGet(); reply(cout, 0x01); return
+                        }
                     }
                     nProxy.incrementAndGet()
-                    // the chain's own reply to the request travels back to the client through the pipe below
+                    // with the legacy path the upstream's own reply travels back through the pipe below
                 }
             }
+            val upstream = remote ?: return
             client.soTimeout = 0
-            remote!!.soTimeout = 0
-            pipe(client, remote!!)
+            upstream.soTimeout = 0
+            pipe(client, upstream)
         } catch (_: IOException) {
             // client vanished or sent garbage: nothing to report per connection
         } finally {
@@ -185,6 +258,147 @@ class RouteFront(
             live.remove(client)
             remote?.let { live.remove(it) }
         }
+    }
+
+    // ------------------------------------------------------------------ DIRECT
+
+    /** @return the connected socket, or null after the client got its error reply. */
+    private fun connectDirect(cout: OutputStream, domain: String?, addr: ByteArray, port: Int): Socket? {
+        val targets: List<InetSocketAddress> = try {
+            when {
+                domain == null -> listOf(InetSocketAddress(InetAddress.getByAddress(addr), port))
+                options.directResolver != null -> options.directResolver
+                    .resolve(domain).take(MAX_ADDRESSES_TRIED).map { InetSocketAddress(it, port) }
+                else -> listOf(InetSocketAddress(domain, port)) // system DNS, as in update10
+            }
+        } catch (_: ResolveFailure) {
+            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        } catch (_: Exception) {
+            nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        }
+        if (targets.isEmpty() || targets.any { it.isUnresolved }) { nFailed.incrementAndGet(); reply(cout, 0x04); return null }
+
+        var code = 0x04
+        for (t in targets) {
+            val r = Socket()
+            live.add(r)
+            try {
+                r.connect(t, if (targets.size > 1) MULTI_TRY_CONNECT_MS else CONNECT_MS)
+                return r
+            } catch (_: ConnectException) {
+                code = 0x05
+            } catch (_: IOException) {
+                code = 0x04
+            }
+            closeQuietly(r); live.remove(r)
+        }
+        nFailed.incrementAndGet(); reply(cout, code)
+        return null
+    }
+
+    // ---------------------------------------------------- PROXY with local DoH
+
+    /**
+     * Resolves [domain] through DoH, then asks the upstream to CONNECT to the address (first of up to
+     * three that connects). On success the upstream's reply has been forwarded to the client.
+     */
+    private fun connectResolved(cout: OutputStream, resolver: FrontResolver, domain: String, port: Int): Socket? {
+        val addrs = try {
+            resolver.resolve(domain).take(MAX_ADDRESSES_TRIED)
+        } catch (_: ResolveFailure) {
+            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        } catch (_: Exception) {
+            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        }
+        var lastCode = 0x04
+        for (a in addrs) {
+            val ip = a.address
+            val req = ByteArray(4 + ip.size + 2)
+            req[0] = 5; req[1] = 1; req[2] = 0; req[3] = if (ip.size == 4) 1 else 4
+            System.arraycopy(ip, 0, req, 4, ip.size)
+            req[4 + ip.size] = (port shr 8).toByte()
+            req[5 + ip.size] = (port and 0xff).toByte()
+            val r = Socket()
+            live.add(r)
+            try {
+                val rep = upstreamExchange(r, req, if (addrs.size > 1) MULTI_TRY_CONNECT_MS else CONNECT_MS)
+                if (rep[1].toInt() == 0) {
+                    cout.write(rep); cout.flush()
+                    return r
+                }
+                lastCode = rep[1].toInt() and 0xff
+            } catch (_: IOException) {
+                lastCode = 0x01
+            }
+            closeQuietly(r); live.remove(r)
+        }
+        nFailed.incrementAndGet()
+        reply(cout, lastCode)
+        return null
+    }
+
+    // ------------------------------------------------------------------- UDP
+
+    /**
+     * UDP ASSOCIATE pass-through. The control request goes to the upstream UNCHANGED and the upstream's reply
+     * (which carries the address of its UDP relay) comes back UNCHANGED, so hev sends its datagrams straight to
+     * that relay: no UDP ever passes through this class. Only the TCP control connection is piped by the caller.
+     */
+    private fun associateUdp(cout: OutputStream, request: ByteArray): Socket? {
+        val r = Socket()
+        live.add(r)
+        try {
+            val rep = upstreamExchange(r, request, CONNECT_MS)
+            cout.write(rep); cout.flush()
+            if (rep[1].toInt() != 0) { closeQuietly(r); live.remove(r); nFailed.incrementAndGet(); return null }
+            nUdp.incrementAndGet()
+            return r
+        } catch (_: IOException) {
+            closeQuietly(r); live.remove(r)
+            nFailed.incrementAndGet(); reply(cout, 0x01)
+            return null
+        }
+    }
+
+    // ----------------------------------------------------------------- helpers
+
+    /**
+     * Connects [r] to the upstream, does the SOCKS5 greeting, sends [request] and reads the COMPLETE reply
+     * (the length depends on its address type). Leaves [r] with no read timeout set by the caller to decide.
+     */
+    private fun upstreamExchange(r: Socket, request: ByteArray, connectMs: Int): ByteArray {
+        r.connect(InetSocketAddress(TunnelConfig.SOCKS_HOST, upstreamPort), connectMs)
+        r.tcpNoDelay = true
+        r.soTimeout = connectMs
+        val rout = r.getOutputStream()
+        val rin = r.getInputStream()
+        rout.write(byteArrayOf(5, 1, 0)); rout.flush()
+        val hello = ByteArray(2)
+        readFully(rin, hello)
+        if (hello[0].toInt() != 5 || hello[1].toInt() != 0) throw IOException("upstream refused the greeting")
+        rout.write(request); rout.flush()
+        return readReply(rin)
+    }
+
+    private fun readReply(rin: InputStream): ByteArray {
+        val head = ByteArray(4)
+        readFully(rin, head)
+        if (head[0].toInt() != 5) throw IOException("not a socks5 reply")
+        val rest = when (head[3].toInt() and 0xff) {
+            1 -> 4 + 2
+            4 -> 16 + 2
+            3 -> {
+                val len = rin.read()
+                if (len < 0) throw IOException("eof")
+                val tail = ByteArray(len + 2)
+                readFully(rin, tail)
+                return head + byteArrayOf(len.toByte()) + tail
+            }
+            else -> throw IOException("bad reply address type")
+        }
+        val tail = ByteArray(rest)
+        readFully(rin, tail)
+        return head + tail
     }
 
     private fun pipe(a: Socket, b: Socket) {
