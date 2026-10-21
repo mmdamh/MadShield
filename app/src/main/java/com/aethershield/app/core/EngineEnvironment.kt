@@ -29,7 +29,8 @@ object EngineEnvironment {
         routesFilePath: String?,
         secretEnv: Map<String, String>,
         chainBinPath: String? = null,
-        chainDirPath: String? = null
+        chainDirPath: String? = null,
+        routedChain: Boolean = false
     ): Map<String, String> {
         val env = linkedMapOf<String, String>()
 
@@ -46,6 +47,9 @@ object EngineEnvironment {
         CoreChoices.perfOrDefault(config.perfProfile).takeIf { it != "auto" }?.let { env["AETHER_PERF_PROFILE"] = it }
         val publicSocks = "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"
         val chain = config.effectiveChain
+        // Routing rules + chain: the chain moves to an internal port and RouteFront (in the app) takes the
+        // public one, so block/direct rules apply to chain traffic too. See RouteFront.
+        val chainBind = if (routedChain) "${TunnelConfig.SOCKS_HOST}:${Chain.CHAIN_PORT}" else publicSocks
         // With a chain on, the core's own WARP proxy moves to an internal port and Psiphon/Tor
         // (the chain's final exit) takes the public one, so everything downstream is unchanged.
         env["AETHER_SOCKS"] =
@@ -54,7 +58,7 @@ object EngineEnvironment {
             PrivacyChain.NONE -> Unit
             PrivacyChain.PSIPHON -> {
                 env["AETHER_PSIPHON"] = "chain"
-                env["AETHER_PSIPHON_BIND"] = publicSocks
+                env["AETHER_PSIPHON_BIND"] = chainBind
                 env["AETHER_PSIPHON_MODE"] = "auto"
                 Chain.normalizeRegion(config.psiphonRegion)?.let { env["AETHER_PSIPHON_REGION"] = it }
                 chainDirPath?.let { env["AETHER_PSIPHON_DIR"] = it }
@@ -68,7 +72,7 @@ object EngineEnvironment {
             }
             PrivacyChain.TOR -> {
                 env["AETHER_TOR"] = "chain"
-                env["AETHER_TOR_BIND"] = publicSocks
+                env["AETHER_TOR_BIND"] = chainBind
                 // Same as AetherGUI/Android chain mode: no bridges, the underlay carries tor directly.
                 env["AETHER_TOR_BRIDGES"] = "off"
                 chainDirPath?.let { env["AETHER_TOR_DIR"] = it }

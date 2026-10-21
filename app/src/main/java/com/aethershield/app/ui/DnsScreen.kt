@@ -33,7 +33,8 @@ import kotlinx.coroutines.withContext
 fun DnsScreen(
     config: EngineConfig,
     onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
-    contentPadding: PaddingValues
+    contentPadding: PaddingValues,
+    connectionState: ConnectionState = ConnectionState.Idle
 ) {
     val scope = rememberCoroutineScope()
     var text by remember(config.dnsResolvers) { mutableStateOf(config.dnsResolvers.joinToString("\n")) }
@@ -54,6 +55,9 @@ fun DnsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         PageHeader(stringResource(R.string.nav_dns), stringResource(R.string.dns_subtitle))
+
+        // ------------------------------------------------------------ exit profile (moved from Home in 1.2.1)
+        ProfileCard(config, connectionState, onUpdate)
 
         // ------------------------------------------------------------ presets
         SectionCard(stringResource(R.string.sec_dns_presets)) {

@@ -55,6 +55,8 @@ class EngineProcessManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val tail = ArrayDeque<String>()
 
+    @Volatile private var front: RouteFront? = null
+
     val isRunning: Boolean get() = process?.isAlive == true
 
     fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>) {
@@ -98,14 +100,20 @@ class EngineProcessManager(private val context: Context) {
             )
         }
 
+        val routesFile = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)
+        // With a chain on the core never sees app traffic, so the rules are applied by RouteFront instead.
+        val routedChain = chain != PrivacyChain.NONE && routesFile != null
+        val frontMatcher = if (routedChain) RouteMatcher.fromFile(routesFile!!) else null
         val env = EngineEnvironment.build(
             config = config,
             configFilePath = File(context.filesDir, "aether.toml").absolutePath,
             tmpDirPath = context.cacheDir.absolutePath,
-            routesFilePath = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)?.absolutePath,
+            // Applied once, by RouteFront, when a chain is on (the core would only see the chain's own traffic).
+            routesFilePath = if (frontMatcher != null && !frontMatcher.isEmpty) null else routesFile?.absolutePath,
             secretEnv = secretEnv,
             chainBinPath = if (chain == PrivacyChain.PSIPHON) psiphonBin.absolutePath else null,
-            chainDirPath = chainDir?.absolutePath
+            chainDirPath = chainDir?.absolutePath,
+            routedChain = frontMatcher != null && !frontMatcher.isEmpty
         )
 
         val pb = ProcessBuilder(bin.absolutePath)
@@ -128,6 +136,19 @@ class EngineProcessManager(private val context: Context) {
         val p = pb.start()
         runCatching { p.outputStream.close() } // closed stdin => EOF, never a blocked prompt
         process = p
+
+        if (frontMatcher != null && !frontMatcher.isEmpty) {
+            val f = RouteFront(config.socksPort, Chain.CHAIN_PORT, frontMatcher) { RingLogBuffer.append(it) }
+            try {
+                f.start()
+                front = f
+            } catch (e: IOException) {
+                p.destroy()
+                process = null
+                dying = p
+                throw IllegalStateException("Could not start the routing front on port ${config.socksPort}: ${e.message}")
+            }
+        }
 
         pumpJob = scope.launch {
             try {
@@ -228,6 +249,8 @@ class EngineProcessManager(private val context: Context) {
     fun stop() {
         pumpJob?.cancel()
         pumpJob = null
+        front?.stop()
+        front = null
         val p = process ?: return
         process = null
         RingLogBuffer.append("[engine] stopping")

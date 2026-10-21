@@ -98,8 +98,6 @@ fun HomeScreen(
             )
         }
         Spacer(Modifier.height(12.dp))
-        ProfileCard(config, connectionState, onUpdate)
-        Spacer(Modifier.height(12.dp))
 
         if (connectionState is ConnectionState.Error) {
             ErrorCard(connectionState.message, onRetry = onConnect, onStop = onDisconnect, onLog = onOpenLog)

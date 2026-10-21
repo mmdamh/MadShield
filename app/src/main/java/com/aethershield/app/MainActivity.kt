@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
                                         onOpenLog = { nav.navigate("log") },
                                         contentPadding = padding
                                     )
-                                    Tab.Dns -> DnsScreen(config, { t -> updateConfig(t) }, padding)
+                                    Tab.Dns -> DnsScreen(config, { t -> updateConfig(t) }, padding, connectionState)
                                     Tab.Routing -> RoutingScreen(
                                         config,
                                         onUpdate = { t -> updateConfig(t) },

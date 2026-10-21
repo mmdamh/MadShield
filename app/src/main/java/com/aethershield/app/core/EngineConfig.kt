@@ -52,6 +52,9 @@ enum class PrivacyChain {
 object Chain {
     /** Where the core's own (WARP) SOCKS listens when a chain is on; the chain takes the public port. */
     const val UNDERLAY_PORT = 1823
+
+    /** Where Psiphon/Tor listen when [RouteFront] owns the public port (routing rules + chain). */
+    const val CHAIN_PORT = 1824
     const val GO_MAX_PROCS = "2"
     const val GO_MEMORY_LIMIT = "256MiB"
 
