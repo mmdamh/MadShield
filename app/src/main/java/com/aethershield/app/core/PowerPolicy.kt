@@ -23,6 +23,12 @@ object PowerPolicy {
 
     /** An outage needs ~2 failed probes on screen, but never less than this wall-clock time. */
     const val UNRESPONSIVE_RESTART_AFTER_MS = 60_000L
+
+    /**
+     * "No network" must last this long before the engine is paused. A Wi-Fi to mobile handover can report it
+     * for a moment on some phones, and stopping the engine then would cost a full restart for nothing.
+     */
+    const val OFFLINE_GRACE_MS = 5_000L
 }
 
 /**

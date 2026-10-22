@@ -182,13 +182,15 @@ class EngineProcessManager(private val context: Context) {
         }
 
         pumpJob = scope.launch {
+            val folder = LogNoiseFolder() // Psiphon's EOF line for every health probe of ours, see LogNoiseFolder
             try {
                 BufferedReader(InputStreamReader(p.inputStream)).use { reader ->
                     while (isActive) {
                         val line = reader.readLine() ?: break
                         if (ChainReady.isReadyLine(line)) chainReady = true
-                        RingLogBuffer.append(line) // memory only -- see RingLogBuffer
-                        synchronized(tail) {
+                        for (out in folder.feed(line)) RingLogBuffer.append(out) // memory only -- see RingLogBuffer
+                        // The exit reason is read from the last lines: probe noise must not push them out.
+                        if (!LogNoiseFolder.isOwnProbeNoise(line)) synchronized(tail) {
                             if (tail.size >= 20) tail.removeFirst()
                             tail.addLast(line)
                         }

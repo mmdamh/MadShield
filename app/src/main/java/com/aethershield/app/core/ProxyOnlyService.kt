@@ -73,6 +73,7 @@ class ProxyOnlyService : Service() {
         }
         userRequestedStop = false
         netWatcher.onChanged = { screen.poke() }
+        netWatcher.onOffline = { screen.poke() }
         netWatcher.start()
         screen.start()
         AetherController.setState(ConnectionState.Connecting)
@@ -169,6 +170,31 @@ class ProxyOnlyService : Service() {
             val wasIdle = idle
             idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), isScreenOn(), null)
             if (idle && !wasIdle) engine.onIdle() // screen off: the DoH client drops its idle connection
+            // No network at all: stop the engine instead of letting it scan and fail in a loop (same rule as the VPN mode).
+            if (!netWatcher.online) {
+                delay(PowerPolicy.OFFLINE_GRACE_MS) // a handover can say "no network" for a moment
+                if (!netWatcher.online) {
+                    RingLogBuffer.append("[proxy] no network: engine paused until the network returns")
+                    engine.stop()
+                    AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
+                    postNotification(getString(R.string.notif_no_network))
+                    idleTracker.wake(); idle = false
+                    netWatcher.awaitOnline()
+                    currentCoroutineContext().ensureActive()
+                    RingLogBuffer.append("[proxy] network is back, restarting engine")
+                    recoveries = 0; misses = 0; healthySince = 0L
+                    AetherController.setState(ConnectionState.Connecting)
+                    postNotification(getString(R.string.notif_connecting))
+                    if (restartEngine(config, secretEnv)) {
+                        RingLogBuffer.append("[proxy] engine up")
+                        AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
+                        postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
+                    } else {
+                        AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
+                    }
+                    continue
+                }
+            }
             val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
@@ -199,7 +225,11 @@ class ProxyOnlyService : Service() {
                 postNotification(getString(R.string.notif_waiting))
             }
             netWatcher.drain()
-            if (netWatcher.awaitChangeOrTimeout(pause)) {
+            if (!netWatcher.online) {
+                netWatcher.awaitOnline() // no network: a retry now could only fail
+                RingLogBuffer.append("[proxy] network is back, retrying now")
+                recoveries = 1
+            } else if (netWatcher.awaitChangeOrTimeout(pause)) {
                 RingLogBuffer.append("[proxy] network changed, retrying now")
                 recoveries = 1
             }
@@ -251,6 +281,7 @@ class ProxyOnlyService : Service() {
         job?.cancel()
         scope.cancel()
         netWatcher.onChanged = null
+        netWatcher.onOffline = null
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null

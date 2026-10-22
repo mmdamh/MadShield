@@ -830,4 +830,43 @@ fun routeFrontTests() {
         check("front: garbage from a client does not disturb the next one", ok == 0)
         f.stop(); up.close()
     }
+
+    // ---- 1.3.1: no network pauses the engine; the probe EOF line is folded
+    run {
+        val t = OnlineTracker<String>()
+        check("online at the start", t.online)
+        check("first network is new", t.available("wifi"))
+        check("same network again is not new", !t.available("wifi"))
+        check("losing the current network goes offline", t.lost("wifi") && !t.online)
+        check("a network coming back is new again", t.available("wifi") && t.online)
+        // handover: the new network is announced first, then the old one is lost
+        check("mobile takes over", t.available("mobile"))
+        check("old network lost after takeover: still online", !t.lost("wifi") && t.online)
+        check("losing the last one goes offline", t.lost("mobile") && !t.online)
+        // other order: old lost first, then the new one appears
+        check("online again after the gap", t.available("wifi") && t.online)
+        check("a stranger network lost is ignored", !t.lost("other") && t.online)
+        check("grace period is 5 s", PowerPolicy.OFFLINE_GRACE_MS == 5_000L)
+    }
+    run {
+        val eof = "[2026-10-22T08:31:40.850Z WARN  aether::psiphon] [-] psiphon: SOCKS proxy accept error: socks5ReadCommand: EOF"
+        val eof2 = eof.replace("08:31:40.850", "08:31:45.863")
+        val real = "[2026-10-22T08:35:11.000Z WARN  aether::psiphon] [-] psiphon: meek round trip failed: connection refused"
+        check("probe line recognised", LogNoiseFolder.isOwnProbeNoise(eof))
+        check("other psiphon lines are not noise", !LogNoiseFolder.isOwnProbeNoise(real))
+        check("a line that merely says EOF elsewhere is not noise", !LogNoiseFolder.isOwnProbeNoise("[x] read: EOF"))
+        val f = LogNoiseFolder()
+        check("first noise line is kept", f.feed(eof) == listOf(eof))
+        check("later noise is swallowed", f.feed(eof2).isEmpty() && f.feed(eof2).isEmpty())
+        val out = f.feed(real)
+        check("a real line flushes a summary first, then itself", out.size == 2 && out[0].contains("folded 2 more") && out[1] == real)
+        check("no summary when nothing was folded", f.feed(real) == listOf(real))
+        val g = LogNoiseFolder(); g.feed(eof)
+        var summaries = 0; var kept = 0
+        repeat(LogNoiseFolder.SUMMARY_EVERY * 3) { for (l in g.feed(eof2)) { if (l.contains("folded")) summaries++ else kept++ } }
+        check("a long run of noise leaves 1 summary per ${LogNoiseFolder.SUMMARY_EVERY} lines and no raw line", summaries == 3 && kept == 0)
+        // Diagnostics never counted this line, so folding it changes nothing there
+        val sig = LogSignals.scan(listOf(eof, eof2))
+        check("probe line is not a diagnostics signal", sig.dns == 0 && sig.tcp == 0 && sig.handshake == 0 && sig.timeouts == 0)
+    }
 }

@@ -204,6 +204,8 @@
     <string name="chip_fallback">Fallback</string>
     <string name="state_waiting_retry">Connection lost. Waiting to try again (about %1$d min), or sooner if the network changes.</string>
     <string name="notif_waiting">Waiting to reconnect…</string>
+    <string name="state_no_network">No network. The engine is paused and starts again when the network returns.</string>
+    <string name="notif_no_network">Waiting for network…</string>
     <string name="log_redact_copy">Remove IPs and keys when copying</string>
     <string name="log_redact_copy_sub">Private addresses are hidden, public ones keep only their first two numbers, and tokens and keys are removed.</string>
     <string name="sec_leak">Leak protection</string>

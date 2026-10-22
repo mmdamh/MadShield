@@ -111,6 +111,7 @@ class AetherVpnService : VpnService() {
         }
         userRequestedStop = false
         netWatcher.onChanged = { screen.poke() }
+        netWatcher.onOffline = { screen.poke() } // the health loop looks at the network at once, not at the next tick
         netWatcher.start()
         screen.start()
         // Must happen within seconds of startForegroundService(); do it here,
@@ -450,6 +451,39 @@ class AetherVpnService : VpnService() {
                 if (idle && !wasIdle) engine.onIdle() // screen off + quiet: the DoH client drops its idle connection
                 val cadence = PowerPolicy.cadence(screenNow, idle)
                 try {
+                    // No network at all: nothing the engine does can work, and it would only keep scanning and
+                    // failing. Stop it, keep the TUN as it is (Kill Switch unchanged), and start again when the
+                    // system reports a network. Event-driven: no timer runs while it waits.
+                    if (!netWatcher.online) {
+                        delay(PowerPolicy.OFFLINE_GRACE_MS) // a handover can say "no network" for a moment
+                        if (!netWatcher.online) {
+                            RingLogBuffer.append("[vpn] no network: engine paused until the network returns")
+                            if (!wasDown) {
+                                wasDown = true
+                                stopBridge()
+                                if (!config.killSwitchEnabled) releaseTun() // same as any other outage: fail-open until it recovers
+                            }
+                            engine.stop()
+                            AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
+                            updateNotification(getString(R.string.notif_no_network))
+                            idleTracker.wake(); idle = false
+                            netWatcher.awaitOnline()
+                            ensureActive()
+                            RingLogBuffer.append("[vpn] network is back, restarting engine")
+                            recoveries = 0; consecutiveFailures = 0; healthySince = 0L
+                            AetherController.setState(ConnectionState.Connecting)
+                            updateNotification(getString(R.string.notif_connecting))
+                            when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(config))) {
+                                is Attempt.Ready -> lastFailureWasChain = false // the next healthy probe re-attaches the bridge
+                                is Attempt.Failed -> {
+                                    AetherController.setState(ConnectionState.Error(r.reason))
+                                    lastFailureWasChain = ConnectPolicy.isChainFailure(r.reason)
+                                    if (lastFailureWasChain) engine.stop()
+                                }
+                            }
+                            continue
+                        }
+                    }
                     val ok = engine.isRunning &&
                         SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
                     if (ok) {
@@ -524,7 +558,11 @@ class AetherVpnService : VpnService() {
                             updateNotification(getString(R.string.notif_waiting))
                         }
                         netWatcher.drain()
-                        if (netWatcher.awaitChangeOrTimeout(pause)) {
+                        if (!netWatcher.online) {
+                            netWatcher.awaitOnline() // no network: a retry now could only fail
+                            RingLogBuffer.append("[vpn] network is back, retrying now")
+                            recoveries = 1
+                        } else if (netWatcher.awaitChangeOrTimeout(pause)) {
                             RingLogBuffer.append("[vpn] network changed, retrying now")
                             recoveries = 1
                         }
@@ -561,6 +599,7 @@ class AetherVpnService : VpnService() {
         speedJob?.cancel()
         scope.cancel()
         netWatcher.onChanged = null
+        netWatcher.onOffline = null
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null

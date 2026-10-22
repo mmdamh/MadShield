@@ -204,6 +204,8 @@
     <string name="chip_fallback">حالت جایگزین</string>
     <string name="state_waiting_retry">اتصال قطع شد. حدود %1$d دقیقه صبر می‌کنم و دوباره تلاش می‌کنم، یا زودتر اگر شبکه عوض شود.</string>
     <string name="notif_waiting">در انتظار اتصال مجدد…</string>
+    <string name="state_no_network">شبکه‌ای در دسترس نیست. موتور متوقف شد و با برگشتن شبکه دوباره شروع می‌شود.</string>
+    <string name="notif_no_network">در انتظار شبکه…</string>
     <string name="log_redact_copy">هنگام کپی، IP و کلیدها حذف شوند</string>
     <string name="log_redact_copy_sub">آدرس‌های خصوصی پنهان می‌شوند، از آدرس‌های عمومی فقط دو عدد اول می‌ماند و توکن و کلید حذف می‌شود.</string>
     <string name="sec_leak">جلوگیری از نشت</string>
