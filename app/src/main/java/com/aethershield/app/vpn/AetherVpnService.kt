@@ -454,9 +454,9 @@ class AetherVpnService : VpnService() {
                     // No network at all: nothing the engine does can work, and it would only keep scanning and
                     // failing. Stop it, keep the TUN as it is (Kill Switch unchanged), and start again when the
                     // system reports a network. Event-driven: no timer runs while it waits.
-                    if (!netWatcher.online) {
+                    if (netWatcher.isOffline()) {
                         delay(PowerPolicy.OFFLINE_GRACE_MS) // a handover can say "no network" for a moment
-                        if (!netWatcher.online) {
+                        if (netWatcher.isOffline()) {
                             RingLogBuffer.append("[vpn] no network: engine paused until the network returns")
                             if (!wasDown) {
                                 wasDown = true
@@ -467,7 +467,7 @@ class AetherVpnService : VpnService() {
                             AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
                             updateNotification(getString(R.string.notif_no_network))
                             idleTracker.wake(); idle = false
-                            netWatcher.awaitOnline()
+                            netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS)
                             ensureActive()
                             RingLogBuffer.append("[vpn] network is back, restarting engine")
                             recoveries = 0; consecutiveFailures = 0; healthySince = 0L
@@ -484,7 +484,10 @@ class AetherVpnService : VpnService() {
                             continue
                         }
                     }
-                    val ok = engine.isRunning &&
+                    // Alive, but no WireGuard endpoint found in several full scans in a row: the local SOCKS port
+                    // (Psiphon's, with a chain) would still answer, so the probe alone cannot see this outage.
+                    val stalled = engine.isRunning && engine.tunnelStalled()
+                    val ok = engine.isRunning && !stalled &&
                         SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
@@ -527,16 +530,26 @@ class AetherVpnService : VpnService() {
                     healthySince = 0L
                     idleTracker.wake(); idle = false // a failed probe: back to normal checking at once
                     if (++consecutiveFailures == 1) firstFailAt = android.os.SystemClock.elapsedRealtime()
-                    if (consecutiveFailures < 2) continue
+                    if (consecutiveFailures < 2 && !stalled) continue // a stalled tunnel is already proven by several scans
 
                     if (!wasDown) {
                         wasDown = true
                         RingLogBuffer.append("[vpn] health check failed, tunnel considered down")
                         AetherController.setState(
-                            ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error))
+                            ConnectionState.Error(
+                                engine.failureReason()
+                                    ?: if (stalled) getString(R.string.state_no_endpoint) else getString(R.string.state_error)
+                            )
                         )
                         stopBridge()
                         if (!config.killSwitchEnabled) releaseTun() // fail-open until it recovers
+                    }
+
+                    // Stop the scanning core and retry on the back-off schedule below, instead of letting it
+                    // scan non-stop (and Psiphon hammer a closed port) until a network happens to return.
+                    if (stalled && config.quickReconnect) {
+                        RingLogBuffer.append("[vpn] no WireGuard endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
+                        engine.stop()
                     }
 
                     // An engine that is alive but has not answered for a full minute is hung.
@@ -558,8 +571,8 @@ class AetherVpnService : VpnService() {
                             updateNotification(getString(R.string.notif_waiting))
                         }
                         netWatcher.drain()
-                        if (!netWatcher.online) {
-                            netWatcher.awaitOnline() // no network: a retry now could only fail
+                        if (netWatcher.isOffline()) {
+                            netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS) // no network: a retry now could only fail
                             RingLogBuffer.append("[vpn] network is back, retrying now")
                             recoveries = 1
                         } else if (netWatcher.awaitChangeOrTimeout(pause)) {
@@ -675,7 +688,7 @@ class AetherVpnService : VpnService() {
 
     private fun updateNotification(text: String) {
         statusText = text
-        if (text != getString(R.string.state_connected)) speedText = null
+        // The speed line is NOT cleared here: [startSpeedLoop] owns it (a "0 B/s" line while not connected, like sing-box).
         postNotification()
     }
 
@@ -683,44 +696,59 @@ class AetherVpnService : VpnService() {
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification())
     }
 
+    private enum class SpeedMode { OFF, ZERO, LIVE }
+
     /**
-     * sing-box style speed line in the notification. Runs ONLY while connected, the screen is on and the
-     * user wants it; with the screen off the job is simply suspended (no timer, no wake-up).
+     * sing-box style speed line in the notification. sing-box counts the bytes in the core and keeps the line while
+     * the service is up, so an outage simply reads "0 B/s" and the numbers return by themselves. Same here:
+     *  - LIVE: connected, screen on, wanted: real rates, read from the tunnel bridge every 2 s.
+     *  - ZERO: wanted and screen on, but not connected (no network, retrying, connecting): a fixed "0 B/s" line,
+     *    no polling at all. The status ("Waiting for network...") shows as the sub text.
+     *  - OFF: screen off or switched off in the settings: no line, and no timer (the job is just suspended).
      */
     private fun startSpeedLoop() {
         speedJob?.cancel()
         speedJob = scope.launch {
             val wantSpeed = settingsStore.configFlow.map { it.notifSpeed }.distinctUntilChanged()
             combine(screen.screenOn, wantSpeed, AetherController.state) { on, want, st ->
-                on && want && st is ConnectionState.Connected
-            }.distinctUntilChanged().collectLatest { active ->
-                if (!active) {
-                    if (speedText != null) { speedText = null; postNotification() }
-                    return@collectLatest
+                when {
+                    !on || !want -> SpeedMode.OFF
+                    st is ConnectionState.Connected -> SpeedMode.LIVE
+                    else -> SpeedMode.ZERO
                 }
-                var prev: LongArray? = null
-                var prevAt = 0L
-                try {
-                    while (true) {
-                        val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
-                        val now = android.os.SystemClock.elapsedRealtime()
-                        if (s != null && s.size >= 4) {
-                            val p = prev
-                            if (p != null) {
-                                speedText = NotificationText.speedLine(
-                                    upBps = NotificationText.bps(p[1], s[1], now - prevAt),
-                                    downBps = NotificationText.bps(p[3], s[3], now - prevAt)
-                                )
-                                postNotification()
-                            }
-                            prev = s; prevAt = now
-                        }
-                        delay(2_000)
-                    }
-                } finally {
+            }.distinctUntilChanged().collectLatest { mode ->
+                if (mode == SpeedMode.LIVE) {
+                    runLiveSpeed()
+                } else if (mode == SpeedMode.ZERO) {
+                    speedText = NotificationText.speedLine(0L, 0L)
+                    postNotification()
+                } else if (speedText != null) {
                     speedText = null
+                    postNotification()
                 }
             }
+        }
+    }
+
+    /** Runs until the collector cancels it (state, screen or setting changed). */
+    private suspend fun runLiveSpeed() {
+        var prev: LongArray? = null
+        var prevAt = 0L
+        while (true) {
+            val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (s != null && s.size >= 4) {
+                val p = prev
+                if (p != null) {
+                    speedText = NotificationText.speedLine(
+                        upBps = NotificationText.bps(p[1], s[1], now - prevAt),
+                        downBps = NotificationText.bps(p[3], s[3], now - prevAt)
+                    )
+                    postNotification()
+                }
+                prev = s; prevAt = now
+            }
+            delay(2_000)
         }
     }
 }

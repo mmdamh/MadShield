@@ -171,15 +171,15 @@ class ProxyOnlyService : Service() {
             idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), isScreenOn(), null)
             if (idle && !wasIdle) engine.onIdle() // screen off: the DoH client drops its idle connection
             // No network at all: stop the engine instead of letting it scan and fail in a loop (same rule as the VPN mode).
-            if (!netWatcher.online) {
+            if (netWatcher.isOffline()) {
                 delay(PowerPolicy.OFFLINE_GRACE_MS) // a handover can say "no network" for a moment
-                if (!netWatcher.online) {
+                if (netWatcher.isOffline()) {
                     RingLogBuffer.append("[proxy] no network: engine paused until the network returns")
                     engine.stop()
                     AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
                     postNotification(getString(R.string.notif_no_network))
                     idleTracker.wake(); idle = false
-                    netWatcher.awaitOnline()
+                    netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS)
                     currentCoroutineContext().ensureActive()
                     RingLogBuffer.append("[proxy] network is back, restarting engine")
                     recoveries = 0; misses = 0; healthySince = 0L
@@ -195,7 +195,9 @@ class ProxyOnlyService : Service() {
                     continue
                 }
             }
-            val ok = engine.isRunning && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
+            // Alive, but no WireGuard endpoint found in several full scans in a row (the local SOCKS port would still answer).
+            val stalled = engine.isRunning && engine.tunnelStalled()
+            val ok = engine.isRunning && !stalled && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (healthySince == 0L) healthySince = now
@@ -214,6 +216,10 @@ class ProxyOnlyService : Service() {
                 RingLogBuffer.append("[proxy] health check failed")
                 AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
             }
+            if (stalled && config.quickReconnect) {
+                RingLogBuffer.append("[proxy] no WireGuard endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
+                engine.stop()
+            }
             if (misses < 2 || engine.isRunning || !config.quickReconnect) continue
 
             recoveries++
@@ -225,8 +231,8 @@ class ProxyOnlyService : Service() {
                 postNotification(getString(R.string.notif_waiting))
             }
             netWatcher.drain()
-            if (!netWatcher.online) {
-                netWatcher.awaitOnline() // no network: a retry now could only fail
+            if (netWatcher.isOffline()) {
+                netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS) // no network: a retry now could only fail
                 RingLogBuffer.append("[proxy] network is back, retrying now")
                 recoveries = 1
             } else if (netWatcher.awaitChangeOrTimeout(pause)) {

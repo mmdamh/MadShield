@@ -851,22 +851,87 @@ fun routeFrontTests() {
     run {
         val eof = "[2026-10-22T08:31:40.850Z WARN  aether::psiphon] [-] psiphon: SOCKS proxy accept error: socks5ReadCommand: EOF"
         val eof2 = eof.replace("08:31:40.850", "08:31:45.863")
-        val real = "[2026-10-22T08:35:11.000Z WARN  aether::psiphon] [-] psiphon: meek round trip failed: connection refused"
+        val real = "[2026-10-22T08:35:11.000Z WARN  aether::psiphon] [-] psiphon: operate tunnel error for abc: timed out"
         check("probe line recognised", LogNoiseFolder.isOwnProbeNoise(eof))
-        check("other psiphon lines are not noise", !LogNoiseFolder.isOwnProbeNoise(real))
+        check("other psiphon lines are not noise", !LogNoiseFolder.isNoise(real))
         check("a line that merely says EOF elsewhere is not noise", !LogNoiseFolder.isOwnProbeNoise("[x] read: EOF"))
         val f = LogNoiseFolder()
         check("first noise line is kept", f.feed(eof) == listOf(eof))
         check("later noise is swallowed", f.feed(eof2).isEmpty() && f.feed(eof2).isEmpty())
-        val out = f.feed(real)
-        check("a real line flushes a summary first, then itself", out.size == 2 && out[0].contains("folded 2 more") && out[1] == real)
-        check("no summary when nothing was folded", f.feed(real) == listOf(real))
+        check("a real line after only 2 folded ones prints no summary", f.feed(real) == listOf(real))
         val g = LogNoiseFolder(); g.feed(eof)
+        repeat(LogNoiseFolder.MIN_SUMMARY) { g.feed(eof2) }
+        val out = g.feed(real)
+        check("a real line flushes a summary first once enough were folded", out.size == 2 && out[0].contains("folded ${LogNoiseFolder.MIN_SUMMARY} more") && out[1] == real)
+        check("no summary when nothing is left folded", g.feed(real) == listOf(real))
+        val h = LogNoiseFolder(); h.feed(eof)
         var summaries = 0; var kept = 0
-        repeat(LogNoiseFolder.SUMMARY_EVERY * 3) { for (l in g.feed(eof2)) { if (l.contains("folded")) summaries++ else kept++ } }
+        repeat(LogNoiseFolder.SUMMARY_EVERY * 3) { for (l in h.feed(eof2)) { if (l.contains("folded")) summaries++ else kept++ } }
         check("a long run of noise leaves 1 summary per ${LogNoiseFolder.SUMMARY_EVERY} lines and no raw line", summaries == 3 && kept == 0)
         // Diagnostics never counted this line, so folding it changes nothing there
         val sig = LogSignals.scan(listOf(eof, eof2))
         check("probe line is not a diagnostics signal", sig.dns == 0 && sig.tcp == 0 && sig.handshake == 0 && sig.timeouts == 0)
+    }
+
+    // ---- 1.3.2: Psiphon retry noise folded; a stalled WireGuard tunnel is detected from the core's log
+    run {
+        val refused = "[2026-10-22T09:41:26.052Z WARN  aether::psiphon] [-] psiphon: meek round trip failed: psiphon.DialTCP#81: psiphon.proxiedTcpDial#170: socks connect tcp [redacted]->[redacted]: psiphon.proxiedTcpDial.func1#126: psiphon.tcpDial#304: dial tcp [redacted]: connect: connection refused"
+        val deadline = "[2026-10-22T09:41:47.391Z WARN  aether::psiphon] [-] psiphon: meek round trip failed: context deadline exceeded"
+        val relay = "[2026-10-22T09:41:32.988Z WARN  aether::psiphon] [-] psiphon: psiphon.(*MeekConn).relay.func1#1310: psiphon.(*MeekConn).relay#1438: dial tcp [redacted]: connect: connection refused"
+        val tlsFail = "[2026-10-22T09:41:50.000Z WARN  aether::psiphon] [-] psiphon: meek round trip failed: tls: handshake failure"
+        val serverList = "[2026-10-22T09:42:58.675Z WARN  aether::psiphon] [-] psiphon: failed to fetch common remote server list: connection refused"
+        val wgLine = "[2026-10-22T09:41:08.463Z WARN  aether] [-] last known-good endpoint 188.114.*.*:955 no longer responds (io: Network is unreachable (os error 101)); rescanning"
+        check("refused meek line is retry noise", LogNoiseFolder.isChainRetryNoise(refused))
+        check("deadline meek line is retry noise", LogNoiseFolder.isChainRetryNoise(deadline))
+        check("meek relay line is retry noise", LogNoiseFolder.isChainRetryNoise(relay))
+        check("a meek failure with another reason is kept", !LogNoiseFolder.isNoise(tlsFail))
+        check("the server-list failure is kept", !LogNoiseFolder.isNoise(serverList))
+        check("core WireGuard lines are never noise", !LogNoiseFolder.isNoise(wgLine))
+        val f = LogNoiseFolder()
+        check("first retry line is kept", f.feed(refused) == listOf(refused))
+        repeat(LogNoiseFolder.SUMMARY_EVERY - 1) { check("retry line swallowed", f.feed(deadline).isEmpty()) }
+        val sum = f.feed(refused)
+        check("one summary per ${LogNoiseFolder.SUMMARY_EVERY} retry lines", sum.size == 1 && sum[0].contains("folded ${LogNoiseFolder.SUMMARY_EVERY} more Psiphon retry"))
+        // both kinds at once (what the real log looked like): each is counted on its own
+        val eof = "[2026-10-22T09:41:31.000Z WARN  aether::psiphon] [-] psiphon: SOCKS proxy accept error: socks5ReadCommand: EOF"
+        val g = LogNoiseFolder()
+        g.feed(eof); g.feed(refused)
+        repeat(12) { g.feed(eof); g.feed(refused) }
+        val o = g.feed(wgLine)
+        check("a real line flushes both summaries, then itself", o.size == 3 && o[2] == wgLine && o[0].contains("SOCKS proxy accept error") && o[1].contains("Psiphon retry"))
+        check("exit-reason tail skips both kinds", LogNoiseFolder.isNoise(eof) && LogNoiseFolder.isNoise(refused))
+    }
+    run {
+        val up = "[2026-10-22T09:40:42.989Z INFO  aether] [+] wireguard tunnel validated (end-to-end data confirmed); exposing socks5"
+        val dead = "[2026-10-22T09:41:06.450Z WARN  aether::wireguard] [wg] no valid data from peer 188.114.*.*:955 in 12.4s; tunnel considered dead"
+        val failed = "[2026-10-22T09:41:15.199Z WARN  aether] [-] no usable WireGuard endpoint found: prober: no clean endpoint found; rescanning shortly"
+        val profileFail = "[2026-10-22T09:41:10.396Z WARN  aether] [-] profile 'balanced' found no data-plane endpoint: prober: no clean endpoint found; trying next profile"
+        check("only the two lines that matter are relevant", TunnelStallTracker.isRelevant(up) && TunnelStallTracker.isRelevant(failed) &&
+            !TunnelStallTracker.isRelevant(dead) && !TunnelStallTracker.isRelevant(profileFail))
+        val t = TunnelStallTracker()
+        check("a new engine is not stalled", !t.stalled && t.failedScans == 0)
+        t.feed(up)
+        check("a working tunnel is not stalled", !t.stalled)
+        t.feed(failed)
+        check("one failed scan is a bad moment, not a stall", !t.stalled && t.failedScans == 1)
+        t.feed(failed)
+        check("${TunnelStallTracker.STALL_AFTER_SCANS} failed scans in a row is a stall", t.stalled)
+        t.feed(failed)
+        check("it stays stalled while scans keep failing", t.stalled && t.failedScans == 3)
+        t.feed(up)
+        check("a validated tunnel ends the stall at once", !t.stalled && t.failedScans == 0)
+        t.feed(failed); t.feed(up); t.feed(failed)
+        check("failures separated by a working tunnel do not add up", !t.stalled)
+        check("a restarted engine starts clean", !TunnelStallTracker().stalled)
+        // the offline tracker: the system's direct look outranks a callback that never came
+        val o = OnlineTracker<String>()
+        o.available("wifi"); o.lost("wifi")
+        check("callback said offline", !o.online)
+        o.markOnline()
+        check("markOnline puts it back", o.online)
+        check("poll safety net is slower than the grace period", PowerPolicy.OFFLINE_POLL_MS > PowerPolicy.OFFLINE_GRACE_MS)
+        // notification: sing-box style zero line while there is no traffic
+        check("zero speed line", NotificationText.speedLine(0L, 0L).contains("↑ 0 B/s") && NotificationText.speedLine(0L, 0L).contains("↓ 0 B/s"))
+        check("bps never negative after a bridge restart", NotificationText.bps(5_000L, 100L, 2_000L) == 0L)
     }
 }

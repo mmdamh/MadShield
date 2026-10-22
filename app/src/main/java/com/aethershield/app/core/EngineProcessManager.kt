@@ -57,6 +57,12 @@ class EngineProcessManager(private val context: Context) {
 
     @Volatile private var front: RouteFront? = null
 
+    /** Counts failed WireGuard scans from the core's log; a new one for every engine start. */
+    @Volatile private var stall = TunnelStallTracker()
+
+    /** True when the core is up but has found no working WireGuard endpoint in several full scans in a row. */
+    fun tunnelStalled(): Boolean = stall.stalled
+
     /**
      * The port that really belongs to the engine side (the core, or the chain), set by [start]. Health probes
      * must ask THIS port: RouteFront answers the SOCKS greeting on the public port by itself, even before the
@@ -181,6 +187,8 @@ class EngineProcessManager(private val context: Context) {
             }
         }
 
+        val stallTracker = TunnelStallTracker()
+        stall = stallTracker
         pumpJob = scope.launch {
             val folder = LogNoiseFolder() // Psiphon's EOF line for every health probe of ours, see LogNoiseFolder
             try {
@@ -188,9 +196,10 @@ class EngineProcessManager(private val context: Context) {
                     while (isActive) {
                         val line = reader.readLine() ?: break
                         if (ChainReady.isReadyLine(line)) chainReady = true
+                        if (TunnelStallTracker.isRelevant(line)) stallTracker.feed(line)
                         for (out in folder.feed(line)) RingLogBuffer.append(out) // memory only -- see RingLogBuffer
                         // The exit reason is read from the last lines: probe noise must not push them out.
-                        if (!LogNoiseFolder.isOwnProbeNoise(line)) synchronized(tail) {
+                        if (!LogNoiseFolder.isNoise(line)) synchronized(tail) {
                             if (tail.size >= 20) tail.removeFirst()
                             tail.addLast(line)
                         }

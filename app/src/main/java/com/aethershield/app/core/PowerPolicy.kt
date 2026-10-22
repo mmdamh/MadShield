@@ -29,6 +29,12 @@ object PowerPolicy {
      * for a moment on some phones, and stopping the engine then would cost a full restart for nothing.
      */
     const val OFFLINE_GRACE_MS = 5_000L
+
+    /**
+     * While waiting for a network the system callback wakes the waiter at once. This slow poll is only a safety net
+     * for phones where the callback never reports the loss or the return (one cheap system call per wake-up).
+     */
+    const val OFFLINE_POLL_MS = 30_000L
 }
 
 /**

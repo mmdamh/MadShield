@@ -3,6 +3,7 @@ package com.aethershield.app.core
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -32,6 +33,41 @@ class NetworkWatcher(private val context: Context) {
      * start and whenever the callback could not be registered, so a failure here never pauses anything.
      */
     val online: Boolean get() = tracker.online
+
+    /**
+     * A direct look at the system, independent of the callbacks: is there any network that is not our own tunnel
+     * and claims Internet access? (Not "validated": on filtered networks the system's own check often fails while
+     * the link is fine.) True whenever it cannot tell, so a failure here never pauses anything.
+     */
+    @Suppress("DEPRECATION")
+    fun hasRealNetwork(): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return true
+        return try {
+            cm.allNetworks.any { n ->
+                val caps = cm.getNetworkCapabilities(n)
+                caps != null &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            }
+        } catch (_: Throwable) {
+            true
+        }
+    }
+
+    /**
+     * True when there is no usable network: the callbacks said so, or the direct look finds none. The second part
+     * matters on phones where the loss is never reported (the engine then spun on "Network is unreachable").
+     */
+    fun isOffline(): Boolean = !tracker.online || !hasRealNetwork()
+
+    /**
+     * Suspends until [hasRealNetwork]. The system callback wakes it at once; [pollMs] is only the safety net for a
+     * callback that never comes.
+     */
+    suspend fun awaitNetwork(pollMs: Long) {
+        while (!hasRealNetwork()) awaitChangeOrTimeout(pollMs)
+        tracker.markOnline()
+    }
 
     @Synchronized
     fun start() {
