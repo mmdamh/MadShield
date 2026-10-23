@@ -17,6 +17,7 @@ import java.net.Socket
  */
 object SocksProbe {
 
+    /** Defaults are the short startup limits; the health loops pass [PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS]/[PowerPolicy.HEALTH_READ_TIMEOUT_MS]. */
     fun handshakeOk(host: String, port: Int, connectTimeoutMs: Int = 250, readTimeoutMs: Int = 400): Boolean =
         try {
             Socket().use { s ->
@@ -108,13 +109,14 @@ object SocksProbe {
         cancelled: () -> Boolean = { false },
         pollMs: Long = 150
     ): Wait {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val startedAt = System.currentTimeMillis()
+        val deadline = startedAt + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (cancelled()) return Wait.CANCELLED
             if (!engineAlive()) return Wait.ENGINE_DIED
             if (handshakeOk(host, port)) return Wait.READY
             try {
-                Thread.sleep(pollMs)
+                Thread.sleep(PowerPolicy.readyPollMs(System.currentTimeMillis() - startedAt, pollMs))
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
                 return Wait.CANCELLED

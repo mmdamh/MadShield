@@ -19,6 +19,8 @@ import com.aethershield.app.ui.components.BackTopBar
 import com.aethershield.app.ui.components.HelperText
 import com.aethershield.app.ui.components.SegmentedChoice
 import com.aethershield.app.ui.components.SwitchRow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private data class AppEntry(val packageName: String, val label: String, val isSystem: Boolean)
 
@@ -34,7 +36,10 @@ fun AppExclusionScreen(
 
     // Apps with a launcher icon are always listed. "Show system apps" adds every other installed package
     // (system services, Google Play services...), which is where background traffic often comes from.
-    val apps = remember(showSystem) {
+    // Built on the IO dispatcher: with system apps shown that is hundreds of PackageManager calls, and they used to
+    // run on the main thread (a visible freeze when the screen opened or the switch was flipped). null = still loading.
+    val apps by produceState<List<AppEntry>?>(initialValue = null, showSystem) {
+        value = withContext(Dispatchers.IO) {
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val launcher = packageManager.queryIntentActivities(launcherIntent, 0).map { it.activityInfo.packageName }
         val pkgs = if (showSystem) {
@@ -53,14 +58,16 @@ fun AppExclusionScreen(
                 }.getOrNull()
             }
             .sortedBy { it.label.lowercase() }
+        }
     }
 
     var mode by remember(config.appSelectionMode) { mutableStateOf(config.appSelectionMode) }
     var selected by remember(config.selectedPackages) { mutableStateOf(config.selectedPackages) }
     var query by remember { mutableStateOf("") }
     val shown = remember(apps, query) {
-        if (query.isBlank()) apps
-        else apps.filter { it.label.contains(query.trim(), ignoreCase = true) || it.packageName.contains(query.trim(), ignoreCase = true) }
+        val list = apps ?: emptyList()
+        if (query.isBlank()) list
+        else list.filter { it.label.contains(query.trim(), ignoreCase = true) || it.packageName.contains(query.trim(), ignoreCase = true) }
     }
 
     // What the RUNNING VPN interface was built with (null when none): the only thing that can be called verified.
@@ -97,6 +104,7 @@ fun AppExclusionScreen(
                 label = { Text(stringResource(R.string.apps_search)) }
             )
             Spacer(Modifier.height(4.dp))
+            if (apps == null) LinearProgressIndicator(Modifier.fillMaxWidth())
             LazyColumn(Modifier.weight(1f)) {
                 items(shown, key = { it.packageName }) { app ->
                     val view = SplitTunnel.view(app.packageName, selfPackage, draft, config.mode, applied)

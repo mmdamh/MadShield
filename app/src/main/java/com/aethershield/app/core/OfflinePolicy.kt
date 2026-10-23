@@ -47,17 +47,23 @@ class OnlineTracker<T : Any> {
  * against a closed port hundreds of times). One failed scan can be a bad moment; [STALL_AFTER_SCANS] full scans
  * in a row with no working tunnel in between is an outage.
  *
- * Only the WireGuard lines are read. For other protocols nothing here ever fires, so they behave as before.
- * One instance per engine start (a restart begins with a clean count).
+ * WireGuard and MASQUE scan failures are read (both modes scan again and again when no gateway is reachable).
+ * Gool's inner tunnel validates through the same marker. A "tunnel validated" line from any transport resets the
+ * count. One instance per engine start (a restart begins with a clean count).
  */
 class TunnelStallTracker {
     companion object {
         const val STALL_AFTER_SCANS = 2
         const val SCAN_FAILED = "no usable WireGuard endpoint found"
-        const val TUNNEL_UP = "wireguard tunnel validated"
+        const val SCAN_FAILED_MASQUE = "no usable MASQUE gateway found"
 
-        /** Cheap pre-check so the log pump only calls [feed] for the two lines that matter. */
-        fun isRelevant(line: String): Boolean = line.contains(SCAN_FAILED) || line.contains(TUNNEL_UP)
+        /** Matches "wireguard tunnel validated", "masque tunnel validated" and "[h2] tunnel validated". */
+        const val TUNNEL_UP = "tunnel validated"
+
+        private fun isScanFailure(line: String) = line.contains(SCAN_FAILED) || line.contains(SCAN_FAILED_MASQUE)
+
+        /** Cheap pre-check so the log pump only calls [feed] for the lines that matter. */
+        fun isRelevant(line: String): Boolean = line.contains(TUNNEL_UP) || isScanFailure(line)
     }
 
     @Volatile var failedScans: Int = 0
@@ -66,7 +72,7 @@ class TunnelStallTracker {
     /** Called from the log pump thread only; [stalled] is read from the health loop. */
     fun feed(line: String) {
         if (line.contains(TUNNEL_UP)) failedScans = 0
-        else if (line.contains(SCAN_FAILED)) failedScans = failedScans + 1
+        else if (isScanFailure(line)) failedScans = failedScans + 1
     }
 
     val stalled: Boolean get() = failedScans >= STALL_AFTER_SCANS

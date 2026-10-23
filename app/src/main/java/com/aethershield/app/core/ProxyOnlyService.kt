@@ -41,6 +41,9 @@ class ProxyOnlyService : Service() {
     private lateinit var netWatcher: NetworkWatcher
     private lateinit var screen: ScreenWatcher
 
+    /** The last failed restart was the privacy chain (Psiphon/Tor), not the WARP tunnel: retry slowly, see [ReconnectPolicy]. */
+    @Volatile private var lastFailureWasChain = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -83,8 +86,8 @@ class ProxyOnlyService : Service() {
         job = scope.launch {
             try {
                 val config = settingsStore.configFlow.first()
-                val secretEnv = settingsStore.getServiceTokenSecret()
-                    ?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) } ?: emptyMap()
+                // Keystore is read only when a Zero Trust team is set; a Keystore failure means "no secret", not a crash.
+                val secretEnv = settingsStore.secretEnvFor(config)
                 val self = currentCoroutineContext()[Job]
                 var active = config
                 suspend fun startAndWait(c: EngineConfig): SocksProbe.Wait {
@@ -160,6 +163,7 @@ class ProxyOnlyService : Service() {
         var misses = 0
         var recoveries = 0
         var healthySince = 0L
+        var firstMissAt = 0L
         val idleTracker = IdleTracker()
         var idle = false
         screen.drain()
@@ -179,7 +183,7 @@ class ProxyOnlyService : Service() {
                     AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
                     postNotification(getString(R.string.notif_no_network))
                     idleTracker.wake(); idle = false
-                    netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS)
+                    netWatcher.awaitNetwork { PowerPolicy.offlinePollMs(isScreenOn()) }
                     currentCoroutineContext().ensureActive()
                     RingLogBuffer.append("[proxy] network is back, restarting engine")
                     recoveries = 0; misses = 0; healthySince = 0L
@@ -197,7 +201,14 @@ class ProxyOnlyService : Service() {
             }
             // Alive, but no WireGuard endpoint found in several full scans in a row (the local SOCKS port would still answer).
             val stalled = engine.isRunning && engine.tunnelStalled()
-            val ok = engine.isRunning && !stalled && SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
+            // With a chain the local port is Psiphon's/Tor's and answers before the chain really carries traffic, so
+            // "healthy" also needs the core's own "is ready" announcement (otherwise a failed restart showed "Connected").
+            val ok = engine.isRunning && !stalled &&
+                SocksProbe.handshakeOk(
+                    TunnelConfig.SOCKS_HOST, engine.probePort,
+                    PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
+                ) &&
+                (config.effectiveChain == PrivacyChain.NONE || engine.chainReady)
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (healthySince == 0L) healthySince = now
@@ -212,18 +223,25 @@ class ProxyOnlyService : Service() {
             }
             healthySince = 0L
             idleTracker.wake(); idle = false
+            if (misses == 0) firstMissAt = android.os.SystemClock.elapsedRealtime()
             if (++misses == 2) {
                 RingLogBuffer.append("[proxy] health check failed")
                 AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
             }
             if (stalled && config.quickReconnect) {
-                RingLogBuffer.append("[proxy] no WireGuard endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
+                RingLogBuffer.append("[proxy] no WARP endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
+                engine.stop()
+            }
+            // An engine that is alive but has not answered for a full minute is hung (same rule as the VPN mode).
+            if (engine.isRunning && config.quickReconnect &&
+                android.os.SystemClock.elapsedRealtime() - firstMissAt >= PowerPolicy.UNRESPONSIVE_RESTART_AFTER_MS) {
+                RingLogBuffer.append("[proxy] engine unresponsive for 60s, restarting it")
                 engine.stop()
             }
             if (misses < 2 || engine.isRunning || !config.quickReconnect) continue
 
             recoveries++
-            val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0))
+            val pause = ReconnectPolicy.delayMs(recoveries, isScreenOn(), kotlin.random.Random.nextDouble(-1.0, 1.0), lastFailureWasChain)
             val waiting = ReconnectPolicy.phase(recoveries) == ReconnectPolicy.Phase.WAITING
             RingLogBuffer.append("[proxy] ${if (waiting) "waiting" else "retry"} #$recoveries in ${pause / 1000}s (or when the network changes)")
             if (waiting) {
@@ -232,7 +250,7 @@ class ProxyOnlyService : Service() {
             }
             netWatcher.drain()
             if (netWatcher.isOffline()) {
-                netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS) // no network: a retry now could only fail
+                netWatcher.awaitNetwork { PowerPolicy.offlinePollMs(isScreenOn()) } // no network: a retry now could only fail
                 RingLogBuffer.append("[proxy] network is back, retrying now")
                 recoveries = 1
             } else if (netWatcher.awaitChangeOrTimeout(pause)) {
@@ -267,9 +285,17 @@ class ProxyOnlyService : Service() {
             TunnelConfig.SOCKS_HOST, engine.probePort, timeout,
             engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
         )
-        if (w != SocksProbe.Wait.READY) return false
-        if (c.effectiveChain == PrivacyChain.NONE) return true
-        return engine.awaitChainReady(timeout) { self?.isActive == false } == null
+        if (w != SocksProbe.Wait.READY) { lastFailureWasChain = false; return false }
+        if (c.effectiveChain == PrivacyChain.NONE) { lastFailureWasChain = false; return true }
+        val reason = engine.awaitChainReady(timeout) { self?.isActive == false }
+        if (reason == null) { lastFailureWasChain = false; return true }
+        if (reason == "cancelled") throw CancellationException("restart cancelled")
+        // The chain (Psiphon/Tor) did not come up. Stop the engine: it would otherwise keep a WARP tunnel and a
+        // blocked Psiphon running through the wait, and the next retry follows the slow chain schedule.
+        RingLogBuffer.append("[proxy] chain not ready: $reason")
+        lastFailureWasChain = ConnectPolicy.isChainFailure(reason)
+        if (lastFailureWasChain) engine.stop()
+        return false
     }
 
     private fun isScreenOn(): Boolean =
@@ -292,6 +318,7 @@ class ProxyOnlyService : Service() {
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
         engine.stop()
+        RouteMatcher.clearCache()
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
         if (!keepError) AetherController.setState(ConnectionState.Idle)
         RingLogBuffer.append("[proxy] service destroyed")

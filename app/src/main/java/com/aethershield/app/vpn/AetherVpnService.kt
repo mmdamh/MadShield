@@ -68,6 +68,9 @@ class AetherVpnService : VpnService() {
         private const val HARDENED_PASS_TIMEOUT_MS = 60_000L
         private const val RECOVERY_TIMEOUT_MS = 30_000L
         private const val BRIDGE_STOP_TIMEOUT_MS = 4_000L
+
+        /** Re-attach attempts of the tunnel bridge while the engine is healthy, before giving up (no endless 5-second loop). */
+        private const val MAX_BRIDGE_RETRIES = 3
     }
 
     private sealed interface Attempt {
@@ -147,6 +150,11 @@ class AetherVpnService : VpnService() {
                 "native tunnel bridge unavailable: ${TProxyService.loadFailure ?: "unknown"}"
             )
         }
+        // Android treats "allow only these apps" with an empty list as "allow every app". Starting anyway would
+        // capture the whole phone although the user asked for a handful of apps (or none), so refuse with a reason.
+        if (baseConfig.appSelectionMode == AppSelectionMode.INCLUDE_ONLY_SELECTED && baseConfig.selectedPackages.isEmpty()) {
+            throw IllegalStateException(getString(R.string.err_include_only_empty))
+        }
 
         if (baseConfig.killSwitchEnabled) {
             establishTun(baseConfig) // capture traffic immediately; nothing bridged yet
@@ -220,9 +228,8 @@ class AetherVpnService : VpnService() {
     /** Starts the engine with [config] and waits for a real SOCKS5 answer, up to [timeoutMs]. */
     private suspend fun attemptConnect(config: EngineConfig, timeoutMs: Long): Attempt =
         withContext(Dispatchers.IO) {
-            val secretEnv = settingsStore.getServiceTokenSecret()
-                ?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) }
-                ?: emptyMap()
+            // Keystore is read only when a Zero Trust team is set, and a Keystore failure means "no secret", never a crash.
+            val secretEnv = settingsStore.secretEnvFor(config)
             val job = currentCoroutineContext()[Job]
             ensureActive() // never launch an engine after the user already pressed Disconnect
             // EnginePreflightException propagates on purpose: it cannot work no matter
@@ -302,8 +309,11 @@ class AetherVpnService : VpnService() {
             AppSelectionMode.EXCLUDE_SELECTED -> config.selectedPackages.forEach {
                 runCatching { builder.addDisallowedApplication(it) }
             }
-            AppSelectionMode.INCLUDE_ONLY_SELECTED -> config.selectedPackages.forEach {
-                runCatching { builder.addAllowedApplication(it) }
+            AppSelectionMode.INCLUDE_ONLY_SELECTED -> {
+                var added = 0
+                config.selectedPackages.forEach { if (runCatching { builder.addAllowedApplication(it) }.isSuccess) added++ }
+                // Every selected app was uninstalled: an empty allow-list would capture ALL apps.
+                if (added == 0) throw IllegalStateException(getString(R.string.err_include_only_empty))
             }
             AppSelectionMode.NONE -> {}
         }
@@ -436,6 +446,7 @@ class AetherVpnService : VpnService() {
             var lastCpuTicks = 0L
             var firstFailAt = 0L
             var healthySince = 0L
+            var bridgeRetries = 0
             val idleTracker = IdleTracker()
             var idle = false
             screen.drain()
@@ -467,10 +478,10 @@ class AetherVpnService : VpnService() {
                             AetherController.setState(ConnectionState.Error(getString(R.string.state_no_network)))
                             updateNotification(getString(R.string.notif_no_network))
                             idleTracker.wake(); idle = false
-                            netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS)
+                            netWatcher.awaitNetwork { PowerPolicy.offlinePollMs(isScreenOn()) }
                             ensureActive()
                             RingLogBuffer.append("[vpn] network is back, restarting engine")
-                            recoveries = 0; consecutiveFailures = 0; healthySince = 0L
+                            recoveries = 0; consecutiveFailures = 0; healthySince = 0L; bridgeRetries = 0
                             AetherController.setState(ConnectionState.Connecting)
                             updateNotification(getString(R.string.notif_connecting))
                             when (val r = attemptConnect(config, RECOVERY_TIMEOUT_MS + ConnectPolicy.chainAllowanceMs(config))) {
@@ -488,7 +499,10 @@ class AetherVpnService : VpnService() {
                     // (Psiphon's, with a chain) would still answer, so the probe alone cannot see this outage.
                     val stalled = engine.isRunning && engine.tunnelStalled()
                     val ok = engine.isRunning && !stalled &&
-                        SocksProbe.handshakeOk(TunnelConfig.SOCKS_HOST, engine.probePort)
+                        SocksProbe.handshakeOk(
+                            TunnelConfig.SOCKS_HOST, engine.probePort,
+                            PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
+                        )
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.
@@ -518,11 +532,25 @@ class AetherVpnService : VpnService() {
                         // retry schedule from the beginning instead of continuing the slow phase.
                         if (healthySince == 0L) healthySince = now
                         else if (now - healthySince >= ReconnectPolicy.STABLE_AFTER_MS) recoveries = 0
-                        if (wasDown) { // came back (core replaced its tunnel, or we restarted it)
-                            wasDown = false
+                        // The engine is fine, but is the bridge to the TUN still running? hev can end on its own (or
+                        // never have started: the first attach in connect() failed), and nothing else ever noticed:
+                        // the app stayed on "connected" (or "error") with no traffic until the user reconnected.
+                        if (!wasDown && tunFd != null && !userRequestedStop &&
+                            !runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(true)) {
+                            RingLogBuffer.append("[vpn] tunnel bridge is not running although the engine is healthy: re-attaching it")
+                            stopBridge()
+                            wasDown = true
+                        }
+                        if (wasDown && bridgeRetries < MAX_BRIDGE_RETRIES) { // came back (core replaced its tunnel, or we restarted it)
                             if (tunFd == null) establishTun(config)
-                            if (bridgeTunToEngine(config)) markConnected(config)
-                            RingLogBuffer.append("[vpn] tunnel recovered")
+                            if (bridgeTunToEngine(config)) {
+                                wasDown = false
+                                bridgeRetries = 0
+                                markConnected(config)
+                                RingLogBuffer.append("[vpn] tunnel recovered")
+                            } else if (++bridgeRetries >= MAX_BRIDGE_RETRIES) {
+                                RingLogBuffer.append("[vpn] the tunnel bridge would not start $MAX_BRIDGE_RETRIES times in a row: giving up until you reconnect")
+                            }
                         }
                         continue
                     }
@@ -534,6 +562,7 @@ class AetherVpnService : VpnService() {
 
                     if (!wasDown) {
                         wasDown = true
+                        bridgeRetries = 0
                         RingLogBuffer.append("[vpn] health check failed, tunnel considered down")
                         AetherController.setState(
                             ConnectionState.Error(
@@ -548,7 +577,7 @@ class AetherVpnService : VpnService() {
                     // Stop the scanning core and retry on the back-off schedule below, instead of letting it
                     // scan non-stop (and Psiphon hammer a closed port) until a network happens to return.
                     if (stalled && config.quickReconnect) {
-                        RingLogBuffer.append("[vpn] no WireGuard endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
+                        RingLogBuffer.append("[vpn] no WARP endpoint found in ${TunnelStallTracker.STALL_AFTER_SCANS} full scans in a row: stopping the engine, retrying on the back-off schedule")
                         engine.stop()
                     }
 
@@ -572,7 +601,7 @@ class AetherVpnService : VpnService() {
                         }
                         netWatcher.drain()
                         if (netWatcher.isOffline()) {
-                            netWatcher.awaitNetwork(PowerPolicy.OFFLINE_POLL_MS) // no network: a retry now could only fail
+                            netWatcher.awaitNetwork { PowerPolicy.offlinePollMs(isScreenOn()) } // no network: a retry now could only fail
                             RingLogBuffer.append("[vpn] network is back, retrying now")
                             recoveries = 1
                         } else if (netWatcher.awaitChangeOrTimeout(pause)) {
@@ -619,6 +648,7 @@ class AetherVpnService : VpnService() {
         stopBridge()
         engine.stop()
         releaseTun()
+        RouteMatcher.clearCache()
         // A startup failure stops the service on purpose and must leave its Error visible;
         // a user-requested stop (or a revoke) always returns to Idle.
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
@@ -740,11 +770,15 @@ class AetherVpnService : VpnService() {
             if (s != null && s.size >= 4) {
                 val p = prev
                 if (p != null) {
-                    speedText = NotificationText.speedLine(
+                    val line = NotificationText.speedLine(
                         upBps = NotificationText.bps(p[1], s[1], now - prevAt),
                         downBps = NotificationText.bps(p[3], s[3], now - prevAt)
                     )
-                    postNotification()
+                    // Same text as before (an idle tunnel reads "0 B/s" again and again): do not re-post it.
+                    if (line != speedText) {
+                        speedText = line
+                        postNotification()
+                    }
                 }
                 prev = s; prevAt = now
             }

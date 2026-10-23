@@ -227,12 +227,14 @@ class EngineProcessManager(private val context: Context) {
      * @return null when ready, or a reason when the engine died / the time ran out / the user cancelled.
      */
     fun awaitChainReady(timeoutMs: Long, cancelled: () -> Boolean): String? {
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val startedAt = System.currentTimeMillis()
+        val deadline = startedAt + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (chainReady) return null
             if (cancelled()) return "cancelled"
             if (!isRunning) return failureReason() ?: "the engine process exited"
-            try { Thread.sleep(150) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
+            // A chain can take minutes to start; poll slower the longer it takes instead of 6 times a second throughout.
+            try { Thread.sleep(PowerPolicy.readyPollMs(System.currentTimeMillis() - startedAt)) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
         }
         return "the privacy chain (Psiphon/Tor) did not become ready in ${timeoutMs / 1000}s"
     }

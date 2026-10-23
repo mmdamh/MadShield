@@ -112,6 +112,8 @@ object EngineEnvironment {
         routesFilePath?.let { env["AETHER_ROUTES_FILE"] = it }
         config.zeroTrustTeam?.takeIf { it.isNotBlank() }?.let { env["AETHER_TEAM"] = it }
 
+        if (config.powerSaver) env.putAll(BatterySaver.env())
+
         env.putAll(secretEnv)
         return env
     }

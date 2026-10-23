@@ -172,6 +172,12 @@ data class EngineConfig(
     /** Show upload/download speed in the status notification (VPN mode, only while the screen is on). */
     val notifSpeed: Boolean = true,
 
+    /**
+     * Battery saver (update15): fewer keepalive and health packets, and a stale limit that no longer kills a working
+     * tunnel after one lost probe. See [BatterySaver]. On by default; turn it off to get the core's own timings.
+     */
+    val powerSaver: Boolean = true,
+
     // Local DoH (update11): names are resolved by the app itself through DoH, in every mode, instead of by
     // the core. Off by default; with it off the behaviour is exactly that of update10.
     val dohOn: Boolean = false,
@@ -245,8 +251,11 @@ data class EngineConfig(
  * again without ECH instead of leaving the user with a dead connection.
  */
 object EchFallback {
-    fun isEchFailure(reason: String?): Boolean =
-        reason != null && reason.contains("ECH", ignoreCase = true)
+    // "ECH" as a word of its own. A plain substring test also matched words such as "technical" or "detected"
+    // and switched ECH off for failures that had nothing to do with it.
+    private val ECH_WORD = Regex("\\bECH\\b", RegexOption.IGNORE_CASE)
+
+    fun isEchFailure(reason: String?): Boolean = reason != null && ECH_WORD.containsMatchIn(reason)
 }
 
 /**

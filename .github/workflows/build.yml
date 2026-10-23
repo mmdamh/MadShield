@@ -30,6 +30,29 @@ permissions:
   contents: read
 
 jobs:
+  # Pure-Kotlin unit tests (policies, parsers, env builder). Deliberately NOT a dependency of the build jobs:
+  # a failing test shows up as a red job here but never blocks an APK, so you can still ship while you look.
+  pure-tests:
+    name: Pure Kotlin tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install kotlinc 1.9.24
+        run: |
+          set -e
+          curl -fsSL -o /tmp/kotlinc.zip https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
+          unzip -q /tmp/kotlinc.zip -d /tmp
+          echo "KOTLINC=/tmp/kotlinc/bin/kotlinc" >> "$GITHUB_ENV"
+      - name: Run tests
+        run: bash scripts/run-pure-tests.sh
+
   build-native-aether:
     name: Build aether core (${{ matrix.abi }})
     runs-on: ubuntu-latest
@@ -64,6 +87,20 @@ jobs:
           git -C native/aether-core checkout -q FETCH_HEAD
           test "$(git -C native/aether-core rev-parse HEAD)" = "$pin"
           echo "aether-core @ $pin"
+
+      # OPTIONAL core patch (off by default). Create the empty file native/aether-core-patches/health-interval/ENABLED
+      # to apply it: it makes the WireGuard health probe interval configurable (AETHER_WG_HEALTH_SECS), which the
+      # app's Battery saver sets to 10 s instead of the core's fixed 3 s. The script changes nothing and FAILS the
+      # build unless the target text matches exactly once, so a changed pin is never patched blindly.
+      - name: Apply optional core patch (health interval)
+        run: |
+          set -e
+          if [ -f native/aether-core-patches/health-interval/ENABLED ]; then
+            python3 native/aether-core-patches/health-interval/apply.py native/aether-core
+            grep -q "AETHER_WG_HEALTH_SECS" native/aether-core/aether/src/wireguard.rs
+          else
+            echo "health-interval patch not enabled (no ENABLED file): building the pinned core unmodified"
+          fi
 
       # The app drives the core purely through AETHER_* environment variables
       # (see EngineProcessManager.kt). If an upstream bump ever renames or

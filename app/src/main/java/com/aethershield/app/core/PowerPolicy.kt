@@ -33,8 +33,62 @@ object PowerPolicy {
     /**
      * While waiting for a network the system callback wakes the waiter at once. This slow poll is only a safety net
      * for phones where the callback never reports the loss or the return (one cheap system call per wake-up).
+     * Screen on: [OFFLINE_POLL_MS]; screen off: [OFFLINE_POLL_SCREEN_OFF_MS], nobody is watching and every wake-up costs.
      */
     const val OFFLINE_POLL_MS = 30_000L
+    const val OFFLINE_POLL_SCREEN_OFF_MS = 120_000L
+
+    fun offlinePollMs(screenOn: Boolean): Long = if (screenOn) OFFLINE_POLL_MS else OFFLINE_POLL_SCREEN_OFF_MS
+
+    /**
+     * Timeouts of the health probe (loopback SOCKS5 greeting). The old 250/400 ms were fine for an idle core but a
+     * core or Psiphon busy on a loaded phone can answer later, and one slow answer was counted as an outage. A
+     * healthy engine still answers in microseconds, so the larger limits cost nothing; they only apply when it is slow.
+     */
+    const val HEALTH_CONNECT_TIMEOUT_MS = 500
+    const val HEALTH_READ_TIMEOUT_MS = 1_500
+
+    /**
+     * Pause between two readiness polls while the engine is starting. Fast at first (a normal start is a second or
+     * two), then slower: a chain such as Psiphon or Tor can take minutes, and 6 polls a second for that long only
+     * keeps the CPU awake.
+     */
+    fun readyPollMs(elapsedMs: Long, baseMs: Long = 150L): Long = when {
+        elapsedMs < 10_000L -> baseMs
+        elapsedMs < 60_000L -> maxOf(baseMs, 500L)
+        else -> maxOf(baseMs, 1_000L)
+    }
+}
+
+/**
+ * The "Battery saver" profile: engine settings that trade a little detection speed for far fewer radio wake-ups.
+ * Pure and explicit so the exact values are visible and tested.
+ *
+ * - WireGuard health probe every [WG_HEALTH_SECS] s instead of ~3 s. The core only reads this variable when it was
+ *   built with the update15 core patch (scripts/patch-core.py); an unpatched core ignores it and keeps its own 3 s.
+ * - Stale limit [WG_STALE_SECS] s instead of 10 s. A limit shorter than a few probe intervals declares a working
+ *   tunnel dead after one lost packet (the 4-5 minute reconnect cycle seen in field logs); it must stay well above
+ *   the probe interval.
+ * - WireGuard keepalive [WG_KEEPALIVE_SECS] s (the standard WireGuard value) instead of 5 s. Mobile NATs keep UDP
+ *   mappings far longer than that.
+ * - HTTP/2 keepalive [H2_KEEPALIVE_SECS] s instead of 15 s.
+ */
+object BatterySaver {
+    const val WG_HEALTH_SECS = 10
+    const val WG_STALE_SECS = 30
+    const val WG_KEEPALIVE_SECS = 25
+    const val H2_KEEPALIVE_SECS = 30
+
+    /** The stale limit must stay at least three probe intervals, or a single lost probe kills a good tunnel. */
+    fun isConsistent(healthSecs: Int = WG_HEALTH_SECS, staleSecs: Int = WG_STALE_SECS): Boolean =
+        staleSecs >= healthSecs * 3
+
+    fun env(): Map<String, String> = linkedMapOf(
+        "AETHER_WG_HEALTH_SECS" to WG_HEALTH_SECS.toString(),
+        "AETHER_WG_STALE_SECS" to WG_STALE_SECS.toString(),
+        "AETHER_WG_KEEPALIVE" to WG_KEEPALIVE_SECS.toString(),
+        "AETHER_MASQUE_H2_KEEPALIVE_SECS" to H2_KEEPALIVE_SECS.toString()
+    )
 }
 
 /**

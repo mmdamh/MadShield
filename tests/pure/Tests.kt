@@ -930,8 +930,75 @@ fun routeFrontTests() {
         o.markOnline()
         check("markOnline puts it back", o.online)
         check("poll safety net is slower than the grace period", PowerPolicy.OFFLINE_POLL_MS > PowerPolicy.OFFLINE_GRACE_MS)
+        check("offline poll: 30 s screen on, 120 s screen off", PowerPolicy.offlinePollMs(true) == 30_000L && PowerPolicy.offlinePollMs(false) == 120_000L)
+        check("screen-off poll is never faster than screen-on", PowerPolicy.OFFLINE_POLL_SCREEN_OFF_MS >= PowerPolicy.OFFLINE_POLL_MS)
         // notification: sing-box style zero line while there is no traffic
         check("zero speed line", NotificationText.speedLine(0L, 0L).contains("↑ 0 B/s") && NotificationText.speedLine(0L, 0L).contains("↓ 0 B/s"))
         check("bps never negative after a bridge restart", NotificationText.bps(5_000L, 100L, 2_000L) == 0L)
+    }
+
+    // ------------------------------------------------------------------ update15
+    run {
+        // stall tracker: MASQUE scan failures count, every transport's "tunnel validated" resets
+        val masqueFail = "[2026-10-23T09:00:00.000Z WARN  aether] [-] no usable MASQUE gateway found: scan: nothing reachable; rescanning shortly"
+        val masqueUp = "[2026-10-23T09:00:10.000Z INFO  aether::quic] [+] masque tunnel validated (end-to-end data confirmed); exposing socks5"
+        val h2Up = "[2026-10-23T09:00:10.000Z INFO  aether::masque_h2] [h2] tunnel validated (end-to-end data confirmed); exposing socks5"
+        val goolUp = "[2026-10-23T09:00:10.000Z INFO  aether] [+] [inner] wireguard tunnel validated (end-to-end data confirmed)"
+        check("update15: MASQUE failure and every validated line are relevant",
+            TunnelStallTracker.isRelevant(masqueFail) && TunnelStallTracker.isRelevant(masqueUp) &&
+                TunnelStallTracker.isRelevant(h2Up) && TunnelStallTracker.isRelevant(goolUp))
+        check("update15: unrelated line is not relevant", !TunnelStallTracker.isRelevant("[x] socks5 server listening on 127.0.0.1:1823"))
+        val t = TunnelStallTracker()
+        t.feed(masqueFail)
+        check("update15: one MASQUE miss is not a stall", !t.stalled && t.failedScans == 1)
+        t.feed(masqueFail)
+        check("update15: two MASQUE misses in a row are a stall", t.stalled)
+        t.feed(h2Up)
+        check("update15: an h2 validated line resets the count", !t.stalled && t.failedScans == 0)
+        t.feed(masqueFail); t.feed(masqueUp); t.feed(masqueFail)
+        check("update15: a validated line in between keeps it below the limit", !t.stalled)
+
+        // power policy
+        check("update15: health probe limits are above the old 250/400 ms",
+            PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS > 250 && PowerPolicy.HEALTH_READ_TIMEOUT_MS > 400)
+        check("update15: ready poll is fast first, then slower",
+            PowerPolicy.readyPollMs(0) == 150L && PowerPolicy.readyPollMs(9_999) == 150L &&
+                PowerPolicy.readyPollMs(10_000) == 500L && PowerPolicy.readyPollMs(59_999) == 500L &&
+                PowerPolicy.readyPollMs(60_000) == 1_000L && PowerPolicy.readyPollMs(300_000) == 1_000L)
+        check("update15: ready poll never goes below a caller's own base", PowerPolicy.readyPollMs(0, 2_000L) == 2_000L && PowerPolicy.readyPollMs(70_000, 2_000L) == 2_000L)
+
+        // battery saver profile
+        check("update15: saver values are consistent (stale >= 3 probe intervals)", BatterySaver.isConsistent())
+        check("update15: inconsistent pair is detected", !BatterySaver.isConsistent(healthSecs = 10, staleSecs = 20))
+        val sv = BatterySaver.env()
+        check("update15: saver env has exactly the four variables",
+            sv.keys == setOf("AETHER_WG_HEALTH_SECS", "AETHER_WG_STALE_SECS", "AETHER_WG_KEEPALIVE", "AETHER_MASQUE_H2_KEEPALIVE_SECS"))
+        check("update15: saver env values", sv["AETHER_WG_HEALTH_SECS"] == "10" && sv["AETHER_WG_STALE_SECS"] == "30" &&
+            sv["AETHER_WG_KEEPALIVE"] == "25" && sv["AETHER_MASQUE_H2_KEEPALIVE_SECS"] == "30")
+        check("update15: WireGuard keepalive stays under common 30 s NAT timeouts", BatterySaver.WG_KEEPALIVE_SECS <= 25)
+
+        fun envOf(c: EngineConfig): Map<String, String> {
+            val plan = FrontPlan.of(c.effectiveChain, c.dohActive, false, c.socksPort)
+            return EngineEnvironment.build(c, "/x/aether.toml", "/tmp", null, emptyMap(), "/n/libpsiphon.so", "/d", plan)
+        }
+        val cfg = EngineConfig(protocol = Protocol.WIREGUARD)
+        check("update15: powerSaver is on by default", cfg.powerSaver)
+        val eOn = envOf(cfg)
+        check("update15: engine env carries the saver variables when on",
+            eOn["AETHER_WG_STALE_SECS"] == "30" && eOn["AETHER_WG_KEEPALIVE"] == "25" && eOn["AETHER_WG_HEALTH_SECS"] == "10")
+        val eOff = envOf(cfg.copy(powerSaver = false))
+        check("update15: engine env is exactly the old one when off",
+            eOff.keys.none { it in BatterySaver.env().keys })
+        check("update15: log level stays info (the stall tracker needs the validated line)", eOn["AETHER_LOG_LEVEL"] == "info" && eOff["AETHER_LOG_LEVEL"] == "info")
+        check("update15: a secret still wins over everything", EngineEnvironment.build(cfg, "/c", "/t", null,
+            mapOf("AETHER_ACCESS_CLIENT_SECRET" to "s"), null, null, FrontPlan.of(cfg.effectiveChain, false, false, cfg.socksPort))["AETHER_ACCESS_CLIENT_SECRET"] == "s")
+
+        // ECH failure detection: the word, not a substring
+        check("update15: real ECH errors match",
+            EchFallback.isEchFailure("ECH is on but there is no ECH key to offer") && EchFallback.isEchFailure("failed to fetch ech key") &&
+                EchFallback.isEchFailure("[ECH] lookup failed"))
+        check("update15: words that only contain 'ech' do not match",
+            !EchFallback.isEchFailure("technical problem") && !EchFallback.isEchFailure("detected a fault") &&
+                !EchFallback.isEchFailure("the check failed") && !EchFallback.isEchFailure(null) && !EchFallback.isEchFailure(""))
     }
 }

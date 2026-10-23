@@ -201,17 +201,17 @@ private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
 
     // Rotation only runs while it means something (connecting / connected); an idle
     // button costs nothing, which keeps battery use flat.
-    val spin = if (busy || live) {
+    // The angle is kept as State and only read while drawing (see CookieBlob): no recomposition per frame.
+    val spin: State<Float>? = if (busy || live) {
         val transition = rememberInfiniteTransition(label = "blob")
-        val angle by transition.animateFloat(
+        transition.animateFloat(
             initialValue = 0f, targetValue = 360f,
             animationSpec = infiniteRepeatable(
                 tween(if (busy) 3200 else 24000, easing = LinearEasing), RepeatMode.Restart
             ),
             label = "blob-spin"
         )
-        angle
-    } else 0f
+    } else null
     val amplitude by animateFloatAsState(
         when { busy -> 0.10f; live -> 0.075f; else -> 0.04f },
         spring(dampingRatio = 0.6f, stiffness = 260f), label = "blob-amp"
@@ -244,7 +244,7 @@ private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
             Modifier.matchParentSize(),
             brush = Brush.linearGradient(listOf(cs.primary, end)),
             amplitude = amplitude,
-            rotationDeg = if (busy || live) spin else 0f
+            rotationDeg = { spin?.value ?: 0f }
         )
         if (live) {
             UptimeText((state as ConnectionState.Connected).sinceMs, cs.onPrimary)

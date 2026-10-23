@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -34,32 +35,41 @@ import kotlin.math.sin
  * The scalloped "cookie" button shape of the ZedSecure home screen, drawn with
  * plain Canvas maths (no extra dependency): radius = R * (1 + amplitude * cos(lobes * angle)).
  * Animating [amplitude] and [rotationDeg] gives the calm/searching/live looks.
+ *
+ * [rotationDeg] is a LAMBDA read while drawing, not a value read while composing. Reading the animated angle in
+ * composition recomposed the whole home screen on every frame (60 times a second) for as long as the button
+ * spun; read in the draw phase it only redraws. The outline path is built once per size/amplitude, not per frame.
  */
 @Composable
 fun CookieBlob(
     modifier: Modifier,
     brush: Brush,
     amplitude: Float,
-    rotationDeg: Float,
+    rotationDeg: () -> Float,
     lobes: Int = 10
 ) {
-    Canvas(modifier) {
-        val steps = 220
-        val outer = min(size.width, size.height) / 2f
-        val base = outer / (1f + amplitude)
-        val cx = size.width / 2f
-        val cy = size.height / 2f
-        val path = Path()
-        for (i in 0..steps) {
-            val a = 2.0 * PI * i / steps
-            val r = base * (1f + amplitude * cos(lobes * a).toFloat())
-            val x = cx + r * cos(a).toFloat()
-            val y = cy + r * sin(a).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    Box(
+        modifier.drawWithCache {
+            val steps = 220
+            val outer = min(size.width, size.height) / 2f
+            val base = outer / (1f + amplitude)
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val path = Path()
+            for (i in 0..steps) {
+                val a = 2.0 * PI * i / steps
+                val r = base * (1f + amplitude * cos(lobes * a).toFloat())
+                val x = cx + r * cos(a).toFloat()
+                val y = cy + r * sin(a).toFloat()
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
+            val pivot = androidx.compose.ui.geometry.Offset(cx, cy)
+            onDrawBehind {
+                rotate(rotationDeg(), pivot = pivot) { drawPath(path, brush) }
+            }
         }
-        path.close()
-        rotate(rotationDeg, pivot = androidx.compose.ui.geometry.Offset(cx, cy)) { drawPath(path, brush) }
-    }
+    )
 }
 
 /** Big page title used at the top of each tab, ZedSecure-style. */

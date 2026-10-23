@@ -52,6 +52,7 @@ class SettingsStore(private val context: Context) {
         val PSIPHON_REGION = stringPreferencesKey("psiphon_region")
         val PERF = stringPreferencesKey("perf_profile")
         val NOTIF_SPEED = booleanPreferencesKey("notif_speed")
+        val POWER_SAVER = booleanPreferencesKey("power_saver")
 
         // Local DoH (update11). The resolver list is ONE newline-separated string, not a set: order is the
         // order they are tried in, and a string set would lose it.
@@ -80,7 +81,7 @@ class SettingsStore(private val context: Context) {
         )
     }
 
-    val configFlow: Flow<EngineConfig> = context.dataStore.data.map { p ->
+    private fun readConfig(p: Preferences): EngineConfig =
         EngineConfig(
             mode = p[Keys.MODE]?.let { runCatching { ConnectionMode.valueOf(it) }.getOrNull() }
                 ?: ConnectionMode.PROXY_ONLY,
@@ -108,36 +109,42 @@ class SettingsStore(private val context: Context) {
             psiphonRegion = Chain.normalizeRegion(p[Keys.PSIPHON_REGION]),
             perfProfile = CoreChoices.perfOrDefault(p[Keys.PERF]),
             notifSpeed = p[Keys.NOTIF_SPEED] ?: true,
+            powerSaver = p[Keys.POWER_SAVER] ?: true,
             dohOn = p[Keys.DOH_ON] ?: false,
             dohResolvers = (p[Keys.DOH_RESOLVERS] ?: "").split('\n').map { it.trim() }.filter { it.isNotEmpty() },
             dohViaTor = p[Keys.DOH_VIA_TOR] ?: true,
             dohServeStale = p[Keys.DOH_SERVE_STALE] ?: false,
             dohForDirect = p[Keys.DOH_FOR_DIRECT] ?: false
         )
-    }
 
-    val uiPrefsFlow: Flow<UiPrefs> = context.dataStore.data.map { p ->
-        UiPrefs(
-            themeId = p[Keys.THEME_ID] ?: UiPrefs().themeId,
-            darkMode = p[Keys.DARK_MODE]?.let { runCatching { DarkMode.valueOf(it) }.getOrNull() } ?: DarkMode.SYSTEM,
-            amoled = p[Keys.AMOLED] ?: false
-        )
-    }
+    val configFlow: Flow<EngineConfig> = context.dataStore.data.map { readConfig(it) }
 
+    private fun readUi(p: Preferences): UiPrefs = UiPrefs(
+        themeId = p[Keys.THEME_ID] ?: UiPrefs().themeId,
+        darkMode = p[Keys.DARK_MODE]?.let { runCatching { DarkMode.valueOf(it) }.getOrNull() } ?: DarkMode.SYSTEM,
+        amoled = p[Keys.AMOLED] ?: false
+    )
+
+    val uiPrefsFlow: Flow<UiPrefs> = context.dataStore.data.map { readUi(it) }
+
+    /**
+     * Read, change and write inside ONE DataStore transaction. The old version read the value first and wrote it
+     * afterwards, so two quick changes (two switches flipped in a row, or the UI and a service) could each start
+     * from the same old value and the second write silently undid the first. [transform] must have no side effects.
+     */
     suspend fun updateUi(transform: (UiPrefs) -> UiPrefs) {
-        val current = transform(uiPrefsFlow.first())
         context.dataStore.edit { p ->
+            val current = transform(readUi(p))
             p[Keys.THEME_ID] = current.themeId
             p[Keys.DARK_MODE] = current.darkMode.name
             p[Keys.AMOLED] = current.amoled
         }
     }
 
+    /** Same single-transaction rule as [updateUi]. [transform] must have no side effects (it may run again on a retry). */
     suspend fun update(transform: (EngineConfig) -> EngineConfig) {
-        // Read the current value once, apply transform, write back. Simplest
-        // correct approach for a settings screen this size.
-        val current = transform(configFlow.first())
         context.dataStore.edit { p ->
+            val current = transform(readConfig(p))
             p[Keys.MODE] = current.mode.name
             p[Keys.PROTOCOL] = current.protocol.name
             p[Keys.DNS] = current.dnsResolvers.toSet()
@@ -160,6 +167,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.CHAIN] = current.privacyChain.name
             p[Keys.PERF] = CoreChoices.perfOrDefault(current.perfProfile)
             p[Keys.NOTIF_SPEED] = current.notifSpeed
+            p[Keys.POWER_SAVER] = current.powerSaver
             p[Keys.DOH_ON] = current.dohOn
             if (current.dohResolvers.isEmpty()) p.remove(Keys.DOH_RESOLVERS) else p[Keys.DOH_RESOLVERS] = current.dohResolvers.joinToString("\n")
             p[Keys.DOH_VIA_TOR] = current.dohViaTor
@@ -170,11 +178,25 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    /** Zero Trust service-token secret, Keystore-encrypted, separate from the rest. */
-    fun getServiceTokenSecret(): String? = encryptedPrefs.getString("zt_service_secret", null)
+    /**
+     * Zero Trust service-token secret, Keystore-encrypted, separate from the rest. Null when none is saved OR when the
+     * Keystore cannot be read (it fails on some phones after a restore or a lock-screen change): a connect must
+     * never crash on that, it simply goes ahead without the secret.
+     */
+    fun getServiceTokenSecret(): String? =
+        runCatching { encryptedPrefs.getString("zt_service_secret", null) }.getOrNull()
+
+    /** The environment entry for the secret, and ONLY when a Zero Trust team is set, so the Keystore is not touched otherwise. */
+    fun secretEnvFor(config: EngineConfig): Map<String, String> {
+        if (config.zeroTrustTeam.isNullOrBlank()) return emptyMap()
+        return getServiceTokenSecret()?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) } ?: emptyMap()
+    }
+
     fun setServiceTokenSecret(value: String?) {
-        encryptedPrefs.edit().apply {
-            if (value == null) remove("zt_service_secret") else putString("zt_service_secret", value)
-        }.apply()
+        runCatching {
+            encryptedPrefs.edit().apply {
+                if (value == null) remove("zt_service_secret") else putString("zt_service_secret", value)
+            }.apply()
+        }
     }
 }

@@ -155,6 +155,10 @@ fun SettingsScreen(
                 stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
                 config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
             )
+            SwitchRow(
+                stringResource(R.string.sw_power_saver), stringResource(R.string.sw_power_saver_sub),
+                config.powerSaver, { v -> onUpdate { it.copy(powerSaver = v) } }
+            )
             Spacer(Modifier.height(8.dp))
             var team by remember(config.zeroTrustTeam) { mutableStateOf(config.zeroTrustTeam ?: "") }
             OutlinedTextField(

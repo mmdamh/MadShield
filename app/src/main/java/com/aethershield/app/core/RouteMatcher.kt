@@ -120,6 +120,13 @@ class RouteMatcher private constructor(private val block: Side, private val dire
             return m
         }
 
+        /** Drops the cached parse (it can hold tens of thousands of rules). Called when a service shuts down, so an idle app keeps no copy. */
+        @Synchronized
+        fun clearCache() {
+            cacheKey = null
+            cached = null
+        }
+
         fun parse(text: String): RouteMatcher = parse(text.lineSequence())
 
         /** Same sectioning as routing.rs::split_sections: unknown "[section]" headers drop their lines. */
