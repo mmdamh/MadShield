@@ -62,10 +62,10 @@ class NetworkWatcher(private val context: Context) {
 
     /**
      * Suspends until [hasRealNetwork]. The system callback wakes it at once; [pollMs] is only the safety net for a
-     * callback that never comes.
+     * callback that never comes. It is asked again before every wait, so the interval can follow the screen state.
      */
-    suspend fun awaitNetwork(pollMs: Long) {
-        while (!hasRealNetwork()) awaitChangeOrTimeout(pollMs)
+    suspend fun awaitNetwork(pollMs: () -> Long) {
+        while (!hasRealNetwork()) awaitChangeOrTimeout(pollMs())
         tracker.markOnline()
     }
 
