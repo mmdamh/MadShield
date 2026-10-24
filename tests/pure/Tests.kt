@@ -190,6 +190,7 @@ fun main() {
     check("stable window is 10 min", ReconnectPolicy.STABLE_AFTER_MS == 600_000L)
 
     dohTests()
+    linkProfileTests()
 
     println(if (fails == 0) "ALL PASSED" else "$fails FAILED")
     if (fails > 0) kotlin.system.exitProcess(1)
@@ -1178,4 +1179,68 @@ fun routeFrontTests() {
         check("e2e probe: only literal IPv4 targets, and a closed port is failure",
             !SocksProbe.httpAnswersThrough("127.0.0.1", 1, "1.1.1.1", 80, 500) && !SocksProbe.httpAnswersThrough("127.0.0.1", 1, "example.com", 80, 500))
     }
+}
+
+
+// =====================================================================================================
+// update17: several saved links for the custom chain (LinkProfiles)
+// =====================================================================================================
+fun linkProfileTests() {
+    val uuid = "11111111-2222-3333-4444-555555555555"
+    fun b64url(s: String) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray())
+    val vless = "vless://$uuid@vpn.example.com:443?type=ws&security=tls&sni=vpn.example.com&path=%2Fw#My%20Berlin"
+    val vlessNoName = "vless://$uuid@nn.example.com:443?type=ws&security=tls&sni=nn.example.com&path=%2Fw"
+    val ss = "ss://" + b64url("aes-256-gcm:secret") + "@frankfurt.example.com:990#de-1"
+    var n = 0
+    val ids = { "id${++n}" }
+    val empty = LinkProfileBook()
+
+    val a1 = LinkProfiles.add(empty, vless, "", ids) as LinkAdd.Added
+    check("links: first profile is added and becomes active", a1.book.profiles.size == 1 && a1.book.activeId == a1.profile.id)
+    check("links: name comes from the link's #name, URL-decoded", a1.profile.name == "My Berlin")
+    val a2 = LinkProfiles.add(a1.book, ss, "  Frankfurt\n ", ids) as LinkAdd.Added
+    check("links: a second profile does NOT take over the active one", a2.book.profiles.size == 2 && a2.book.activeId == a1.profile.id)
+    check("links: an own name is trimmed and flattened", a2.profile.name == "Frankfurt")
+    val a3 = LinkProfiles.add(a2.book, vlessNoName, "", ids) as LinkAdd.Added
+    check("links: no #name -> PROTOCOL · host, no credential in it", a3.profile.name == "VLESS · nn.example.com" && !a3.profile.name.contains(uuid))
+    check("links: the same link twice is a duplicate, nothing added", LinkProfiles.add(a3.book, "  $vless \n", "x", ids).let { it is LinkAdd.Duplicate && it.existing.id == a1.profile.id })
+    check("links: bad links are refused with the parser's reason", (LinkProfiles.add(a3.book, "vless://nope", "", ids) as? LinkAdd.Invalid)?.error?.error == LinkError.CREDENTIAL &&
+        LinkProfiles.add(a3.book, "  ", "", ids) is LinkAdd.Invalid && LinkProfiles.add(a3.book, "https://example.com", "", ids) is LinkAdd.Invalid)
+    check("links: a long name is cut at MAX_NAME", LinkProfiles.cleanName("x".repeat(100)).length == LinkProfiles.MAX_NAME)
+
+    val act = LinkProfiles.activate(a3.book, a2.profile.id)
+    check("links: activate switches the active profile", act.activeId == a2.profile.id && act.active?.link == ss)
+    check("links: activating an unknown id changes nothing", LinkProfiles.activate(act, "zzz") == act)
+    val ren = LinkProfiles.rename(act, a2.profile.id, "  Work  ")
+    check("links: rename works and keeps the link and the active choice", ren.profiles.first { it.id == a2.profile.id }.let { it.name == "Work" && it.link == ss } && ren.activeId == act.activeId)
+    check("links: a blank rename is ignored", LinkProfiles.rename(ren, a2.profile.id, "   ") == ren)
+    val rmOther = LinkProfiles.remove(act, a1.profile.id)
+    check("links: removing a non-active profile keeps the active one", rmOther.profiles.size == 2 && rmOther.activeId == a2.profile.id)
+    val rmActive = LinkProfiles.remove(act, a2.profile.id)
+    check("links: removing the ACTIVE profile leaves none active (no silent switch)", rmActive.profiles.size == 2 && rmActive.activeId == null && rmActive.active == null)
+    check("links: removing the last one gives an empty book", LinkProfiles.remove(LinkProfiles.remove(LinkProfiles.remove(a3.book, "id1"), "id2"), "id3") == empty)
+
+    var full = empty
+    for (i in 1..LinkProfiles.MAX_PROFILES) {
+        full = (LinkProfiles.add(full, "trojan://pw$i@h$i.example.com:443", "", ids) as LinkAdd.Added).book
+    }
+    check("links: the list is capped", full.profiles.size == LinkProfiles.MAX_PROFILES && LinkProfiles.add(full, "trojan://other@x.example.com:443", "", ids) is LinkAdd.Full)
+    var fixedId = 0
+    val clash = LinkProfiles.add(a1.book, ss, "", { if (fixedId++ < 1) a1.profile.id else "fresh" }) as LinkAdd.Added
+    check("links: an id that already exists is never reused", clash.profile.id == "fresh")
+
+    val text = LinkProfiles.encode(act)
+    val back = LinkProfiles.decode(text)
+    check("links: encode/decode round trip keeps everything, including odd characters", back == act &&
+        LinkProfiles.decode(LinkProfiles.encode(LinkProfiles.rename(act, a1.profile.id, "a \"q\" \\ ü ✓"))).profiles[0].name == "a \"q\" \\ ü ✓")
+    check("links: decode survives junk", LinkProfiles.decode(null) == empty && LinkProfiles.decode("") == empty && LinkProfiles.decode("not json") == empty &&
+        LinkProfiles.decode("{\"items\": 5}") == empty && LinkProfiles.decode("[]") == empty)
+    val half = LinkProfiles.decode("{\"active\":\"ghost\",\"items\":[{\"id\":\"a\",\"link\":\"$ss\"},{\"id\":\"\",\"link\":\"x\"},{\"name\":\"no id\",\"link\":\"y\"},{\"id\":\"a\",\"link\":\"$vless\"}]}")
+    check("links: decode drops broken/duplicate items and an active id that does not exist", half.profiles.size == 1 && half.profiles[0].name == "Link" && half.activeId == null)
+
+    val mig = LinkProfiles.migrate(empty, "  $vless ")
+    check("links: update16's single link becomes one active profile", mig.profiles.size == 1 && mig.activeId == LinkProfiles.LEGACY_ID && mig.active?.link == vless && mig.active?.name == "My Berlin")
+    check("links: migration never touches a non-empty book or an empty link", LinkProfiles.migrate(act, vless) == act && LinkProfiles.migrate(empty, "  ") == empty && LinkProfiles.migrate(empty, null) == empty)
+    check("links: migrating an unparseable old link still keeps it", LinkProfiles.migrate(empty, "garbage").profiles.single().name == "Link")
+    check("links: the stored text never leaks into the summary shown in the UI", (ProxyLink.parse(vless) as LinkParse.Ok).summary.let { !it.contains(uuid) })
 }

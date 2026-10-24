@@ -350,4 +350,33 @@
     <string name="rules_geo_none">در این فایل dat ورودی ایران پیدا نشد.</string>
     <string name="rules_working_named">در حال دانلود %1$s…</string>
     <string name="rules_batch_done">%1$d لیست اضافه شد، %2$d ناموفق</string>
+
+    <!-- update17: exit profile panel, saved links, DNS page -->
+    <string name="hint_more">توضیحات بیشتر</string>
+    <string name="hint_less">پنهان کردن توضیحات</string>
+    <string name="more_options">گزینه‌های بیشتر</string>
+    <string name="sec_dns_resolvers">سرورهای دی‌ان‌اس</string>
+    <string name="doh_sw_short">برنامه نام سایت‌ها را خودش و به‌صورت خصوصی در همهٔ حالت‌ها پیدا می‌کند.</string>
+    <string name="doh_need_pick">بالا یک ارائه‌دهنده انتخاب کنید، وگرنه DoH خاموش می‌ماند.</string>
+    <string name="doh_custom">سفارشی</string>
+    <string name="profile_direct_line">فقط WARP، بدون گام اضافه</string>
+    <string name="profile_psiphon_line">کشور خروجی سایفون</string>
+    <string name="profile_tor_line">کند، ولی خصوصی‌ترین</string>
+    <string name="region_change">تغییر</string>
+    <string name="region_search">جستجوی کشور</string>
+    <string name="link_title">لینک‌های شما</string>
+    <string name="link_empty">هنوز لینکی ذخیره نشده. یک لینک vless://‎ یا vmess://‎ یا trojan://‎ یا ss://‎ را کپی کنید و «چسباندن و افزودن» را بزنید.</string>
+    <string name="link_count">%1$d ذخیره‌شده</string>
+    <string name="link_add">افزودن لینک</string>
+    <string name="link_paste_add">چسباندن و افزودن</string>
+    <string name="link_name">نام (اختیاری)</string>
+    <string name="link_active">در حال استفاده</string>
+    <string name="link_rename">تغییر نام</string>
+    <string name="link_dup">این لینک قبلاً با نام «%1$s» ذخیره شده است.</string>
+    <string name="link_full">حداکثر %1$d لینک می‌توانید ذخیره کنید. اول یکی را حذف کنید.</string>
+    <string name="link_pick">روی یک لینک بزنید تا استفاده شود، وگرنه این چین شروع نمی‌شود.</string>
+    <string name="link_clipboard_empty">چیزی برای چسباندن نیست. اول یک لینک کپی کنید.</string>
+    <string name="link_delete_title">«%1$s» حذف شود؟</string>
+    <string name="link_delete_body">لینک از این گوشی پاک می‌شود و برگشت‌پذیر نیست.</string>
+    <string name="link_unusable">این لینک دیگر قابل استفاده نیست</string>
 </resources>

@@ -1,31 +1,43 @@
 package com.aethershield.app.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.aethershield.app.R
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.min
@@ -235,6 +247,99 @@ fun BackTopBar(title: String, onBack: () -> Unit, actions: @Composable RowScope.
         actions = actions,
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
     )
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// update17: the pieces that keep a page short. Long explanations hide behind an "i", rarely-touched groups fold
+// into one line with a summary. Nothing is removed: it is one tap away, and open/closed survives a rotation.
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * A small "More info" line that opens the long explanation under it. It replaces the walls of grey text that used to
+ * sit under every control. [error] colours the text when the explanation is really a warning.
+ */
+@Composable
+fun InfoHint(text: String, modifier: Modifier = Modifier, error: Boolean = false) {
+    val cs = MaterialTheme.colorScheme
+    var open by rememberSaveable { mutableStateOf(false) }
+    Column(modifier) {
+        Row(
+            Modifier.clip(RoundedCornerShape(12.dp)).clickable { open = !open }.padding(horizontal = 2.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Outlined.Info, null, tint = if (error) cs.error else cs.primary, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                stringResource(if (open) R.string.hint_less else R.string.hint_more),
+                style = MaterialTheme.typography.labelMedium,
+                color = if (error) cs.error else cs.primary
+            )
+        }
+        AnimatedVisibility(visible = open) { HelperText(text, error = error) }
+    }
+}
+
+/**
+ * A card that is one line (icon, title, a summary of its current state) until tapped. For groups people rarely
+ * touch after the first setup, so the page shows state at a glance instead of every control at once.
+ */
+@Composable
+fun FoldCard(
+    title: String,
+    summary: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    startOpen: Boolean = false,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    var open by rememberSaveable { mutableStateOf(startOpen) }
+    val turn by animateFloatAsState(if (open) 180f else 0f, label = "fold-arrow")
+    Surface(shape = RoundedCornerShape(28.dp), color = cs.surfaceContainer, modifier = modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { open = !open }.padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.size(40.dp).clip(CircleShape).background(cs.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) { Icon(icon, null, tint = cs.onPrimaryContainer, modifier = Modifier.size(20.dp)) }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, color = cs.onSurface)
+                    Text(
+                        summary, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(Icons.Rounded.KeyboardArrowDown, null, tint = cs.onSurfaceVariant, modifier = Modifier.rotate(turn))
+            }
+            AnimatedVisibility(visible = open) {
+                Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 16.dp), content = content)
+            }
+        }
+    }
+}
+
+/**
+ * The app's signature mark: the scalloped "cookie" of the Connect button, small and still, with an icon or a flag
+ * inside. It marks "what you are using right now" (the exit profile, the active link), so the same shape means the
+ * same thing wherever it appears.
+ */
+@Composable
+fun CookieBadge(size: Dp, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Box(modifier.size(size), contentAlignment = Alignment.Center) {
+        CookieBlob(
+            Modifier.matchParentSize(),
+            brush = Brush.linearGradient(listOf(cs.primaryContainer, cs.tertiaryContainer)),
+            amplitude = 0.06f,
+            rotationDeg = { 0f },
+            lobes = 8
+        )
+        content()
+    }
 }
 
 val MonoFamily: FontFamily = FontFamily.Monospace

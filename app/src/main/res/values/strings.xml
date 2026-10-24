@@ -350,4 +350,33 @@
     <string name="rules_geo_none">No Iran entries found in this .dat file.</string>
     <string name="rules_working_named">Downloading %1$s…</string>
     <string name="rules_batch_done">%1$d lists added, %2$d failed</string>
+
+    <!-- update17: exit profile panel, saved links, DNS page -->
+    <string name="hint_more">More info</string>
+    <string name="hint_less">Hide info</string>
+    <string name="more_options">More options</string>
+    <string name="sec_dns_resolvers">DNS servers</string>
+    <string name="doh_sw_short">This app looks up website names itself, privately, in every mode.</string>
+    <string name="doh_need_pick">Pick a provider above, otherwise DoH stays off.</string>
+    <string name="doh_custom">Custom</string>
+    <string name="profile_direct_line">WARP only, no extra hop</string>
+    <string name="profile_psiphon_line">Psiphon exit country</string>
+    <string name="profile_tor_line">Slow, but the most private</string>
+    <string name="region_change">Change</string>
+    <string name="region_search">Search country</string>
+    <string name="link_title">Your links</string>
+    <string name="link_empty">No links saved yet. Copy a vless://, vmess://, trojan:// or ss:// link and tap “Paste &amp; add”.</string>
+    <string name="link_count">%1$d saved</string>
+    <string name="link_add">Add link</string>
+    <string name="link_paste_add">Paste &amp; add</string>
+    <string name="link_name">Name (optional)</string>
+    <string name="link_active">In use</string>
+    <string name="link_rename">Rename</string>
+    <string name="link_dup">This link is already saved as “%1$s”.</string>
+    <string name="link_full">You can save up to %1$d links. Remove one first.</string>
+    <string name="link_pick">Tap a link to use it, or this chain cannot start.</string>
+    <string name="link_clipboard_empty">Nothing to paste. Copy a link first.</string>
+    <string name="link_delete_title">Remove “%1$s”?</string>
+    <string name="link_delete_body">The link is deleted from this phone. This cannot be undone.</string>
+    <string name="link_unusable">This link can no longer be used</string>
 </resources>

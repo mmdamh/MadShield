@@ -205,6 +205,28 @@ class SettingsStore(private val context: Context) {
         }.commit()
     }.getOrDefault(false)
 
+    /**
+     * All saved links (update17). Empty book when nothing is saved or the Keystore cannot be read. A single link saved
+     * by update16 shows up here as one migrated profile; it is written back in the new form on the next change.
+     */
+    fun loadLinkBook(): LinkProfileBook = runCatching {
+        val book = LinkProfiles.decode(encryptedPrefs.getString("chain_profiles", null))
+        LinkProfiles.migrate(book, encryptedPrefs.getString("chain_link", null))
+    }.getOrDefault(LinkProfileBook())
+
+    /**
+     * Saves the list AND copies the active link into `chain_link` in the same commit, because `chain_link` is the only
+     * thing the engine reads. No active profile = `chain_link` is removed (the chain then reports "no link").
+     * @return false when it could not be saved (Keystore failure), so the UI can say so instead of pretending.
+     */
+    fun saveLinkBook(book: LinkProfileBook): Boolean = runCatching {
+        encryptedPrefs.edit().apply {
+            if (book.profiles.isEmpty()) remove("chain_profiles") else putString("chain_profiles", LinkProfiles.encode(book))
+            val active = book.active?.link
+            if (active.isNullOrBlank()) remove("chain_link") else putString("chain_link", active)
+        }.commit()
+    }.getOrDefault(false)
+
     /** The link for [config], and ONLY when the chain is the custom one (so the Keystore is not touched otherwise). */
     fun chainLinkFor(config: EngineConfig): String? =
         if (config.effectiveChain == PrivacyChain.SINGBOX) getChainLink() else null
