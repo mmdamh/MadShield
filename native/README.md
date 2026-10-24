@@ -49,3 +49,22 @@ re-read aether-core's `cli.rs` (flag names), `routing.rs` (rule file format) and
 * With a chain on, the core's own WARP proxy moves to `127.0.0.1:1823` and the chain
   listens on the normal SOCKS port. In VPN mode hev answers DNS itself (`mapdns`) because
   Psiphon and Tor carry TCP only.
+
+## Custom link chain (WARP -> your own vless / vmess / trojan / shadowsocks server)
+
+* The app converts the pasted link (`core/ProxyLink.kt`) into a sing-box configuration
+  (`core/SingBoxConfig.kt`) and runs the **official** sing-box as a child process, `libsingbox.so`.
+  The configuration goes in on **stdin**, so the link's credential is never written to disk.
+* sing-box is only a protocol converter here: one SOCKS inbound, one outbound for your server that is dialled
+  *through* the Aether core's SOCKS (`detour`), no DNS, no TUN, no rules.
+* `native/singbox.pin` is the exact commit (v1.14.3). Build: static ELF, `CGO_ENABLED=0`, tags
+  `with_utls,badlinkname,tfogo_checklinkname0`, the linker flags from sing-box's own `release/LDFLAGS`.
+  Needs Go 1.25.5 (taken from sing-box's `go.mod`).
+* The job is `continue-on-error`: if it fails, the APK is built without `libsingbox.so` and the custom chain says
+  so in the app. `singbox-config-check` runs the real `sing-box check` on `tests/pure/golden/*.json`
+  (the files the app's builder produces; the pure tests compare them byte for byte).
+* Not supported, because the official core does not have them: **XHTTP / SplitHTTP**, Hysteria2, TUIC, SSR and
+  Shadowsocks plugins. The app refuses such links with a specific message instead of guessing.
+* To change a golden file after editing the builder: `UPDATE_GOLDEN=1 KOTLINC=... bash scripts/run-pure-tests.sh`.
+* Updating the pin: change `native/singbox.pin` and `SINGBOX_VERSION` in `build.yml`, then re-read sing-box's
+  `option/` Go files for the fields `SingBoxConfig.kt` and `ProxyLink.kt` use.

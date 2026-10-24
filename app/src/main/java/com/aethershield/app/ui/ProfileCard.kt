@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.*
@@ -27,7 +28,7 @@ import com.aethershield.app.ui.components.HelperText
 import com.aethershield.app.ui.components.SectionCard
 
 /**
- * The exit profile, on the home screen: Direct (the WARP exit itself), Psiphon (with a country) or Tor.
+ * The exit profile, on the home screen: Direct (the WARP exit itself), Psiphon (with a country), Tor, or your own link.
  * It used to be a settings section; it is the thing people switch most, so it lives next to Connect.
  *
  * The choice is stored in the same setting as before (privacyChain / psiphonRegion) and, as before, is read
@@ -65,6 +66,11 @@ fun ProfileCard(
                 stringResource(R.string.profile_tor), stringResource(R.string.profile_tor_sub),
                 selected == PrivacyChain.TOR
             ) { select(PrivacyChain.TOR) }
+            ProfileOption(
+                Modifier.weight(1f), Icons.Rounded.Link,
+                stringResource(R.string.profile_custom), stringResource(R.string.profile_custom_sub),
+                selected == PrivacyChain.SINGBOX
+            ) { select(PrivacyChain.SINGBOX) }
         }
         when (selected) {
             PrivacyChain.NONE -> HelperText(stringResource(R.string.chain_help))
@@ -83,6 +89,10 @@ fun ProfileCard(
                 HelperText(stringResource(R.string.chain_psiphon_help))
             }
             PrivacyChain.TOR -> HelperText(stringResource(R.string.chain_tor_help))
+            PrivacyChain.SINGBOX -> {
+                HelperText(stringResource(R.string.chain_singbox_help))
+                CustomLinkEditor()
+            }
         }
         if (selected != PrivacyChain.NONE) HelperText(stringResource(R.string.profile_protocol_note))
         if (state !is ConnectionState.Idle) HelperText(stringResource(R.string.profile_apply_next))

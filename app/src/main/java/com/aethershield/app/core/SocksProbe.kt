@@ -76,6 +76,51 @@ object SocksProbe {
             false
         }
 
+    /**
+     * End-to-end check through the local SOCKS proxy: CONNECT to a literal address, send one tiny HTTP request and
+     * wait for the first bytes of the answer. A bare CONNECT is not enough for a custom chain, because the SOCKS
+     * port of sing-box answers before the remote server was ever contacted, and VLESS/VMess/Trojan only prove the
+     * server works once data flows. True means "something answered with HTTP", so WARP, the server and the way out
+     * all work. Blocking: call from a background thread.
+     */
+    fun httpAnswersThrough(
+        host: String, port: Int, targetHost: String, targetPort: Int, timeoutMs: Int = 8_000
+    ): Boolean =
+        try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(host, port), timeoutMs)
+                s.soTimeout = timeoutMs
+                val out = s.getOutputStream()
+                val input = s.getInputStream()
+                out.write(byteArrayOf(5, 1, 0)); out.flush()
+                val hello = ByteArray(2)
+                if (!readFully(input, hello) || hello[0].toInt() != 5 || hello[1].toInt() != 0) return false
+                val v4 = Regex("""^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$""").matchEntire(targetHost)
+                    ?: return false // literal IPv4 only: no name lookup is part of this test
+                val req = java.io.ByteArrayOutputStream()
+                req.write(byteArrayOf(5, 1, 0, 1))
+                v4.groupValues.drop(1).forEach { req.write(it.toInt() and 0xff) }
+                req.write(targetPort shr 8); req.write(targetPort and 0xff)
+                out.write(req.toByteArray()); out.flush()
+                val reply = ByteArray(4)
+                if (!readFully(input, reply) || reply[0].toInt() != 5 || reply[1].toInt() != 0) return false
+                // skip BND.ADDR + BND.PORT
+                val skip = when (reply[3].toInt()) {
+                    1 -> 4 + 2
+                    4 -> 16 + 2
+                    3 -> { val l = input.read(); if (l < 0) return false; l + 2 }
+                    else -> return false
+                }
+                if (!readFully(input, ByteArray(skip))) return false
+                out.write("HEAD / HTTP/1.1\r\nHost: $targetHost\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                out.flush()
+                val head = ByteArray(5)
+                readFully(input, head) && String(head, Charsets.US_ASCII) == "HTTP/"
+            }
+        } catch (_: IOException) {
+            false
+        }
+
     private fun readFully(input: java.io.InputStream, buf: ByteArray): Boolean {
         var got = 0
         while (got < buf.size) {

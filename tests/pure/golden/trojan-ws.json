@@ -1,0 +1,54 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "certificate": {
+    "store": "mozilla"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "in",
+      "listen": "127.0.0.1",
+      "listen_port": 1824
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "trojan",
+      "tag": "proxy",
+      "server": "t.example.com",
+      "server_port": 443,
+      "password": "p@ss",
+      "tls": {
+        "enabled": true,
+        "server_name": "front.example.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ws",
+        "headers": {
+          "Host": [
+            "front.example.com"
+          ]
+        }
+      },
+      "detour": "warp"
+    },
+    {
+      "type": "socks",
+      "tag": "warp",
+      "server": "127.0.0.1",
+      "server_port": 1823,
+      "version": "5"
+    }
+  ],
+  "route": {
+    "final": "proxy"
+  }
+}

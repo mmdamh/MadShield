@@ -1,0 +1,54 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "certificate": {
+    "store": "mozilla"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "in",
+      "listen": "127.0.0.1",
+      "listen_port": 1824
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "203.0.113.7",
+      "server_port": 443,
+      "uuid": "11111111-2222-3333-4444-555555555555",
+      "tls": {
+        "enabled": true,
+        "server_name": "cdn.example.workers.dev",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/abc-def",
+        "headers": {
+          "Host": [
+            "cdn.example.workers.dev"
+          ]
+        }
+      },
+      "detour": "warp"
+    },
+    {
+      "type": "socks",
+      "tag": "warp",
+      "server": "127.0.0.1",
+      "server_port": 1823,
+      "version": "5"
+    }
+  ],
+  "route": {
+    "final": "proxy"
+  }
+}

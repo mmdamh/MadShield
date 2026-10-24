@@ -218,6 +218,139 @@ jobs:
             staged/${{ matrix.abi }}/libpsiphon.so
           retention-days: 1
 
+  # The official sing-box core, for the "custom link" privacy chain (vless / vmess / trojan / shadowsocks links).
+  # Built from the exact commit in native/singbox.pin (v1.14.3) with only the features the app uses
+  # (uTLS fingerprints; no TUN, no QUIC, no gVisor). The build is allowed to fail WITHOUT blocking the APK:
+  # build-apk simply ships without libsingbox.so and the app then says the custom chain is not in this build.
+  build-native-singbox:
+    name: Build sing-box (${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+            goarm: ""
+          - abi: armeabi-v7a
+            goarch: arm
+            goarm: "7"
+    env:
+      SINGBOX_VERSION: "1.14.3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch sing-box at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/singbox.pin)"
+          rm -rf native/sing-box
+          mkdir -p native/sing-box
+          git -C native/sing-box init -q
+          git -C native/sing-box fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
+          git -C native/sing-box checkout -q FETCH_HEAD
+          test "$(git -C native/sing-box rev-parse HEAD)" = "$pin"
+          echo "sing-box @ $pin"
+
+      # sing-box v1.14 needs Go 1.25.5 (its go.mod says so); the toolchain is installed from that file.
+      - name: Install Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: native/sing-box/go.mod
+          cache: false
+
+      # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon build).
+      # The linker flags are the ones sing-box's own release uses (release/LDFLAGS).
+      - name: Build sing-box
+        working-directory: native/sing-box
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          set -e
+          go build -v -trimpath -o "$GITHUB_WORKSPACE/sing-box-out" \
+            -tags "with_utls,badlinkname,tfogo_checklinkname0" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' $(cat release/LDFLAGS) -s -w -buildid=" \
+            ./cmd/sing-box
+          ls -l "$GITHUB_WORKSPACE/sing-box-out"
+
+      - name: Check it is a static ELF for this ABI
+        run: |
+          set -e
+          f=sing-box-out
+          test -s "$f" || { echo "ERROR: sing-box binary missing"; exit 1; }
+          READELF="$(command -v llvm-readelf || command -v readelf)"
+          "$READELF" -h "$f" | grep -E 'Class|Machine'
+          if "$READELF" -d "$f" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "ERROR: sing-box is dynamically linked; it would not start on Android"; exit 1
+          fi
+          echo "OK: sing-box is a static ELF"
+
+      - name: Rename to lib*.so (required for Android to extract+exec it) and stage
+        run: |
+          mkdir -p "staged/${{ matrix.abi }}"
+          cp sing-box-out "staged/${{ matrix.abi }}/libsingbox.so"
+
+      - name: Upload sing-box binary for this ABI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: singbox-${{ matrix.abi }}
+          path: staged/${{ matrix.abi }}/libsingbox.so
+          retention-days: 1
+
+  # Hands the golden configurations (tests/pure/golden, written by the app's own builder and compared
+  # byte-for-byte by the pure tests) to the REAL `sing-box check`. Never blocks the APK: a red job here means
+  # "sing-box does not accept what the app generates", which you want to know about before a user finds out.
+  singbox-config-check:
+    name: sing-box check (golden configs)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch sing-box at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/singbox.pin)"
+          mkdir -p native/sing-box
+          git -C native/sing-box init -q
+          git -C native/sing-box fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
+          git -C native/sing-box checkout -q FETCH_HEAD
+          test "$(git -C native/sing-box rev-parse HEAD)" = "$pin"
+
+      - name: Install Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: native/sing-box/go.mod
+          cache: false
+
+      - name: Build sing-box for this runner
+        working-directory: native/sing-box
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          go build -trimpath -o "$GITHUB_WORKSPACE/sb" \
+            -tags "with_utls,badlinkname,tfogo_checklinkname0" \
+            -ldflags "$(cat release/LDFLAGS) -s -w -buildid=" ./cmd/sing-box
+          "$GITHUB_WORKSPACE/sb" version | head -3
+
+      - name: sing-box check on every golden file
+        run: |
+          set -e
+          fail=0
+          for f in tests/pure/golden/*.json; do
+            if ./sb check -c "$f"; then echo "OK   $f"; else echo "FAIL $f"; fail=1; fi
+          done
+          exit $fail
+
   build-native-tun2socks:
     name: Build hev-socks5-tunnel + our JNI bridge (${{ matrix.abi }})
     runs-on: ubuntu-latest
@@ -378,7 +511,9 @@ jobs:
           retention-days: 1
 
   build-apk:
-    needs: [build-native-aether, build-native-tun2socks]
+    # build-native-singbox is listed so its artifacts are ready; if it failed (continue-on-error) the APK is built without it.
+    needs: [build-native-aether, build-native-tun2socks, build-native-singbox]
+    if: ${{ !cancelled() && needs.build-native-aether.result == 'success' && needs.build-native-tun2socks.result == 'success' }}
     runs-on: ubuntu-latest
     # Read-only. This job holds the signing key, so it must not be able to publish or write anything.
     permissions:
@@ -403,6 +538,12 @@ jobs:
             cp "dist-native/aether-$abi/libpsiphon.so" "app/src/main/jniLibs/$abi/"
             cp "dist-native/tun2socks-$abi/libhev-socks5-tunnel.so" "app/src/main/jniLibs/$abi/"
             cp "dist-native/tun2socks-$abi/libaethertun.so" "app/src/main/jniLibs/$abi/"
+            # optional: the custom-link chain needs it, nothing else does
+            if [ -f "dist-native/singbox-$abi/libsingbox.so" ]; then
+              cp "dist-native/singbox-$abi/libsingbox.so" "app/src/main/jniLibs/$abi/"
+            else
+              echo "NOTE: no sing-box for $abi in this build (the custom chain will report it is not included)"
+            fi
           done
 
       # The app compares these at engine start (core/BinaryIntegrity.kt, EngineProcessManager).
@@ -416,7 +557,8 @@ jobs:
           out=app/src/main/assets/native_hashes.properties
           echo "# generated by CI, do not edit" > "$out"
           for abi in arm64-v8a armeabi-v7a; do
-            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so; do
+            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so libsingbox.so; do
+              [ -f "app/src/main/jniLibs/$abi/$f" ] || continue   # libsingbox.so is optional
               echo "$abi/$f=$(sha256sum "app/src/main/jniLibs/$abi/$f" | cut -d' ' -f1)" >> "$out"
             done
           done

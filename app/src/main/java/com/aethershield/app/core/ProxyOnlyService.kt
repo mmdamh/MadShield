@@ -88,12 +88,13 @@ class ProxyOnlyService : Service() {
                 val config = settingsStore.configFlow.first()
                 // Keystore is read only when a Zero Trust team is set; a Keystore failure means "no secret", not a crash.
                 val secretEnv = settingsStore.secretEnvFor(config)
+                val chainLink = settingsStore.chainLinkFor(config)
                 val self = currentCoroutineContext()[Job]
                 var active = config
                 suspend fun startAndWait(c: EngineConfig): SocksProbe.Wait {
                     ensureActive()
                     active = c
-                    engine.start(c, ruleWriter, secretEnv)
+                    engine.start(c, ruleWriter, secretEnv, chainLink)
                     val timeout = ConnectPolicy.firstPassTimeoutMs(c)
                     val t0 = System.currentTimeMillis()
                     val w = SocksProbe.awaitReady(
@@ -140,7 +141,7 @@ class ProxyOnlyService : Service() {
                             ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}")
                         )
                         postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
-                        watch(active, secretEnv)
+                        watch(active, secretEnv, chainLink)
                     }
                     SocksProbe.Wait.ENGINE_DIED -> fail(engine.failureReason() ?: "the engine process exited")
                     SocksProbe.Wait.TIMEOUT -> fail("no answer from the engine after ${ConnectPolicy.firstPassTimeoutMs(config) / 1000}s")
@@ -159,7 +160,7 @@ class ProxyOnlyService : Service() {
      * Watches the engine after it came up. If it dies, the same retry schedule as the VPN mode applies
      * (see [ReconnectPolicy]) when "quick reconnect" is on; otherwise the proxy is only marked as failed.
      */
-    private suspend fun watch(config: EngineConfig, secretEnv: Map<String, String>) {
+    private suspend fun watch(config: EngineConfig, secretEnv: Map<String, String>, chainLink: String?) {
         var misses = 0
         var recoveries = 0
         var healthySince = 0L
@@ -189,7 +190,7 @@ class ProxyOnlyService : Service() {
                     recoveries = 0; misses = 0; healthySince = 0L
                     AetherController.setState(ConnectionState.Connecting)
                     postNotification(getString(R.string.notif_connecting))
-                    if (restartEngine(config, secretEnv)) {
+                    if (restartEngine(config, secretEnv, chainLink)) {
                         RingLogBuffer.append("[proxy] engine up")
                         AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
                         postNotification(getString(R.string.proxy_running, "${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
@@ -208,7 +209,8 @@ class ProxyOnlyService : Service() {
                     TunnelConfig.SOCKS_HOST, engine.probePort,
                     PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
                 ) &&
-                (config.effectiveChain == PrivacyChain.NONE || engine.chainReady)
+                (config.effectiveChain == PrivacyChain.NONE || engine.chainReady) &&
+                engine.chainStillWorks(isScreenOn()) // custom chain only: a rare end-to-end check, screen on
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (healthySince == 0L) healthySince = now
@@ -224,6 +226,7 @@ class ProxyOnlyService : Service() {
             healthySince = 0L
             idleTracker.wake(); idle = false
             if (misses == 0) firstMissAt = android.os.SystemClock.elapsedRealtime()
+            if (engine.chainBroken) lastFailureWasChain = true // a dead custom link: retry on the slow chain schedule
             if (++misses == 2) {
                 RingLogBuffer.append("[proxy] health check failed")
                 AetherController.setState(ConnectionState.Error(engine.failureReason() ?: getString(R.string.state_error)))
@@ -260,7 +263,7 @@ class ProxyOnlyService : Service() {
             currentCoroutineContext().ensureActive()
             AetherController.setState(ConnectionState.Connecting)
             postNotification(getString(R.string.notif_connecting))
-            if (restartEngine(config, secretEnv)) {
+            if (restartEngine(config, secretEnv, chainLink)) {
                 misses = 0
                 RingLogBuffer.append("[proxy] engine up")
                 AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
@@ -271,10 +274,10 @@ class ProxyOnlyService : Service() {
         }
     }
 
-    private suspend fun restartEngine(c: EngineConfig, secretEnv: Map<String, String>): Boolean {
+    private suspend fun restartEngine(c: EngineConfig, secretEnv: Map<String, String>, chainLink: String?): Boolean {
         val self = currentCoroutineContext()[Job]
         try {
-            engine.start(c, ruleWriter, secretEnv)
+            engine.start(c, ruleWriter, secretEnv, chainLink)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             RingLogBuffer.append("[proxy] restart failed: ${t.message}")

@@ -53,6 +53,9 @@ object EngineEnvironment {
         env["AETHER_SOCKS"] = "${TunnelConfig.SOCKS_HOST}:${plan.corePort}"
         when (chain) {
             PrivacyChain.NONE -> Unit
+            // The core runs plain on plan.corePort; sing-box is a separate process started by EngineProcessManager,
+            // and it dials the core's SOCKS port itself. Nothing for the core to know.
+            PrivacyChain.SINGBOX -> Unit
             PrivacyChain.PSIPHON -> {
                 env["AETHER_PSIPHON"] = "chain"
                 env["AETHER_PSIPHON_BIND"] = chainBind

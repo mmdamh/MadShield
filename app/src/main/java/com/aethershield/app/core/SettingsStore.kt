@@ -192,6 +192,23 @@ class SettingsStore(private val context: Context) {
         return getServiceTokenSecret()?.let { mapOf("AETHER_ACCESS_CLIENT_SECRET" to it) } ?: emptyMap()
     }
 
+    /**
+     * The custom chain's share link. It holds a UUID or a password, so it lives with the other secret, in the
+     * Keystore-backed store, never in the plain DataStore. null = none saved, or the Keystore cannot be read.
+     */
+    fun getChainLink(): String? = runCatching { encryptedPrefs.getString("chain_link", null) }.getOrNull()
+
+    /** @return false when it could not be saved (Keystore failure), so the UI can say so instead of pretending. */
+    fun setChainLink(value: String?): Boolean = runCatching {
+        encryptedPrefs.edit().apply {
+            if (value.isNullOrBlank()) remove("chain_link") else putString("chain_link", value.trim())
+        }.commit()
+    }.getOrDefault(false)
+
+    /** The link for [config], and ONLY when the chain is the custom one (so the Keystore is not touched otherwise). */
+    fun chainLinkFor(config: EngineConfig): String? =
+        if (config.effectiveChain == PrivacyChain.SINGBOX) getChainLink() else null
+
     fun setServiceTokenSecret(value: String?) {
         runCatching {
             encryptedPrefs.edit().apply {

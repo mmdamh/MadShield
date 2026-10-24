@@ -37,11 +37,12 @@ enum class AppSelectionMode { NONE, EXCLUDE_SELECTED, INCLUDE_ONLY_SELECTED }
  *   NONE     the tunnel's own exit is the exit
  *   PSIPHON  app -> WARP -> Psiphon -> internet   (exit country selectable, see [Chain.REGIONS])
  *   TOR      app -> WARP -> Tor -> internet       (slow; first start downloads the consensus)
- * Psiphon and Tor carry TCP only. Not offered with SMART (the core decides the transport itself,
+ *   SINGBOX  app -> WARP -> your own server       (a vless/vmess/trojan/ss link run by sing-box, see [SingBoxConfig])
+ * All chains carry TCP only. Not offered with SMART (the core decides the transport itself,
  * and AetherGUI deliberately has no "smart + chain" entry either).
  */
 enum class PrivacyChain {
-    NONE, PSIPHON, TOR;
+    NONE, PSIPHON, TOR, SINGBOX;
 
     companion object {
         fun fromStored(name: String?): PrivacyChain =
@@ -276,10 +277,13 @@ object ConnectPolicy {
     /** Extra startup time per chain (AetherGUI: psiphon 120 s for its server list, tor 300 s for the consensus). */
     const val PSIPHON_ALLOWANCE_MS = 120_000L
     const val TOR_ALLOWANCE_MS = 300_000L
+    /** sing-box starts in about a second; the time is for the WARP tunnel to come up and the first end-to-end check. */
+    const val SINGBOX_ALLOWANCE_MS = 45_000L
 
     fun chainAllowanceMs(c: EngineConfig): Long = when (c.effectiveChain) {
         PrivacyChain.PSIPHON -> PSIPHON_ALLOWANCE_MS
         PrivacyChain.TOR -> TOR_ALLOWANCE_MS
+        PrivacyChain.SINGBOX -> SINGBOX_ALLOWANCE_MS
         PrivacyChain.NONE -> 0L
     }
 
@@ -291,7 +295,7 @@ object ConnectPolicy {
 
     /** The failure came from the chain helper (psiphon/tor), not from the WARP transport. */
     fun isChainFailure(reason: String?): Boolean =
-        reason != null && Regex("\\b(psiphon|tor)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason)
+        reason != null && Regex("\\b(psiphon|tor|sing-box)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason)
 
     /**
      * Gool over MASQUE failed in the way the classic topology can avoid. With a chain on, a plain

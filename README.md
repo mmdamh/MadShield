@@ -50,7 +50,7 @@ downloads are verified against pinned SHA-256 values.
 plus downloading and installing APKs is an attack surface you asked to avoid)
 and its third-party exit-IP lookups (they would tell a third party your exit
 address); the core's own `AETHER_EXIT_LOC` check is used instead.
-Also not taken for now: Psiphon/Tor chains, LAN sharing, Quick Settings tile.
+Also not taken for now: LAN sharing, Quick Settings tile.
 
 ## Source review (2026-08-03, against the actual v1.5.0 source)
 
@@ -157,7 +157,7 @@ stack-swapping coroutines and crashes with a native SIGSEGV.
   reporting SDK is in the dependency list at all — check
   `app/build.gradle.kts`, it's short enough to read end to end.
 - **Binary integrity**: CI stamps the SHA-256 of every shipped native file
-  (`libaether.so`, `libpsiphon.so`, `libhev-socks5-tunnel.so`, `libaethertun.so`)
+  (`libaether.so`, `libpsiphon.so`, `libhev-socks5-tunnel.so`, `libaethertun.so`, and `libsingbox.so` when present)
   into `assets/native_hashes.properties`, and a CI step proves the finished APK
   carries exactly those bytes. At the first engine start of each run,
   `core/BinaryIntegrity.kt` hashes the installed files and refuses to start the

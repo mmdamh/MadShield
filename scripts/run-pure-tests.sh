@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/app/src/main/java/com/aethershield/app"
 KOTLINC="${KOTLINC:-kotlinc}"
 OUT="$(mktemp -d)"
+export MADSHIELD_ROOT="$ROOT"   # the golden files are looked up under it
 files=()
 for f in "$SRC"/core/*.kt "$SRC"/util/*.kt; do
   if ! grep -qE "^import (android|androidx|kotlinx\.coroutines|okhttp3)" "$f"; then files+=("$f"); fi

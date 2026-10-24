@@ -345,6 +345,7 @@ private fun FactChips(config: EngineConfig, running: EngineConfig?) {
                 "Psiphon" + (Chain.normalizeRegion(config.psiphonRegion)?.let { " · $it" } ?: "")
             )
             PrivacyChain.TOR -> Chip("Tor")
+            PrivacyChain.SINGBOX -> Chip("sing-box")
             PrivacyChain.NONE -> Unit
         }
     }

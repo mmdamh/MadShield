@@ -234,7 +234,7 @@ class AetherVpnService : VpnService() {
             ensureActive() // never launch an engine after the user already pressed Disconnect
             // EnginePreflightException propagates on purpose: it cannot work no matter
             // how often we retry, so connect() surfaces it as-is.
-            engine.start(config, ruleWriter, secretEnv)
+            engine.start(config, ruleWriter, secretEnv, settingsStore.chainLinkFor(config))
             val deadlineMs = System.currentTimeMillis() + timeoutMs
             when (SocksProbe.awaitReady(
                 host = TunnelConfig.SOCKS_HOST,
@@ -502,7 +502,8 @@ class AetherVpnService : VpnService() {
                         SocksProbe.handshakeOk(
                             TunnelConfig.SOCKS_HOST, engine.probePort,
                             PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
-                        )
+                        ) &&
+                        engine.chainStillWorks(screenNow) // custom chain only: a rare end-to-end check, screen on
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.
@@ -559,6 +560,7 @@ class AetherVpnService : VpnService() {
                     idleTracker.wake(); idle = false // a failed probe: back to normal checking at once
                     if (++consecutiveFailures == 1) firstFailAt = android.os.SystemClock.elapsedRealtime()
                     if (consecutiveFailures < 2 && !stalled) continue // a stalled tunnel is already proven by several scans
+                    if (engine.chainBroken) lastFailureWasChain = true // a dead custom link: retry on the slow chain schedule
 
                     if (!wasDown) {
                         wasDown = true
@@ -567,7 +569,9 @@ class AetherVpnService : VpnService() {
                         AetherController.setState(
                             ConnectionState.Error(
                                 engine.failureReason()
-                                    ?: if (stalled) getString(R.string.state_no_endpoint) else getString(R.string.state_error)
+                                    ?: if (stalled) getString(R.string.state_no_endpoint)
+                                    else if (engine.chainBroken) getString(R.string.state_chain_broken)
+                                    else getString(R.string.state_error)
                             )
                         )
                         stopBridge()

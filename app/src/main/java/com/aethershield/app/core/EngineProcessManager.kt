@@ -12,6 +12,7 @@ import java.io.InputStreamReader
 object EngineEnv {
     const val ENGINE_BIN = "libaether.so"
     const val PSIPHON_BIN = "libpsiphon.so"
+    const val SINGBOX_BIN = "libsingbox.so"
 }
 
 /** Thrown BEFORE the engine is launched when the shipped binary cannot possibly start. */
@@ -37,6 +38,10 @@ class EngineProcessManager(private val context: Context) {
 
     companion object {
         private const val HASH_ASSET = "native_hashes.properties"
+
+        /** What the custom-chain end-to-end check asks: a literal address (no name lookup), plain HTTP, port 80. */
+        private val E2E_TARGETS = listOf("1.1.1.1" to 80, "1.0.0.1" to 80)
+        private const val E2E_EVERY_MS = 90_000L
         /** Result of the integrity check of this process; null until the first engine start. */
         @Volatile var cachedIntegrity: BinaryIntegrity.Result? = null
             private set
@@ -57,6 +62,23 @@ class EngineProcessManager(private val context: Context) {
 
     @Volatile private var front: RouteFront? = null
 
+    // ---- custom chain (sing-box), see SingBoxConfig. All null/false unless the chain is SINGBOX.
+    @Volatile private var singbox: Process? = null
+    @Volatile private var singboxExit: EngineExit? = null
+    private var singboxPump: Job? = null
+    private var singboxReadyJob: Job? = null
+    private val singboxTail = ArrayDeque<String>()
+    @Volatile private var singboxPort: Int = 0
+    private var e2eFailures = 0
+    private var nextE2eAt = 0L
+    @Volatile private var e2eOk = true
+
+    /** A custom chain is in use for the running engine. */
+    val singboxActive: Boolean get() = singbox != null
+
+    /** The custom chain stopped carrying traffic (two end-to-end checks failed in a row) while its processes are alive. */
+    val chainBroken: Boolean get() = singboxActive && !e2eOk
+
     /** Counts failed WireGuard scans from the core's log; a new one for every engine start. */
     @Volatile private var stall = TunnelStallTracker()
 
@@ -71,9 +93,11 @@ class EngineProcessManager(private val context: Context) {
     @Volatile var probePort: Int = TunnelConfig.SOCKS_PORT
         private set
 
-    val isRunning: Boolean get() = process?.isAlive == true
+    /** The core is alive and, with a custom chain, so is sing-box (a dead chain process means a dead chain). */
+    val isRunning: Boolean get() = process?.isAlive == true && (singbox?.isAlive != false)
 
-    fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>) {
+    /** [chainLink] is the share link of the custom chain; only read when the chain is [PrivacyChain.SINGBOX]. */
+    fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>, chainLink: String? = null) {
         stop()
         waitForPreviousToDie()
         chainReady = false
@@ -92,16 +116,32 @@ class EngineProcessManager(private val context: Context) {
                     "Rebuild with the updated CI workflow, or turn the chain off in Settings."
             )
         }
+        // Custom chain: everything that can be wrong with the link or the binary is reported BEFORE anything starts.
+        val singboxBin = File(nativeDir, EngineEnv.SINGBOX_BIN)
+        var singboxLink: LinkParse.Ok? = null
+        if (chain == PrivacyChain.SINGBOX) {
+            if (!singboxBin.isFile) {
+                throw EnginePreflightException(
+                    "This build has no sing-box engine for this CPU (libsingbox.so missing). " +
+                        "Rebuild with the updated CI workflow, or turn the chain off in Settings."
+                )
+            }
+            preflight(singboxBin, nativeDir)
+            singboxLink = when (val r = ProxyLink.parse(chainLink ?: "")) {
+                is LinkParse.Ok -> r
+                is LinkParse.Err -> throw EnginePreflightException("Custom chain (sing-box): " + LinkMessages.english(r))
+            }
+        }
         val chainDir = when (chain) {
             PrivacyChain.PSIPHON -> File(context.filesDir, "psiphon")
             PrivacyChain.TOR -> File(context.filesDir, "tor")
-            PrivacyChain.NONE -> null
+            PrivacyChain.NONE, PrivacyChain.SINGBOX -> null
         }?.also { it.mkdirs() }
 
         // Clean slate (pattern from AetherGUI): remove our own leftovers, then make
         // sure the port is really free before binding a new core to it.
         val reaped = CoreProcessGuard.reapOrphans(
-            expectedExecutables = setOf(bin.absolutePath, psiphonBin.absolutePath),
+            expectedExecutables = setOf(bin.absolutePath, psiphonBin.absolutePath, singboxBin.absolutePath),
             selfPid = android.os.Process.myPid(),
             appUid = android.os.Process.myUid(),
             kill = { android.os.Process.killProcess(it) },
@@ -187,6 +227,18 @@ class EngineProcessManager(private val context: Context) {
             }
         }
 
+        val sbLink = singboxLink
+        if (sbLink != null) {
+            try {
+                startSingBox(singboxBin, sbLink, corePort = plan.corePort, listenPort = plan.chainPort ?: config.socksPort)
+            } catch (t: Throwable) {
+                // Nothing may be left running behind a failed start.
+                front?.stop(); front = null
+                p.destroy(); process = null; dying = p
+                throw if (t is IOException) IllegalStateException("Could not start sing-box: ${t.message}") else t
+            }
+        }
+
         val stallTracker = TunnelStallTracker()
         stall = stallTracker
         pumpJob = scope.launch {
@@ -236,14 +288,112 @@ class EngineProcessManager(private val context: Context) {
             // A chain can take minutes to start; poll slower the longer it takes instead of 6 times a second throughout.
             try { Thread.sleep(PowerPolicy.readyPollMs(System.currentTimeMillis() - startedAt)) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
         }
-        return "the privacy chain (Psiphon/Tor) did not become ready in ${timeoutMs / 1000}s"
+        return if (singboxActive) {
+            "the custom chain (sing-box) did not carry traffic in ${timeoutMs / 1000}s: check the link, and that the server is reachable"
+        } else {
+            "the privacy chain (Psiphon/Tor) did not become ready in ${timeoutMs / 1000}s"
+        }
+    }
+
+    // ------------------------------------------------------------------------------------ custom chain
+
+    private fun startSingBox(bin: File, link: LinkParse.Ok, corePort: Int, listenPort: Int) {
+        val json = SingBoxConfig.build(link, corePort, listenPort)
+        val dir = File(context.cacheDir, "singbox").also { it.mkdirs() }
+        // The configuration (it holds your UUID / password) goes in through STDIN: it is never written to a file.
+        val pb = ProcessBuilder(bin.absolutePath, "run", "-c", "stdin", "-D", dir.absolutePath, "--disable-color")
+            .directory(dir)
+            .redirectErrorStream(true)
+        pb.environment().apply {
+            keys.removeAll { EngineEnvironment.isInherited(it) }
+            put("TMPDIR", context.cacheDir.absolutePath)
+            put("GOMAXPROCS", Chain.GO_MAX_PROCS)   // same caps as Psiphon: a burst must not spread over every big core
+            put("GOMEMLIMIT", Chain.GO_MEMORY_LIMIT)
+        }
+        RingLogBuffer.append("[singbox] starting ${link.summary} through the core on 127.0.0.1:$corePort, listening on $listenPort")
+        synchronized(singboxTail) { singboxTail.clear() }
+        singboxExit = null
+        e2eFailures = 0; e2eOk = true; nextE2eAt = 0L
+        val sp = pb.start()
+        try {
+            sp.outputStream.use { it.write(json.toByteArray(Charsets.UTF_8)) } // closing it = EOF, which ends the config read
+        } catch (e: IOException) {
+            sp.destroy() // never leave a process behind that has no configuration
+            throw e
+        }
+        singbox = sp
+        singboxPort = listenPort
+
+        singboxPump = scope.launch {
+            try {
+                BufferedReader(InputStreamReader(sp.inputStream)).use { reader ->
+                    while (isActive) {
+                        val line = reader.readLine() ?: break
+                        RingLogBuffer.append("[singbox] $line")
+                        synchronized(singboxTail) {
+                            if (singboxTail.size >= 20) singboxTail.removeFirst()
+                            singboxTail.addLast(line)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+            }
+            val code = try { sp.waitFor() } catch (_: InterruptedException) { -1 }
+            if (singbox === sp) {
+                val lines = synchronized(singboxTail) { singboxTail.toList() }
+                singboxExit = EngineExit(code, lines)
+                RingLogBuffer.append("[singbox] exited unexpectedly with code $code")
+                DiagnosticsHub.recordExit("sing-box exited unexpectedly with code $code", lines)
+            }
+        }
+
+        // "Ready" for a custom chain means data really flows end to end. sing-box's own SOCKS port answers at once,
+        // long before the WARP tunnel is up or the server was ever contacted, so it proves nothing.
+        singboxReadyJob = scope.launch {
+            var pause = 1_500L
+            while (isActive && singbox === sp && sp.isAlive) {
+                if (e2eProbe(listenPort)) {
+                    chainReady = true
+                    RingLogBuffer.append("[singbox] the custom chain carries traffic end to end")
+                    return@launch
+                }
+                delay(pause)
+                pause = minOf(pause * 2, 10_000L)
+            }
+        }
+    }
+
+    private fun e2eProbe(port: Int): Boolean =
+        SocksProbe.httpAnswersThrough(TunnelConfig.SOCKS_HOST, port, E2E_TARGETS[0].first, E2E_TARGETS[0].second) ||
+            SocksProbe.httpAnswersThrough(TunnelConfig.SOCKS_HOST, port, E2E_TARGETS[1].first, E2E_TARGETS[1].second)
+
+    /**
+     * Called by the health loops. With a custom chain on, and ONLY while the screen is on (nobody is waiting for the
+     * answer otherwise, and every check wakes the radio), it makes one end-to-end request about every 90 s. The chain
+     * counts as broken after two failures in a row (the second comes 10 s after the first), so one slow moment
+     * is not an outage. Always true when there is no custom chain.
+     */
+    fun chainStillWorks(screenOn: Boolean): Boolean {
+        if (!singboxActive) return true
+        if (!screenOn || !chainReady) return e2eOk
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now < nextE2eAt) return e2eOk
+        val ok = e2eProbe(singboxPort)
+        e2eFailures = if (ok) 0 else e2eFailures + 1
+        e2eOk = e2eFailures < 2
+        nextE2eAt = now + if (ok) E2E_EVERY_MS else 10_000L
+        if (!ok) RingLogBuffer.append("[singbox] end-to-end check failed ($e2eFailures of 2)")
+        return e2eOk
     }
 
     /** Cumulative CPU ticks (utime+stime) of the engine and its Psiphon child, or null when unavailable. */
     fun cpuTicks(): Long? {
         val dir = nativeDirPath ?: return null
         val pids = CoreProcessGuard.findOwnPids(
-            setOf(File(dir, EngineEnv.ENGINE_BIN).absolutePath, File(dir, EngineEnv.PSIPHON_BIN).absolutePath),
+            setOf(
+                File(dir, EngineEnv.ENGINE_BIN).absolutePath, File(dir, EngineEnv.PSIPHON_BIN).absolutePath,
+                File(dir, EngineEnv.SINGBOX_BIN).absolutePath
+            ),
             android.os.Process.myPid(), android.os.Process.myUid()
         )
         if (pids.isEmpty()) return null
@@ -264,6 +414,17 @@ class EngineProcessManager(private val context: Context) {
             while (lastExit == null && System.currentTimeMillis() < deadline) {
                 try { Thread.sleep(25) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
             }
+        }
+        // A custom chain that died while the core is fine is the more useful thing to report.
+        if (singboxExit == null && singbox?.isAlive == false) {
+            val deadline = System.currentTimeMillis() + 1_500
+            while (singboxExit == null && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(25) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            }
+        }
+        singboxExit?.let { sb ->
+            return "The custom chain (sing-box) stopped (exit code ${sb.code})" +
+                (sb.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { ": ${it.take(160)}" } ?: "")
         }
         val exit = lastExit ?: return null
         val joined = exit.lastLines.joinToString("\n")
@@ -296,6 +457,14 @@ class EngineProcessManager(private val context: Context) {
     fun stop() {
         pumpJob?.cancel()
         pumpJob = null
+        singboxReadyJob?.cancel(); singboxReadyJob = null
+        singboxPump?.cancel(); singboxPump = null
+        singbox?.let { sp ->
+            singbox = null
+            RingLogBuffer.append("[singbox] stopping")
+            sp.destroy()
+            scope.launch { CoreProcessGuard.stop(sp, 750) }
+        }
         front?.stop()
         front = null
         val p = process ?: return

@@ -1001,4 +1001,180 @@ fun routeFrontTests() {
             !EchFallback.isEchFailure("technical problem") && !EchFallback.isEchFailure("detected a fault") &&
                 !EchFallback.isEchFailure("the check failed") && !EchFallback.isEchFailure(null) && !EchFallback.isEchFailure(""))
     }
+
+    // ------------------------------------------------------------------ update16: custom chain (sing-box)
+    run {
+        // the links here are made up; they only have the SHAPE of real ones
+        val uuid = "11111111-2222-3333-4444-555555555555"
+        fun ok(l: String): LinkParse.Ok = (ProxyLink.parse(l) as? LinkParse.Ok) ?: error("expected Ok for $l")
+        fun err(l: String): LinkError? = (ProxyLink.parse(l) as? LinkParse.Err)?.error
+        fun b64url(s: String) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray())
+        fun b64(s: String) = java.util.Base64.getEncoder().encodeToString(s.toByteArray())
+        @Suppress("UNCHECKED_CAST") fun m(o: Any?) = o as Map<String, Any?>
+
+        // MiniJson
+        check("json: write keeps order and escapes", MiniJson.write(linkedMapOf("a" to 1, "b" to "x\"y\n", "c" to listOf(true, null))) ==
+            "{\n  \"a\": 1,\n  \"b\": \"x\\\"y\\n\",\n  \"c\": [\n    true,\n    null\n  ]\n}")
+        check("json: parse object", MiniJson.parseObject("{\"a\": 1, \"b\": [1,2,{\"c\":\"\\u0041\"}], \"d\": null, \"e\": -2.5}") ==
+            mapOf("a" to 1L, "b" to listOf(1L, 2L, mapOf("c" to "A")), "d" to null, "e" to -2.5))
+        check("json: garbage and trailing text are refused", MiniJson.parse("{\"a\":1} x") == null && MiniJson.parse("{\"a\":") == null && MiniJson.parseObject("[1]") == null)
+        check("json: empty containers", MiniJson.write(emptyMap<String, Any?>()) == "{}" && MiniJson.write(emptyList<Any?>()) == "[]")
+
+        // VLESS over WebSocket + TLS (the kind of link a CDN-fronted server gives)
+        val v1 = ok("vless://$uuid@203.0.113.7:443?path=%2Fabc-def&security=tls&encryption=none&pbk=enabled&insecure=0&host=cdn.example.workers.dev&fp=chrome&type=ws&allowInsecure=0&sni=cdn.example.workers.dev#203.0.113.7-test%20%F0%9F%8E%88")
+        check("vless ws: basics", v1.protocol == "vless" && v1.server == "203.0.113.7" && v1.port == 443 && v1.outbound["uuid"] == uuid && v1.outbound["type"] == "vless")
+        check("vless ws: name is percent-decoded UTF-8", v1.name == "203.0.113.7-test \uD83C\uDF88")
+        check("vless ws: tls with sni and utls", m(v1.outbound["tls"])["server_name"] == "cdn.example.workers.dev" &&
+            m(m(v1.outbound["tls"])["utls"])["fingerprint"] == "chrome" && m(v1.outbound["tls"])["insecure"] == null)
+        check("vless ws: transport has path and Host header", m(v1.outbound["transport"])["type"] == "ws" && m(v1.outbound["transport"])["path"] == "/abc-def" &&
+            m(m(v1.outbound["transport"])["headers"])["Host"] == listOf("cdn.example.workers.dev"))
+        check("vless ws: the summary never contains the id", !v1.summary.contains(uuid) && v1.summary.contains("203.0.113.7:443") && v1.summary.contains("WebSocket"))
+        check("vless: 'pbk' is ignored when the security is not reality", m(v1.outbound["tls"])["reality"] == null)
+
+        // XHTTP is refused with its own reason, not dropped
+        check("vless xhttp is refused", err("vless://$uuid@vpn.example.com:443?type=xhttp&security=tls&sni=s.example.com&path=%2Fx&mode=auto") == LinkError.XHTTP)
+        check("splithttp is refused too", err("vless://$uuid@vpn.example.com:443?type=splithttp&security=tls") == LinkError.XHTTP)
+
+        // reality and grpc
+        val v2 = ok("vless://$uuid@vpn.example.com:8443?security=reality&sni=www.example.org&fp=firefox&pbk=PUBKEY123&sid=ab12&type=tcp&flow=xtls-rprx-vision&encryption=none#r")
+        check("vless reality: flow, reality block, utls", v2.outbound["flow"] == "xtls-rprx-vision" && m(m(v2.outbound["tls"])["reality"])["public_key"] == "PUBKEY123" &&
+            m(m(v2.outbound["tls"])["reality"])["short_id"] == "ab12" && m(m(v2.outbound["tls"])["utls"])["fingerprint"] == "firefox" && v2.outbound["transport"] == null)
+        check("vless reality without a public key is refused", err("vless://$uuid@h.example.com:443?security=reality&sni=a.example.org") == LinkError.SECURITY)
+        val v3 = ok("vless://$uuid@g.example.com:443?security=tls&type=grpc&serviceName=svc&alpn=h2,http%2F1.1&allowInsecure=1")
+        check("vless grpc: service name, alpn, insecure on request", m(v3.outbound["transport"])["service_name"] == "svc" &&
+            m(v3.outbound["tls"])["alpn"] == listOf("h2", "http/1.1") && m(v3.outbound["tls"])["insecure"] == true && m(v3.outbound["tls"])["server_name"] == "g.example.com")
+        check("vless: unknown fingerprint is dropped, randomizedalpn is mapped", ok("vless://$uuid@h.example.com:443?security=tls&fp=nonsense").outbound.let { m(it["tls"])["utls"] == null } &&
+            m(m(ok("vless://$uuid@h.example.com:443?security=tls&fp=randomizedalpn").outbound["tls"])["utls"])["fingerprint"] == "randomized")
+        check("vless: IP server without sni gets no server_name", m(ok("vless://$uuid@203.0.113.9:443?security=tls").outbound["tls"])["server_name"] == null)
+        check("vless: no security means no tls block", ok("vless://$uuid@203.0.113.9:80?type=ws&path=%2F").outbound["tls"] == null)
+        check("vless: ipv6 server", ok("vless://$uuid@[2001:db8::1]:443?security=tls&sni=a.example.com").let { it.server == "2001:db8::1" && it.summary.contains("[2001:db8::1]:443") })
+        check("vless: ws early data is split out", m(ok("vless://$uuid@h.example.com:443?type=ws&path=%2Fp%3Fed%3D2048").outbound["transport"]).let {
+            it["path"] == "/p" && it["max_early_data"] == 2048 && it["early_data_header_name"] == "Sec-WebSocket-Protocol" })
+        check("vless: http/h2 transport takes host list", m(ok("vless://$uuid@h.example.com:443?security=tls&type=h2&host=a.example.com,b.example.com&path=%2Fh").outbound["transport"]).let {
+            it["type"] == "http" && it["host"] == listOf("a.example.com", "b.example.com") && it["path"] == "/h" })
+        check("vless: httpupgrade", m(ok("vless://$uuid@h.example.com:80?type=httpupgrade&host=a.example.com&path=%2Fu").outbound["transport"]).let { it["type"] == "httpupgrade" && it["host"] == "a.example.com" })
+        check("vless: bad ids, ports, encryption", err("vless://not-a-uuid@h.example.com:443") == LinkError.CREDENTIAL && err("vless://@h.example.com:443") == LinkError.CREDENTIAL &&
+            err("vless://$uuid@h.example.com") == LinkError.PORT && err("vless://$uuid@h.example.com:99999") == LinkError.PORT &&
+            err("vless://$uuid@h.example.com:443?encryption=mlkem768x25519plus") == LinkError.ENCRYPTION)
+        check("vless: unsupported transports and security are refused", err("vless://$uuid@h.example.com:443?type=kcp") == LinkError.TRANSPORT &&
+            err("vless://$uuid@h.example.com:443?type=tcp&headerType=http") == LinkError.TRANSPORT && err("vless://$uuid@h.example.com:443?security=xtls") == LinkError.SECURITY)
+
+        // Shadowsocks: SIP002 (base64 userinfo), plain userinfo, legacy whole-base64
+        val s1 = ok("ss://" + b64url("aes-256-gcm:test-password-123") + "@ss.example.com:990#de-test")
+        check("ss sip002", s1.outbound == linkedMapOf<String, Any?>("type" to "shadowsocks", "server" to "ss.example.com", "server_port" to 990,
+            "method" to "aes-256-gcm", "password" to "test-password-123") && s1.name == "de-test" && !s1.summary.contains("test-password"))
+        val s2 = ok("ss://chacha20-ietf-poly1305:p%40ss%3Aword@203.0.113.5:8388")
+        check("ss plain userinfo with percent-encoding", s2.outbound["password"] == "p@ss:word" && s2.outbound["method"] == "chacha20-ietf-poly1305")
+        val s3 = ok("ss://" + b64("aes-128-gcm:pw@ss.example.com:443") + "#legacy")
+        check("ss legacy base64 form", s3.server == "ss.example.com" && s3.port == 443 && s3.outbound["password"] == "pw" && s3.name == "legacy")
+        check("ss padded and URL-safe base64 both work", ok("ss://" + b64("aes-256-gcm:abc") + "@h.example.com:1").outbound["password"] == "abc")
+        check("ss alias chacha20-poly1305", ok("ss://chacha20-poly1305:pw@h.example.com:1").outbound["method"] == "chacha20-ietf-poly1305")
+        check("ss 2022 method", ok("ss://2022-blake3-aes-256-gcm:KEYKEYKEY@h.example.com:1").outbound["method"] == "2022-blake3-aes-256-gcm")
+        check("ss: plugins and bad methods are refused", err("ss://" + b64url("aes-256-gcm:x") + "@h.example.com:1?plugin=obfs-local%3Bobfs%3Dtls") == LinkError.PLUGIN &&
+            err("ss://" + b64url("foo-cipher:x") + "@h.example.com:1") == LinkError.METHOD && err("ss://" + b64url("aes-256-gcm:x") + "@h.example.com") == LinkError.PORT &&
+            err("ss://!!!notbase64!!!@h.example.com:1") == LinkError.MALFORMED)
+
+        // Trojan
+        val t1 = ok("trojan://p%40ss@t.example.com:443?sni=front.example.com&type=ws&host=front.example.com&path=%2Fws&fp=chrome#t")
+        check("trojan: password decoded, tls by default, ws", t1.outbound["password"] == "p@ss" && m(t1.outbound["tls"])["server_name"] == "front.example.com" &&
+            m(t1.outbound["transport"])["type"] == "ws")
+        check("trojan: security=none really means none", ok("trojan://pw@t.example.com:80?security=none").outbound["tls"] == null)
+        check("trojan: password is required", err("trojan://@t.example.com:443") == LinkError.CREDENTIAL)
+
+        // VMess: v2rayN base64 JSON and the URI form
+        val vm = b64("""{"v":"2","ps":"vm test","add":"vm.example.com","port":"443","id":"$uuid","aid":"0","scy":"auto","net":"ws","type":"none","host":"vm.example.com","path":"/vm","tls":"tls","sni":"vm.example.com","alpn":"h2","fp":"chrome"}""")
+        val vm1 = ok("vmess://$vm")
+        check("vmess json: server, tls, ws", vm1.server == "vm.example.com" && vm1.port == 443 && vm1.name == "vm test" && vm1.outbound["security"] == "auto" &&
+            m(vm1.outbound["tls"])["alpn"] == listOf("h2") && m(vm1.outbound["transport"])["path"] == "/vm" && vm1.outbound["alter_id"] == null)
+        check("vmess json: port as a number and alterId", ok("vmess://" + b64("""{"add":"a.example.com","port":8080,"id":"$uuid","aid":4,"net":"tcp"}""")).let { it.port == 8080 && it.outbound["alter_id"] == 4 && it.outbound["tls"] == null })
+        check("vmess json: grpc takes the path as service name", m(ok("vmess://" + b64("""{"add":"a.example.com","port":"443","id":"$uuid","net":"grpc","path":"svc","tls":"tls"}""")).outbound["transport"])["service_name"] == "svc")
+        check("vmess: not base64 json is refused", err("vmess://%%%") == LinkError.MALFORMED && err("vmess://" + b64("{\"add\":\"x\"}")) != null)
+        val vm2 = ok("vmess://$uuid@vm.example.com:443?security=tls&type=ws&path=%2Fv&encryption=aes-128-gcm")
+        check("vmess uri form", vm2.outbound["security"] == "aes-128-gcm" && m(vm2.outbound["transport"])["path"] == "/v")
+
+        // generic refusals
+        check("empty / no scheme / unsupported scheme", err("  ") == LinkError.EMPTY && err("just text") == LinkError.SCHEME && err("hysteria2://x@h.example.com:443") == LinkError.SCHEME &&
+            err("https://example.com") == LinkError.SCHEME)
+        check("surrounding whitespace is ignored", ProxyLink.parse("  ss://" + b64url("aes-256-gcm:x") + "@h.example.com:1 \n") is LinkParse.Ok)
+        check("every link error has a message", LinkError.values().all { LinkMessages.english(LinkParse.Err(it, "x")).isNotBlank() })
+        check("base64 helper: both alphabets, with and without padding", Base64Lite.decode("aGk=")!!.toString(Charsets.UTF_8) == "hi" && Base64Lite.decode("aGk")!!.toString(Charsets.UTF_8) == "hi" &&
+            Base64Lite.decode("_-8")!!.size == 2 && Base64Lite.decode("a") == null && Base64Lite.decode("a$") == null)
+
+        // the configuration
+        val cfg = MiniJson.parseObject(SingBoxConfig.build(v1, corePort = 1823, listenPort = 1824))!!
+        val outs = cfg["outbounds"] as List<*>
+        check("config: inbound is a local SOCKS on the chain port", (cfg["inbounds"] as List<*>).let { m(it[0]).let { i -> i["type"] == "socks" && i["listen"] == "127.0.0.1" && i["listen_port"] == 1824L } })
+        check("config: proxy outbound goes through warp, warp is the core's SOCKS", m(outs[0])["tag"] == "proxy" && m(outs[0])["detour"] == "warp" &&
+            m(outs[1]).let { it["tag"] == "warp" && it["type"] == "socks" && it["server"] == "127.0.0.1" && it["server_port"] == 1823L && it["version"] == "5" })
+        check("config: everything leaves through the proxy, roots are built in", m(cfg["route"])["final"] == "proxy" && m(cfg["certificate"])["store"] == "mozilla")
+        check("config: no dns, tun, rules, file output", cfg["dns"] == null && cfg["experimental"] == null && m(cfg["log"])["output"] == null && cfg["inbounds"].toString().contains("tun").not())
+        check("config: bad ports are refused", runCatching { SingBoxConfig.build(v1, 0, 1824) }.isFailure && runCatching { SingBoxConfig.build(v1, 1823, 70000) }.isFailure)
+
+        // golden files: what the builder writes is exactly what CI hands to the real `sing-box check`
+        val root = System.getenv("MADSHIELD_ROOT") ?: "."
+        val goldenDir = java.io.File(root, "tests/pure/golden")
+        val goldens = linkedMapOf(
+            "vless-ws-tls.json" to v1, "vless-reality.json" to v2, "vless-grpc.json" to v3, "ss.json" to s1,
+            "trojan-ws.json" to t1, "vmess-ws.json" to vm1
+        )
+        for ((name, link) in goldens) {
+            val text = SingBoxConfig.build(link, corePort = 1823, listenPort = 1824)
+            val f = java.io.File(goldenDir, name)
+            if (System.getenv("UPDATE_GOLDEN") == "1") { goldenDir.mkdirs(); f.writeText(text) }
+            check("golden: $name matches the builder", f.isFile && f.readText() == text)
+        }
+
+        // topology and policy
+        for (chain in listOf(PrivacyChain.PSIPHON, PrivacyChain.TOR, PrivacyChain.SINGBOX)) {
+            val a = FrontPlan.of(chain, false, false, 1819)
+            val b = FrontPlan.of(chain, true, false, 1819)
+            check("plan $chain: no front -> chain on the public port, core underneath", !a.frontOn && a.chainPort == 1819 && a.corePort == Chain.UNDERLAY_PORT && a.upstreamPort == 1819)
+            check("plan $chain: with front -> chain on 1824, UDP refused", b.frontOn && b.chainPort == Chain.CHAIN_PORT && b.upstreamPort == Chain.CHAIN_PORT && !b.udpPassThrough && !b.coreGetsRoutes)
+        }
+        val sbCfg = EngineConfig(protocol = Protocol.WIREGUARD, privacyChain = PrivacyChain.SINGBOX)
+        val sbPlan = FrontPlan.of(sbCfg.effectiveChain, false, false, sbCfg.socksPort)
+        val sbEnv = EngineEnvironment.build(sbCfg, "/c", "/t", null, emptyMap(), null, null, sbPlan)
+        check("env: the custom chain gives the core no chain variables, and the core sits on the underlay port",
+            sbEnv.keys.none { it.startsWith("AETHER_PSIPHON") || it.startsWith("AETHER_TOR") || it == "GOMAXPROCS" } && sbEnv["AETHER_SOCKS"] == "127.0.0.1:${Chain.UNDERLAY_PORT}")
+        check("custom chain is not offered with SMART", sbCfg.copy(protocol = Protocol.SMART).effectiveChain == PrivacyChain.NONE)
+        check("policy: sing-box failures count as chain failures", ConnectPolicy.isChainFailure("the custom chain (sing-box) did not carry traffic in 45s") &&
+            ConnectPolicy.isChainFailure("The custom chain (sing-box) stopped (exit code 1)") && !ConnectPolicy.isChainFailure("no answer from the engine after 90s") &&
+            !ConnectPolicy.shouldTryHardened(sbCfg, "the custom chain (sing-box) did not carry traffic in 45s"))
+        check("policy: allowance for the custom chain", ConnectPolicy.chainAllowanceMs(sbCfg) == ConnectPolicy.SINGBOX_ALLOWANCE_MS &&
+            ConnectPolicy.firstPassTimeoutMs(sbCfg) == ConnectPolicy.SIMPLE_PASS_MS + ConnectPolicy.SINGBOX_ALLOWANCE_MS)
+        check("stored chain names still load, unknown ones fall back to none", PrivacyChain.fromStored("SINGBOX") == PrivacyChain.SINGBOX && PrivacyChain.fromStored("PSIPHON") == PrivacyChain.PSIPHON && PrivacyChain.fromStored("bogus") == PrivacyChain.NONE)
+
+        // the end-to-end probe, against a fake SOCKS5 server
+        fun fakeSocks(connectReply: Int, http: String?): Pair<java.net.ServerSocket, Thread> {
+            val ss = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+            val th = Thread {
+                try {
+                    ss.accept().use { c ->
+                        val i = c.getInputStream(); val o = c.getOutputStream()
+                        val g = ByteArray(3); i.readNBytes(g, 0, 3)
+                        o.write(byteArrayOf(5, 0)); o.flush()
+                        val r = ByteArray(10); i.readNBytes(r, 0, 10)
+                        o.write(byteArrayOf(5, connectReply.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)); o.flush()
+                        if (connectReply == 0 && http != null) {
+                            val buf = StringBuilder()
+                            while (!buf.endsWith("\r\n\r\n")) { val b = i.read(); if (b < 0) break; buf.append(b.toChar()) }
+                            o.write(http.toByteArray()); o.flush()
+                        }
+                    }
+                } catch (_: Exception) {}
+            }.also { it.isDaemon = true; it.start() }
+            return ss to th
+        }
+        val (okSrv, _) = fakeSocks(0, "HTTP/1.1 301 Moved\r\n\r\n")
+        check("e2e probe: an HTTP answer through SOCKS is success", SocksProbe.httpAnswersThrough("127.0.0.1", okSrv.localPort, "1.1.1.1", 80, 3_000))
+        okSrv.close()
+        val (badSrv, _) = fakeSocks(5, null)
+        check("e2e probe: a refused CONNECT is failure", !SocksProbe.httpAnswersThrough("127.0.0.1", badSrv.localPort, "1.1.1.1", 80, 3_000))
+        badSrv.close()
+        val (junkSrv, _) = fakeSocks(0, "not http at all")
+        check("e2e probe: bytes that are not HTTP are failure", !SocksProbe.httpAnswersThrough("127.0.0.1", junkSrv.localPort, "1.1.1.1", 80, 3_000))
+        junkSrv.close()
+        check("e2e probe: only literal IPv4 targets, and a closed port is failure",
+            !SocksProbe.httpAnswersThrough("127.0.0.1", 1, "1.1.1.1", 80, 500) && !SocksProbe.httpAnswersThrough("127.0.0.1", 1, "example.com", 80, 500))
+    }
 }

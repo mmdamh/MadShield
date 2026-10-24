@@ -1,0 +1,38 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "certificate": {
+    "store": "mozilla"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "in",
+      "listen": "127.0.0.1",
+      "listen_port": 1824
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "proxy",
+      "server": "ss.example.com",
+      "server_port": 990,
+      "method": "aes-256-gcm",
+      "password": "test-password-123",
+      "detour": "warp"
+    },
+    {
+      "type": "socks",
+      "tag": "warp",
+      "server": "127.0.0.1",
+      "server_port": 1823,
+      "version": "5"
+    }
+  ],
+  "route": {
+    "final": "proxy"
+  }
+}
