@@ -230,6 +230,8 @@ object ProxyLink {
             if (fingerprint != null) tls["utls"] = linkedMapOf("enabled" to true, "fingerprint" to fingerprint)
             if (sec == "reality") {
                 if (pbk.isEmpty()) throw LinkFailure(LinkError.SECURITY, "reality without a public key (pbk)")
+                // sing-box decodes it as unpadded URL-safe base64 of 32 bytes and refuses to start otherwise.
+                if (Base64Lite.decode(pbk)?.size != 32) throw LinkFailure(LinkError.SECURITY, "the reality public key (pbk) is not valid")
                 tls["reality"] = linkedMapOf<String, Any?>("enabled" to true, "public_key" to pbk, "short_id" to sid)
             }
             out["tls"] = tls

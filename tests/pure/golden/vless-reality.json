@@ -31,7 +31,7 @@
         },
         "reality": {
           "enabled": true,
-          "public_key": "PUBKEY123",
+          "public_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
           "short_id": "ab12"
         }
       },

@@ -1036,9 +1036,10 @@ fun routeFrontTests() {
         check("splithttp is refused too", err("vless://$uuid@vpn.example.com:443?type=splithttp&security=tls") == LinkError.XHTTP)
 
         // reality and grpc
-        val v2 = ok("vless://$uuid@vpn.example.com:8443?security=reality&sni=www.example.org&fp=firefox&pbk=PUBKEY123&sid=ab12&type=tcp&flow=xtls-rprx-vision&encryption=none#r")
-        check("vless reality: flow, reality block, utls", v2.outbound["flow"] == "xtls-rprx-vision" && m(m(v2.outbound["tls"])["reality"])["public_key"] == "PUBKEY123" &&
+        val v2 = ok("vless://$uuid@vpn.example.com:8443?security=reality&sni=www.example.org&fp=firefox&pbk=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA&sid=ab12&type=tcp&flow=xtls-rprx-vision&encryption=none#r")
+        check("vless reality: flow, reality block, utls", v2.outbound["flow"] == "xtls-rprx-vision" && m(m(v2.outbound["tls"])["reality"])["public_key"] == "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA" &&
             m(m(v2.outbound["tls"])["reality"])["short_id"] == "ab12" && m(m(v2.outbound["tls"])["utls"])["fingerprint"] == "firefox" && v2.outbound["transport"] == null)
+        check("vless reality with a malformed public key is refused", err("vless://$uuid@h.example.com:443?security=reality&sni=a.example.org&pbk=PUBKEY123") == LinkError.SECURITY)
         check("vless reality without a public key is refused", err("vless://$uuid@h.example.com:443?security=reality&sni=a.example.org") == LinkError.SECURITY)
         val v3 = ok("vless://$uuid@g.example.com:443?security=tls&type=grpc&serviceName=svc&alpn=h2,http%2F1.1&allowInsecure=1")
         check("vless grpc: service name, alpn, insecure on request", m(v3.outbound["transport"])["service_name"] == "svc" &&
