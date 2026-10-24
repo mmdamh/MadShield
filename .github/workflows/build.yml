@@ -255,6 +255,12 @@ jobs:
           test "$(git -C native/sing-box rev-parse HEAD)" = "$pin"
           echo "sing-box @ $pin"
 
+      # Android 11+ forbids netlink sockets for ordinary apps and sing-box opens one at start-up to watch network
+      # changes ("subscribe netlink groups: permission denied", seen on a real phone). The app never needs that
+      # monitor, so it is switched off. The script fails the build unless its target text matches exactly once.
+      - name: Patch sing-box (no netlink network monitor)
+        run: python3 native/singbox-patches/no-netlink/apply.py native/sing-box
+
       # sing-box v1.14 needs Go 1.25.5 (its go.mod says so); the toolchain is installed from that file.
       - name: Install Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -324,6 +330,9 @@ jobs:
           git -C native/sing-box fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
           git -C native/sing-box checkout -q FETCH_HEAD
           test "$(git -C native/sing-box rev-parse HEAD)" = "$pin"
+
+      - name: Patch sing-box (no netlink network monitor)
+        run: python3 native/singbox-patches/no-netlink/apply.py native/sing-box
 
       - name: Install Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5

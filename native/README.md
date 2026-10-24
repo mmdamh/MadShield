@@ -68,3 +68,9 @@ re-read aether-core's `cli.rs` (flag names), `routing.rs` (rule file format) and
 * To change a golden file after editing the builder: `UPDATE_GOLDEN=1 KOTLINC=... bash scripts/run-pure-tests.sh`.
 * Updating the pin: change `native/singbox.pin` and `SINGBOX_VERSION` in `build.yml`, then re-read sing-box's
   `option/` Go files for the fields `SingBoxConfig.kt` and `ProxyLink.kt` use.
+
+### sing-box patch: no netlink monitor
+Android 11+ forbids netlink sockets for ordinary apps; stock sing-box opens one at start-up
+(`initialize network: subscribe netlink groups: permission denied`). `native/singbox-patches/no-netlink/apply.py`
+switches off the (unused here) network-change monitor in `route/network.go`; it fails the build unless its target
+matches exactly once, so a pin bump is never patched blindly.
