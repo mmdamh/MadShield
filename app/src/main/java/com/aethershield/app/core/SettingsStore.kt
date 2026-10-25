@@ -62,6 +62,10 @@ class SettingsStore(private val context: Context) {
         val DOH_SERVE_STALE = booleanPreferencesKey("doh_serve_stale")
         val DOH_FOR_DIRECT = booleanPreferencesKey("doh_for_direct")
 
+        // update19: MASQUE server name and TLS look (both off by default)
+        val MASQUE_SNI = stringPreferencesKey("masque_sni")
+        val TLS_PRESET = stringPreferencesKey("tls_preset")
+
         // Appearance (never affects the tunnel)
         val THEME_ID = stringPreferencesKey("ui_theme_id")
         val DARK_MODE = stringPreferencesKey("ui_dark_mode")
@@ -114,7 +118,9 @@ class SettingsStore(private val context: Context) {
             dohResolvers = (p[Keys.DOH_RESOLVERS] ?: "").split('\n').map { it.trim() }.filter { it.isNotEmpty() },
             dohViaTor = p[Keys.DOH_VIA_TOR] ?: true,
             dohServeStale = p[Keys.DOH_SERVE_STALE] ?: false,
-            dohForDirect = p[Keys.DOH_FOR_DIRECT] ?: false
+            dohForDirect = p[Keys.DOH_FOR_DIRECT] ?: false,
+            masqueSni = MasqueSni.normalize(p[Keys.MASQUE_SNI]) ?: "",
+            tlsPreset = TlsPreset.fromStored(p[Keys.TLS_PRESET])
         )
 
     val configFlow: Flow<EngineConfig> = context.dataStore.data.map { readConfig(it) }
@@ -173,6 +179,9 @@ class SettingsStore(private val context: Context) {
             p[Keys.DOH_VIA_TOR] = current.dohViaTor
             p[Keys.DOH_SERVE_STALE] = current.dohServeStale
             p[Keys.DOH_FOR_DIRECT] = current.dohForDirect
+            val sni = MasqueSni.normalize(current.masqueSni)
+            if (sni == null) p.remove(Keys.MASQUE_SNI) else p[Keys.MASQUE_SNI] = sni
+            if (current.tlsPreset == TlsPreset.DEFAULT) p.remove(Keys.TLS_PRESET) else p[Keys.TLS_PRESET] = current.tlsPreset.name
             val region = Chain.normalizeRegion(current.psiphonRegion)
             if (region == null) p.remove(Keys.PSIPHON_REGION) else p[Keys.PSIPHON_REGION] = region
         }

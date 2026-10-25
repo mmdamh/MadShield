@@ -15,6 +15,19 @@ Every place that's a genuine guess rather than a confirmed fact is marked
 inline with a comment saying so -- search for "VERIFY" across the repo to
 find all of them at once.
 
+## TLS look and MASQUE server name (update19)
+
+Settings has a folded card "TLS look and server name". Both choices are off by default, and with the defaults no new
+variable reaches the core.
+
+- **MASQUE server name (`AETHER_MASQUE_SNI`)**: Default (the core's `www.cloudflare.com`), the name the WARP client sends
+  (`consumer-masque.cloudflareclient.com`) or your own domain. The app validates it first (the core stops at start on
+  an IP address or anything that is not a domain name). Used only by the MASQUE protocols.
+- **TLS look**: Default, Chrome+ (the four extras Chrome sends) or Firefox-like. The presets are the exact values the
+  core's own tests use for its October 2026 Chrome and Firefox captures (`core/TlsOptions.kt`).
+- Worth trying only when MASQUE over HTTP/2 is blocked while WireGuard or HTTP/3 still work. Only the first handshake
+  packet changes; there is no battery cost.
+
 ## Core v2.4.0 (update18)
 
 The pinned core is now Aether **v2.4.0** (`native/aether-core.pin`). The app's contract with it (the `AETHER_*`

@@ -34,6 +34,12 @@ sealed interface LinkParse {
 
 object ProxyLink {
 
+    /**
+     * update19: the link asks to skip certificate checking (allowInsecure=1). The link still works exactly as before
+     * (blocking it could break a working setup); the editor only SAYS it, so it is a choice and not a surprise.
+     */
+    fun isInsecure(ok: LinkParse.Ok): Boolean = (ok.outbound["tls"] as? Map<*, *>)?.get("insecure") == true
+
     fun parse(raw: String): LinkParse {
         val text = raw.trim()
         if (text.isEmpty()) return LinkParse.Err(LinkError.EMPTY)

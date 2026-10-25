@@ -81,6 +81,8 @@ class AetherVpnService : VpnService() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var connectJob: Job? = null
     @Volatile private var userRequestedStop = false
+    /** update19: this start captured the traffic because the Kill Switch is on; a startup error must not hand it back. */
+    @Volatile private var killSwitchHeld = false
     private var tunFd: ParcelFileDescriptor? = null
     private var healthJob: Job? = null
     private lateinit var engine: EngineProcessManager
@@ -160,8 +162,11 @@ class AetherVpnService : VpnService() {
             throw IllegalStateException(getString(R.string.err_include_only_empty))
         }
 
+        killSwitchHeld = false
         if (baseConfig.killSwitchEnabled) {
             establishTun(baseConfig) // capture traffic immediately; nothing bridged yet
+            killSwitchHeld = true
+            reportLockdown()
         }
 
         // Connect in up to three steps, each only when the previous one failed:
@@ -273,6 +278,16 @@ class AetherVpnService : VpnService() {
         healthJob?.cancel()
         stopBridge()
         engine.stop()
+        if (killSwitchHeld && tunFd != null) {
+            // update19: Kill Switch ON. A startup error (missing or altered file, failed preflight) is NOT a reason to
+            // give the raw network back: the engine attempts that fail already keep the TUN (see connect()), and this
+            // path now does the same. Nothing runs here (no engine, no health loop, no polling), so it costs no battery.
+            // The Error card offers Retry and Stop; Stop releases everything.
+            RingLogBuffer.append("[vpn] startup failed ($reason); Kill Switch keeps traffic held until Retry or Stop")
+            AetherController.setState(ConnectionState.Error(reason))
+            updateNotification(getString(R.string.state_error))
+            return
+        }
         releaseTun()
         AetherController.setState(ConnectionState.Error(reason))
         updateNotification(getString(R.string.state_error))
@@ -327,6 +342,13 @@ class AetherVpnService : VpnService() {
         tunFd = builder.establish()
             ?: throw IllegalStateException("Android could not create the VPN interface (permission revoked?)")
         RingLogBuffer.append("[vpn] TUN established (mtu=${config.effectiveMtu}, killSwitch=${config.killSwitchEnabled})")
+    }
+
+    /** One read per connect: tells the Settings page whether lockdown (Always-on + block without VPN) is on. */
+    private fun reportLockdown() {
+        val v = if (android.os.Build.VERSION.SDK_INT >= 29) runCatching { isLockdownEnabled }.getOrNull() else null
+        AetherController.setLockdown(v)
+        if (v == false) RingLogBuffer.append("[vpn] Android's \"Block connections without VPN\" is off: if Android kills this app, traffic can leave unprotected")
     }
 
     private fun releaseTun() {
@@ -658,6 +680,7 @@ class AetherVpnService : VpnService() {
         stopBridge()
         engine.stop()
         releaseTun()
+        AetherController.setLockdown(null)
         RouteMatcher.clearCache()
         // A startup failure stops the service on purpose and must leave its Error visible;
         // a user-requested stop (or a revoke) always returns to Idle.
@@ -689,6 +712,7 @@ class AetherVpnService : VpnService() {
             stopBridge()
             runCatching { engine.stop() }
             runCatching { releaseTun() }
+            AetherController.setLockdown(null)
             AetherController.setState(ConnectionState.Idle)
             RingLogBuffer.clear()
             DiagnosticsHub.clear()

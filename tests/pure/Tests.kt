@@ -1243,4 +1243,99 @@ fun linkProfileTests() {
     check("links: migration never touches a non-empty book or an empty link", LinkProfiles.migrate(act, vless) == act && LinkProfiles.migrate(empty, "  ") == empty && LinkProfiles.migrate(empty, null) == empty)
     check("links: migrating an unparseable old link still keeps it", LinkProfiles.migrate(empty, "garbage").profiles.single().name == "Link")
     check("links: the stored text never leaks into the summary shown in the UI", (ProxyLink.parse(vless) as LinkParse.Ok).summary.let { !it.contains(uuid) })
+
+    // ------------------------------------------------------------------ update19: MASQUE SNI and TLS look
+    run {
+        check("sni: a plain domain is accepted", MasqueSni.normalize("example.com") == "example.com")
+        check("sni: case and one trailing dot are cleaned", MasqueSni.normalize("  WWW.Example.COM. ") == "www.example.com")
+        check("sni: the core's default and the WARP client name are valid", MasqueSni.isValid(MasqueSni.DEFAULT) && MasqueSni.isValid(MasqueSni.WARP_CLIENT))
+        check("sni: empty, null and blank give nothing", MasqueSni.normalize(null) == null && MasqueSni.normalize("") == null && MasqueSni.normalize("   ") == null)
+        check("sni: IPv4 and IPv6 are refused (the core stops on them)",
+            MasqueSni.normalize("1.1.1.1") == null && MasqueSni.normalize("104.16.0.1") == null && MasqueSni.normalize("1.2.3") == null &&
+                MasqueSni.normalize("2606:4700::1111") == null && MasqueSni.normalize("[::1]") == null)
+        check("sni: a single label, double dot and leading dot are refused",
+            MasqueSni.normalize("localhost") == null && MasqueSni.normalize("a..com") == null && MasqueSni.normalize(".example.com") == null && MasqueSni.normalize("example.com..") == null)
+        check("sni: spaces, schemes, paths, ports, underscores and non-ASCII are refused",
+            MasqueSni.normalize("exa mple.com") == null && MasqueSni.normalize("https://example.com") == null &&
+                MasqueSni.normalize("example.com/x") == null && MasqueSni.normalize("example.com:443") == null &&
+                MasqueSni.normalize("my_host.example.com") == null && MasqueSni.normalize("exämple.com") == null)
+        check("sni: hyphens only inside a label", MasqueSni.isValid("a-b.example.com") && !MasqueSni.isValid("-a.example.com") && !MasqueSni.isValid("a-.example.com"))
+        check("sni: punycode names are fine", MasqueSni.isValid("xn--mnchen-3ya.de"))
+        check("sni: label and total length limits", MasqueSni.isValid("a".repeat(63) + ".com") && !MasqueSni.isValid("a".repeat(64) + ".com") &&
+            !MasqueSni.isValid(("a".repeat(60) + ".").repeat(5) + "com"))
+        check("sni: kinds", MasqueSni.kindOf(null) == MasqueSni.Kind.DEFAULT && MasqueSni.kindOf("") == MasqueSni.Kind.DEFAULT &&
+            MasqueSni.kindOf("WWW.cloudflare.com") == MasqueSni.Kind.DEFAULT && MasqueSni.kindOf(MasqueSni.WARP_CLIENT) == MasqueSni.Kind.WARP_CLIENT &&
+            MasqueSni.kindOf("example.org") == MasqueSni.Kind.CUSTOM && MasqueSni.kindOf("1.1.1.1") == MasqueSni.Kind.DEFAULT)
+        check("sni: env value only when it differs from the core default",
+            MasqueSni.envValue("") == null && MasqueSni.envValue("www.cloudflare.com") == null && MasqueSni.envValue("junk") == null &&
+                MasqueSni.envValue("Example.org") == "example.org")
+        check("sni: only MASQUE-capable protocols use it",
+            MasqueSni.appliesTo(Protocol.SMART) && MasqueSni.appliesTo(Protocol.MASQUE_H2) && MasqueSni.appliesTo(Protocol.MASQUE_H3) &&
+                MasqueSni.appliesTo(Protocol.GOOL) && !MasqueSni.appliesTo(Protocol.WIREGUARD) && !MasqueSni.appliesTo(Protocol.GOOL_CLASSIC))
+
+        check("tls: default preset sets nothing", TlsPreset.DEFAULT.env().isEmpty())
+        check("tls: Chrome+ is exactly the four extras",
+            TlsPreset.CHROME_PLUS.env() == mapOf(
+                "AETHER_ENABLE_GREASE_SIGALGS" to "1", "AETHER_TLS_CERT_COMPRESSION" to "brotli",
+                "AETHER_TLS_ALPS" to "new", "AETHER_ENABLE_ECH_GREASE" to "1"))
+        val ff = TlsPreset.FIREFOX.env()
+        val ffGroups = ff["AETHER_TLS_GROUPS"]!!.split(':')
+        val ffShares = ff["AETHER_TLS_KEY_SHARES"]!!.split(':')
+        check("tls: Firefox key shares are groups, in the groups' order, each once (the core refuses anything else)",
+            ffShares.all { it in ffGroups } && ffShares == ffGroups.filter { it in ffShares } && ffShares.toSet().size == ffShares.size)
+        check("tls: Firefox TLS 1.3 suites are the three standard ones, each once",
+            ff["AETHER_TLS13_CIPHERS"]!!.split(':').sorted() == listOf("TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384", "TLS_CHACHA20_POLY1305_SHA256"))
+        check("tls: Firefox signature algorithms are each named once and contain no spaces",
+            ff["AETHER_TLS_SIGALGS"]!!.split(':').let { it.toSet().size == it.size && it.none { n -> n.isBlank() || n.contains(' ') } })
+        check("tls: Firefox compression is zlib, brotli, zstd", ff["AETHER_TLS_CERT_COMPRESSION"] == "zlib:brotli:zstd")
+        check("tls: no preset value has a space or a newline",
+            TlsPreset.entries.all { p -> p.env().values.all { v -> v.none { c -> c == ' ' || c == '\n' } } })
+        check("tls: stored names round-trip, junk falls back to the default",
+            TlsPreset.entries.all { TlsPreset.fromStored(it.name) == it } && TlsPreset.fromStored(null) == TlsPreset.DEFAULT && TlsPreset.fromStored("NOPE") == TlsPreset.DEFAULT)
+
+        fun env19(c: EngineConfig): Map<String, String> {
+            val plan = FrontPlan.of(c.effectiveChain, c.dohActive, false, c.socksPort)
+            return EngineEnvironment.build(c, "/x/aether.toml", "/tmp", null, emptyMap(), "/n/libpsiphon.so", "/d", plan)
+        }
+        val newVars = TlsPreset.ALL_VARIABLES.toSet()
+        for (proto in Protocol.entries) {
+            check("update19: defaults add NO new variable for $proto", env19(EngineConfig(protocol = proto)).keys.none { it in newVars })
+        }
+        check("update19: SNI reaches the core for MASQUE h2, h3, Gool and Smart",
+            listOf(Protocol.MASQUE_H2, Protocol.MASQUE_H3, Protocol.GOOL, Protocol.SMART).all {
+                env19(EngineConfig(protocol = it, masqueSni = MasqueSni.WARP_CLIENT))["AETHER_MASQUE_SNI"] == MasqueSni.WARP_CLIENT
+            })
+        check("update19: SNI is not sent for WireGuard or classic Gool",
+            env19(EngineConfig(protocol = Protocol.WIREGUARD, masqueSni = MasqueSni.WARP_CLIENT)).containsKey("AETHER_MASQUE_SNI").not() &&
+                env19(EngineConfig(protocol = Protocol.GOOL_CLASSIC, masqueSni = MasqueSni.WARP_CLIENT)).containsKey("AETHER_MASQUE_SNI").not())
+        check("update19: the core's own default name is never sent",
+            env19(EngineConfig(protocol = Protocol.MASQUE_H2, masqueSni = "www.cloudflare.com")).containsKey("AETHER_MASQUE_SNI").not())
+        check("update19: an invalid stored name is dropped, never passed to the core",
+            listOf("1.1.1.1", "not a domain", "https://x.com", "a_b.com").all {
+                env19(EngineConfig(protocol = Protocol.MASQUE_H2, masqueSni = it)).containsKey("AETHER_MASQUE_SNI").not()
+            })
+        for (preset in listOf(TlsPreset.CHROME_PLUS, TlsPreset.FIREFOX)) {
+            for (proto in Protocol.entries) {
+                val e = env19(EngineConfig(protocol = proto, tlsPreset = preset))
+                check("update19: preset $preset reaches the core for $proto (the WARP API calls use it too)", preset.env().all { (k, v) -> e[k] == v })
+            }
+        }
+        check("update19: a preset never changes the carrier, port or protocol variables",
+            env19(EngineConfig(protocol = Protocol.MASQUE_H2)).filterKeys { it !in newVars } ==
+                env19(EngineConfig(protocol = Protocol.MASQUE_H2, tlsPreset = TlsPreset.FIREFOX, masqueSni = "example.org")).filterKeys { it !in newVars })
+        check("update19: the fallback passes keep the user's SNI and preset",
+            EngineConfig(masqueSni = "example.org", tlsPreset = TlsPreset.CHROME_PLUS).hardened().let { it.masqueSni == "example.org" && it.tlsPreset == TlsPreset.CHROME_PLUS })
+
+        // CI must name every variable, so that a renamed upstream option fails the build instead of doing nothing
+        val ci = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", ".github/workflows/build.yml")
+        if (ci.isFile) {
+            val text = ci.readText()
+            check("update19: build.yml checks every variable of the presets and the SNI", TlsPreset.ALL_VARIABLES.all { text.contains(it) })
+        }
+
+        val insecure = ProxyLink.parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=ws&path=%2Fa&allowInsecure=1")
+        val secure = ProxyLink.parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=ws&path=%2Fa")
+        check("update19: a link with allowInsecure is recognised (and still parses)", insecure is LinkParse.Ok && ProxyLink.isInsecure(insecure))
+        check("update19: a normal link is not flagged", secure is LinkParse.Ok && !ProxyLink.isInsecure(secure))
+    }
 }

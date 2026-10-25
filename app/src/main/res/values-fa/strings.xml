@@ -385,4 +385,26 @@
     <string name="link_swapped">جابه‌جا شد. تونل دوباره وصل نشد.</string>
     <string name="link_swap_failed_restored">این لینک کار نکرد و لینک قبلی دوباره فعال شد. (%1$s)</string>
     <string name="link_swap_failed">جابه‌جایی لینک انجام نشد. (%1$s)</string>
+
+    <!-- update19: TLS look and MASQUE server name -->
+    <string name="sec_tls">ظاهر TLS و نام سرور</string>
+    <string name="lbl_tls_look">ظاهر TLS</string>
+    <string name="tls_default">پیش‌فرض</string>
+    <string name="tls_chrome_plus">Chrome+</string>
+    <string name="tls_firefox">شبیه Firefox</string>
+    <string name="tls_summary_sni">نام: %1$s</string>
+    <string name="tls_help_default">همان handshake شبیه Chrome خود هسته. چیزی تغییر نمی‌کند.</string>
+    <string name="tls_help_chrome">چهار مورد اضافهٔ Chrome را اضافه می‌کند (GREASE در الگوریتم امضا، فشرده‌سازی گواهی brotli، ALPS و ECH GREASE). اندازهٔ بستهٔ اول تغییر نمی‌کند.</string>
+    <string name="tls_help_firefox">به‌جای آن handshake مثل Firefox می‌فرستد: key share پسا‌کوانتومی و ترتیب مخصوص رمزها و امضاها. بستهٔ اول حدود ۱.۲ کیلوبایت بزرگ‌تر می‌شود.</string>
+    <string name="lbl_sni">نام سرور MASQUE (SNI)</string>
+    <string name="sni_default">پیش‌فرض</string>
+    <string name="sni_warp">کلاینت WARP</string>
+    <string name="sni_custom">دلخواه…</string>
+    <string name="sni_custom_label">نام دامنه</string>
+    <string name="sni_invalid">نام دامنهٔ معتبر نیست. آدرس IP پذیرفته نمی‌شود؛ مثل example.com بنویسید.</string>
+    <string name="sni_not_masque">نام سرور فقط در پروتکل‌های MASQUE استفاده می‌شود. پروتکل فعلی از آن استفاده نمی‌کند.</string>
+    <string name="tls_info">فقط وقتی تغییرش بدهید که MASQUE روی HTTP/2 بلاک شده ولی WireGuard یا HTTP/3 کار می‌کند. فقط بستهٔ اول handshake عوض می‌شود، پس هیچ مصرف باتری ندارد. نام سرور همان نامی است که در هر handshake MASQUE به‌صورت آشکار فرستاده می‌شود: پیش‌فرض www.cloudflare.com است و «کلاینت WARP» همان است که اپ خود Cloudflare می‌فرستد. ظاهر TLS تماس‌های WARP API را هم شامل می‌شود؛ ورود Zero Trust TLS جدا دارد. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="lockdown_warning">Kill Switch فقط تا وقتی برنامه در حال اجراست کار می‌کند. اگر اندروید برنامه را ببندد (کمبود حافظه، Force stop) ترافیک می‌تواند بدون محافظت خارج شود. برای محافظت کامل در تنظیمات VPN اندروید «Always-on VPN» و «Block connections without VPN» را برای MadShield روشن کنید.</string>
+    <string name="lockdown_open">باز کردن تنظیمات VPN</string>
+    <string name="link_insecure">هشدار: این لینک بررسی گواهی را خاموش می‌کند (allowInsecure). هر کسی بین شما و سرور می‌تواند ترافیک را بخواند یا تغییر دهد. فقط اگر می‌دانید چرا لازم است استفاده کنید.</string>
 </resources>

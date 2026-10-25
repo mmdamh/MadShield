@@ -107,6 +107,14 @@ object EngineEnvironment {
                 ?.let { env["AETHER_ECH_DNS"] = it }
         }
 
+        // update19: ONLY when the user chose something. A name that fails validation is dropped, never passed on,
+        // because the core refuses to start on a value it does not accept.
+        if (MasqueSni.appliesTo(config.protocol)) {
+            MasqueSni.envValue(config.masqueSni)?.let { env["AETHER_MASQUE_SNI"] = it }
+        }
+        // The fingerprint also covers the calls to the WARP API, so it is not limited to the MASQUE protocols.
+        env.putAll(config.tlsPreset.env())
+
         config.exitLoc?.takeIf { it.isNotBlank() }?.let {
             env["AETHER_EXIT_LOC"] = it
             env["AETHER_EXIT_LOC_SECS"] = "180"

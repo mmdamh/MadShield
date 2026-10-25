@@ -189,7 +189,13 @@ data class EngineConfig(
     /** Answer from a recently expired cache entry when no DoH resolver can be reached (max 10 minutes). */
     val dohServeStale: Boolean = false,
     /** Also resolve names of DIRECT rules with DoH (from the phone's own network, outside the tunnel). */
-    val dohForDirect: Boolean = false
+    val dohForDirect: Boolean = false,
+
+    // update19 (advanced, off by default; with the defaults no new variable reaches the core):
+    /** MASQUE server name in the ClientHello (AETHER_MASQUE_SNI). "" = the core's own www.cloudflare.com. See [MasqueSni]. */
+    val masqueSni: String = "",
+    /** One-choice TLS fingerprint tuning for the handshakes (see [TlsPreset]). */
+    val tlsPreset: TlsPreset = TlsPreset.DEFAULT
 ) {
     /** DoH switched on AND at least one resolver written. */
     val dohEnabled: Boolean get() = dohOn && dohResolvers.isNotEmpty()

@@ -379,6 +379,8 @@ private fun AddLinkSheet(
             full -> HelperText(stringResource(R.string.link_full, LinkProfiles.MAX_PROFILES), error = true)
             parsed is LinkParse.Ok -> HelperText(ltr(parsed.summary))
         }
+        // update19: say it when the link turns certificate checking off (it still works as before)
+        if (parsed is LinkParse.Ok && ProxyLink.isInsecure(parsed)) HelperText(stringResource(R.string.link_insecure), error = true)
         Spacer(Modifier.height(4.dp))
         Button(onClick = { onSave(link.trim(), name) }, enabled = canSave, modifier = Modifier.fillMaxWidth()) {
             Text(stringResource(R.string.action_save))

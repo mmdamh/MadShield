@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: "17"
@@ -48,6 +48,8 @@ jobs:
         run: |
           set -e
           curl -fsSL -o /tmp/kotlinc.zip https://github.com/JetBrains/kotlin/releases/download/v1.9.24/kotlin-compiler-1.9.24.zip
+          # update19: the download must be byte-identical to the one this checksum was taken from
+          echo "eb7b68e01029fa67bc8d060ee54c12018f2c60ddc438cf21db14517229aa693b  /tmp/kotlinc.zip" | sha256sum -c -
           unzip -q /tmp/kotlinc.zip -d /tmp
           echo "KOTLINC=/tmp/kotlinc/bin/kotlinc" >> "$GITHUB_ENV"
       - name: Run tests
@@ -114,7 +116,11 @@ jobs:
                    AETHER_MASQUE_MTU AETHER_ECH_DNS AETHER_EXIT_LOC_SECS \
                    AETHER_PSIPHON AETHER_PSIPHON_BIND AETHER_PSIPHON_MODE AETHER_PSIPHON_REGION \
                    AETHER_PSIPHON_DIR AETHER_PSIPHON_BIN AETHER_TOR AETHER_TOR_BIND \
-                   AETHER_TOR_BRIDGES AETHER_TOR_DIR AETHER_PERF_PROFILE; do
+                   AETHER_TOR_BRIDGES AETHER_TOR_DIR AETHER_PERF_PROFILE \
+                   AETHER_MASQUE_SNI AETHER_ENABLE_GREASE_SIGALGS AETHER_TLS_CERT_COMPRESSION AETHER_TLS_ALPS \
+                   AETHER_ENABLE_ECH_GREASE AETHER_TLS13_CIPHERS AETHER_TLS_GROUPS AETHER_TLS_KEY_SHARES \
+                   AETHER_DISABLE_GREASE AETHER_TLS_SIGALGS AETHER_DISABLE_SESSION_TICKET \
+                   AETHER_DISABLE_EXTENSION_PERMUTATION; do
             grep -rq "$v" "$SRC" || { echo "ERROR: core source no longer mentions $v"; exit 1; }
           done
           echo "OK: all AETHER_* variables the app sets exist in the pinned core"
@@ -254,11 +260,13 @@ jobs:
       - name: Patch sing-box (no netlink network monitor)
         run: python3 native/singbox-patches/no-netlink/apply.py native/sing-box
 
-      # sing-box v1.14 needs Go 1.25.5 (its go.mod says so); the toolchain is installed from that file.
+      # sing-box v1.14 needs Go 1.25.5 or newer (its go.mod). "1.25" gives the LATEST 1.25 patch release, which carries the
+      # standard-library security fixes that 1.25.5 lacks, and stays on the Go minor this sing-box version is built with
+      # upstream (it relies on the badlinkname/checklinkname tags, which a newer Go minor may refuse).
       - name: Install Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: native/sing-box/go.mod
+          go-version: "1.25"
           cache: false
 
       # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon build).
@@ -330,7 +338,7 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: native/sing-box/go.mod
+          go-version: "1.25"
           cache: false
 
       - name: Build sing-box for this runner
@@ -431,7 +439,8 @@ jobs:
             APP_ABI=${{ matrix.abi }} \
             APP_PLATFORM=android-26 \
             APP_STL=c++_static \
-            APP_CFLAGS=-O3
+            APP_CFLAGS=-O3 \
+            APP_LDFLAGS=-Wl,-z,max-page-size=16384
 
       - name: Verify hev exports its stable C API and NOT a JNI layer
         env:
@@ -465,7 +474,7 @@ jobs:
           TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           LIBDIR="native/hev-socks5-tunnel/libs/${{ matrix.abi }}"
           "$TOOLCHAIN/$CLANG" -O2 -fPIC -shared -Wall -Werror \
-            -Wl,-soname,libaethertun.so -Wl,--no-undefined \
+            -Wl,-soname,libaethertun.so -Wl,--no-undefined -Wl,-z,max-page-size=16384 \
             -o "$LIBDIR/libaethertun.so" scripts/aethertun-jni.c \
             -L"$LIBDIR" -lhev-socks5-tunnel -llog
 
@@ -547,6 +556,24 @@ jobs:
             fi
           done
 
+      # update19: phones with 16 KB memory pages (Android 15+ option) cannot load a library whose segments are only 4 KB
+      # aligned. NDK r26d links 4 KB by default, so the two libraries we link ourselves carry
+      # -Wl,-z,max-page-size=16384 (above). This step only REPORTS the alignment of every shipped native file and never
+      # fails the build: a warning here is a reason to look, not a reason to lose the APK.
+      - name: Report segment alignment of the native files (16 KB pages)
+        run: |
+          for f in app/src/main/jniLibs/arm64-v8a/*.so; do
+            align=""
+            for a in $(readelf -lW "$f" | awk '$1=="LOAD" {print $NF}'); do
+              n=$((a))   # bash reads the 0x... form itself (mawk has no strtonum)
+              if [ -z "$align" ] || [ "$n" -lt "$align" ]; then align="$n"; fi
+            done
+            echo "$(basename "$f"): smallest LOAD alignment = ${align:-unknown}"
+            if [ -n "$align" ] && [ "$align" -lt 16384 ]; then
+              echo "::warning::$(basename "$f") is aligned to $align bytes; it will not load on a 16 KB-page phone"
+            fi
+          done
+
       # The app compares these at engine start (core/BinaryIntegrity.kt, EngineProcessManager).
       # One line per file: <abi>/<file>=<sha256>. It covers every native file we ship, including
       # libpsiphon.so. gradle keeps the .so bytes untouched (keepDebugSymbols), and the step after
@@ -589,6 +616,8 @@ jobs:
           if [ -n "$SIGNING_KEY_BASE64" ]; then
             echo "$SIGNING_KEY_BASE64" | base64 -d > release.keystore
             chmod 600 release.keystore
+          else
+            echo "::warning::No SIGNING_KEY_BASE64 secret: this APK is signed with the public DEBUG key. It installs, but anyone can build an APK that Android accepts as an update of it. Run the generate-keystore workflow and add the secrets before you share the APK."
           fi
 
       - name: Build release APK

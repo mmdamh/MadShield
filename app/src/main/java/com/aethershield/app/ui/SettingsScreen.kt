@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,6 +28,8 @@ import com.aethershield.app.ui.theme.DarkMode
 import com.aethershield.app.ui.theme.Palettes
 import com.aethershield.app.ui.theme.UiPrefs
 import kotlin.math.roundToInt
+import android.content.Intent
+import android.provider.Settings
 import android.widget.Toast
 
 @Composable
@@ -130,6 +133,85 @@ fun SettingsScreen(
             }
         }
 
+        // ---------------------------------------------------------------- update19: TLS look and MASQUE server name
+        // Folded and off by default: with the defaults nothing new is sent to the core.
+        val sniKind = MasqueSni.kindOf(config.masqueSni)
+        val presetLabel = stringResource(
+            when (config.tlsPreset) {
+                TlsPreset.DEFAULT -> R.string.tls_default
+                TlsPreset.CHROME_PLUS -> R.string.tls_chrome_plus
+                TlsPreset.FIREFOX -> R.string.tls_firefox
+            }
+        )
+        FoldCard(
+            title = stringResource(R.string.sec_tls),
+            summary = if (sniKind == MasqueSni.Kind.DEFAULT) presetLabel
+            else presetLabel + " · " + stringResource(R.string.tls_summary_sni, config.masqueSni),
+            icon = Icons.Rounded.Tune
+        ) {
+            SubLabel(stringResource(R.string.lbl_tls_look))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.tls_default) to TlsPreset.DEFAULT,
+                    stringResource(R.string.tls_chrome_plus) to TlsPreset.CHROME_PLUS,
+                    stringResource(R.string.tls_firefox) to TlsPreset.FIREFOX
+                ),
+                config.tlsPreset,
+                onSelect = { v -> onUpdate { it.copy(tlsPreset = v) } }
+            )
+            HelperText(
+                stringResource(
+                    when (config.tlsPreset) {
+                        TlsPreset.DEFAULT -> R.string.tls_help_default
+                        TlsPreset.CHROME_PLUS -> R.string.tls_help_chrome
+                        TlsPreset.FIREFOX -> R.string.tls_help_firefox
+                    }
+                )
+            )
+
+            SubLabel(stringResource(R.string.lbl_sni))
+            var customOpen by remember(config.masqueSni) { mutableStateOf(sniKind == MasqueSni.Kind.CUSTOM) }
+            val shownKind = if (customOpen) MasqueSni.Kind.CUSTOM else sniKind
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.sni_default) to MasqueSni.Kind.DEFAULT,
+                    stringResource(R.string.sni_warp) to MasqueSni.Kind.WARP_CLIENT,
+                    stringResource(R.string.sni_custom) to MasqueSni.Kind.CUSTOM
+                ),
+                shownKind,
+                onSelect = { k ->
+                    when (k) {
+                        MasqueSni.Kind.DEFAULT -> { customOpen = false; onUpdate { it.copy(masqueSni = "") } }
+                        MasqueSni.Kind.WARP_CLIENT -> { customOpen = false; onUpdate { it.copy(masqueSni = MasqueSni.WARP_CLIENT) } }
+                        MasqueSni.Kind.CUSTOM -> { customOpen = true }
+                    }
+                }
+            )
+            if (shownKind == MasqueSni.Kind.CUSTOM) {
+                var text by remember(config.masqueSni) {
+                    mutableStateOf(if (sniKind == MasqueSni.Kind.CUSTOM) config.masqueSni else "")
+                }
+                val valid = MasqueSni.isValid(text)
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = text, onValueChange = { text = it },
+                    label = { Text(stringResource(R.string.sni_custom_label)) },
+                    singleLine = true,
+                    isError = text.isNotBlank() && !valid,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        TextButton(
+                            onClick = { onUpdate { it.copy(masqueSni = MasqueSni.normalize(text) ?: "") } },
+                            enabled = valid && MasqueSni.normalize(text) != config.masqueSni
+                        ) { Text(stringResource(R.string.action_save)) }
+                    }
+                )
+                if (text.isNotBlank() && !valid) HelperText(stringResource(R.string.sni_invalid), error = true)
+            }
+            if (!MasqueSni.appliesTo(config.protocol)) HelperText(stringResource(R.string.sni_not_masque))
+            InfoHint(stringResource(R.string.tls_info))
+        }
+
         // ---------------------------------------------------------------- protection
         SectionCard(stringResource(R.string.sec_protection)) {
             SwitchRow(
@@ -151,6 +233,15 @@ fun SettingsScreen(
                 stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
                 config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
             )
+            // update19: the Kill Switch lives in this app's process. If Android ends the process, only Android's own
+            // lockdown keeps traffic from leaving. Shown only while connected and only when lockdown is known to be off.
+            val lockdown by AetherController.lockdown.collectAsState()
+            if (config.killSwitchEnabled && lockdown == false) {
+                HelperText(stringResource(R.string.lockdown_warning), error = true)
+                TextButton(onClick = {
+                    runCatching { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }) { Text(stringResource(R.string.lockdown_open)) }
+            }
             SwitchRow(
                 stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
                 config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }

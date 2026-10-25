@@ -385,4 +385,26 @@
     <string name="link_swapped">Switched. The tunnel was not reconnected.</string>
     <string name="link_swap_failed_restored">That link did not work, so the previous one is running again. (%1$s)</string>
     <string name="link_swap_failed">Could not switch the link. (%1$s)</string>
+
+    <!-- update19: TLS look and MASQUE server name -->
+    <string name="sec_tls">TLS look and server name</string>
+    <string name="lbl_tls_look">TLS look</string>
+    <string name="tls_default">Default</string>
+    <string name="tls_chrome_plus">Chrome+</string>
+    <string name="tls_firefox">Firefox-like</string>
+    <string name="tls_summary_sni">Name: %1$s</string>
+    <string name="tls_help_default">The core\'s own Chrome-like handshake. Nothing is changed.</string>
+    <string name="tls_help_chrome">Adds the four extras Chrome sends (GREASE signature algorithm, brotli certificate compression, ALPS, ECH GREASE). The first packet keeps its size.</string>
+    <string name="tls_help_firefox">Sends Firefox\'s handshake instead: a post-quantum key share and its own cipher and signature order. The first packet is about 1.2 KB larger.</string>
+    <string name="lbl_sni">MASQUE server name (SNI)</string>
+    <string name="sni_default">Default</string>
+    <string name="sni_warp">WARP client</string>
+    <string name="sni_custom">Custom…</string>
+    <string name="sni_custom_label">Domain name</string>
+    <string name="sni_invalid">Not a valid domain name. An IP address is not allowed; use a name such as example.com.</string>
+    <string name="sni_not_masque">The server name is used only by the MASQUE protocols. The protocol chosen now does not use it.</string>
+    <string name="tls_info">Worth changing only when MASQUE over HTTP/2 is blocked while WireGuard or HTTP/3 still work. Only the first handshake packet changes, so it costs no battery. The server name is the one sent in the clear in every MASQUE handshake: Default is www.cloudflare.com, and WARP client is what Cloudflare\'s own app sends. The TLS look also covers the calls to the WARP API; Zero Trust sign-in keeps its own TLS. Applies on the next connect.</string>
+    <string name="lockdown_warning">The Kill Switch works only while this app is running. If Android stops the app (low memory, force stop), traffic can leave unprotected. For full protection turn on Always-on VPN and Block connections without VPN for MadShield in Android\'s VPN settings.</string>
+    <string name="lockdown_open">Open VPN settings</string>
+    <string name="link_insecure">Warning: this link turns certificate checking off (allowInsecure). Anyone between you and the server could read or change the traffic. Use it only if you know why it is needed.</string>
 </resources>

@@ -50,6 +50,15 @@ object AetherController {
         }
     }
 
+    /**
+     * update19: is Android's "Block connections without VPN" (lockdown) on for this app? null = not known (no VPN running,
+     * or Android older than 10). The Kill Switch holds traffic only while the app's process lives; if Android kills the
+     * process, only lockdown keeps the phone from using the raw network. Read ONCE per connect, no polling.
+     */
+    private val _lockdown = MutableStateFlow<Boolean?>(null)
+    val lockdown = _lockdown.asStateFlow()
+    fun setLockdown(v: Boolean?) { _lockdown.value = v }
+
     private val _linkSwap = MutableStateFlow<LinkSwapState>(LinkSwapState.Idle)
     val linkSwap = _linkSwap.asStateFlow()
     fun setLinkSwap(s: LinkSwapState) { _linkSwap.value = s }
