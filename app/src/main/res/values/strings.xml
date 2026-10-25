@@ -379,4 +379,10 @@
     <string name="link_delete_title">Remove “%1$s”?</string>
     <string name="link_delete_body">The link is deleted from this phone. This cannot be undone.</string>
     <string name="link_unusable">This link can no longer be used</string>
+    <!-- update18: live link switch -->
+    <string name="link_live_hint">Tap another link to switch to it right now: the tunnel stays connected.</string>
+    <string name="link_swapping">Switching… the tunnel stays connected.</string>
+    <string name="link_swapped">Switched. The tunnel was not reconnected.</string>
+    <string name="link_swap_failed_restored">That link did not work, so the previous one is running again. (%1$s)</string>
+    <string name="link_swap_failed">Could not switch the link. (%1$s)</string>
 </resources>

@@ -1,6 +1,9 @@
 package com.aethershield.app.core
 
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 sealed class ConnectionState {
@@ -12,6 +15,15 @@ sealed class ConnectionState {
     ) : ConnectionState()
     data object Disconnecting : ConnectionState()
     data class Error(val message: String) : ConnectionState()
+}
+
+/** Progress of a live switch between custom-chain links while connected (update18). */
+sealed class LinkSwapState {
+    data object Idle : LinkSwapState()
+    data object Swapping : LinkSwapState()
+    data class Done(val at: Long) : LinkSwapState()
+    /** [reason] is the engine's own (English) text; [restored]: the previous link is running again. */
+    data class Failed(val reason: String, val restored: Boolean, val at: Long) : LinkSwapState()
 }
 
 /**
@@ -32,8 +44,24 @@ object AetherController {
             _state.value = newState
             _stats.value = tracker.onTransition(old, newState.kind(), System.currentTimeMillis())
         }
-        if (newState !is ConnectionState.Connected && newState !is ConnectionState.Connecting) _active.value = null
+        if (newState !is ConnectionState.Connected && newState !is ConnectionState.Connecting) {
+            _active.value = null
+            _linkSwap.value = LinkSwapState.Idle
+        }
     }
+
+    private val _linkSwap = MutableStateFlow<LinkSwapState>(LinkSwapState.Idle)
+    val linkSwap = _linkSwap.asStateFlow()
+    fun setLinkSwap(s: LinkSwapState) { _linkSwap.value = s }
+
+    /**
+     * "The saved custom link changed while connected": the running service compares it with the link in use and, when
+     * they differ, switches sing-box over without reconnecting (see [ChainLinkSwapper]). Nothing happens when no service
+     * is running; the next connect reads the saved link anyway.
+     */
+    private val _swapRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    val linkSwapRequests = _swapRequests.asSharedFlow()
+    fun requestLinkSwap() { _swapRequests.tryEmit(Unit) }
 
     /** Retries, errors and the time of the last state change, for the Diagnostics page (cheap: a few counters). */
     private val tracker = ConnStatsTracker()

@@ -6,10 +6,10 @@ and refuses to build if the downloaded commit differs from the pin:
 
 | Engine | Source | Pinned commit |
 |---|---|---|
-| aether-core (v2.3.0) | https://github.com/CluvexStudio/Aether | `6175b67df370ab856bcee07fe85b524031903956` |
+| aether-core (v2.4.0) | https://github.com/CluvexStudio/Aether | `d58f9d568083129ce2c767c85054021eb3ee6a38` |
 | hev-socks5-tunnel | https://github.com/heiher/hev-socks5-tunnel | `d9dca26c7ad0e494492244f0309e80ee583e739e` (tag 2.18.0) |
 
-The aether-core commit is the one shown on the official v2.3.0 release page and
+The aether-core commit is the one shown on the official v2.4.0 release page and
 the `sourceCommit` pinned by the AetherGUI reference project. (Fetching by SHA
 replaces the old git-submodule setup, so a plain `git push` from a phone is enough.)
 

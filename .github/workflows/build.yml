@@ -106,7 +106,7 @@ jobs:
       # (see EngineProcessManager.kt). If an upstream bump ever renames or
       # drops one of them, fail HERE with the missing name instead of
       # shipping an APK whose settings silently do nothing. Names verified
-      # against Aether v2.3.0 (commit 6175b67) via the AetherGUI reference.
+      # against Aether v2.3.0 (commit 6175b67) via the AetherGUI reference, and re-checked against v2.4.0 (commit d58f9d5).
       - name: Verify the core still honors every env var the app sets
         run: |
           set -e
@@ -123,7 +123,7 @@ jobs:
           done
           echo "OK: all AETHER_* variables the app sets exist in the pinned core"
 
-      # Core v2.3.0 needs Rust 1.98 or newer. The exact version is pinned (1.98.1) so a new stable
+      # Core v2.3.0 / v2.4.0 needs Rust 1.98 or newer. The exact version is pinned (1.98.1) so a new stable
       # release can never change what the build produces; raise it on purpose when the core needs it.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch

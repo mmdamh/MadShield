@@ -85,6 +85,7 @@ class AetherVpnService : VpnService() {
     private var healthJob: Job? = null
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
+    private lateinit var chainSwapper: ChainLinkSwapper
 
     /** The last failed start was the privacy chain (Psiphon/Tor), not the WARP tunnel: retry slowly, see [ReconnectPolicy]. */
     @Volatile private var lastFailureWasChain = false
@@ -103,6 +104,9 @@ class AetherVpnService : VpnService() {
         netWatcher = NetworkWatcher(this)
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
+        // Live switch between saved custom links: only sing-box is replaced, the tunnel stays up (see ChainLinkSwapper).
+        chainSwapper = ChainLinkSwapper(engine, settingsStore)
+        scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
         createNotificationChannel()
     }
 
@@ -453,6 +457,7 @@ class AetherVpnService : VpnService() {
             while (isActive) {
                 // Sleep; a screen-on or a network change cuts the sleep short and ends idle mode at once.
                 if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
+                if (engine.swapping) continue // the custom link is being switched on purpose: not an outage
                 val screenNow = isScreenOn()
                 // Traffic counters are only read with the screen off (that is when idle is decided).
                 val idleBytes = if (screenNow) null else runCatching { TProxyService.TProxyGetStats() }.getOrNull()
@@ -504,6 +509,7 @@ class AetherVpnService : VpnService() {
                             PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
                         ) &&
                         engine.chainStillWorks(screenNow) // custom chain only: a rare end-to-end check, screen on
+                    if (!ok && engine.swapping) continue // a switch started while this probe was running
                     if (ok) {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.

@@ -15,6 +15,15 @@ Every place that's a genuine guess rather than a confirmed fact is marked
 inline with a comment saying so -- search for "VERIFY" across the repo to
 find all of them at once.
 
+## Core v2.4.0 (update18)
+
+The pinned core is now Aether **v2.4.0** (`native/aether-core.pin`). The app's contract with it (the `AETHER_*`
+variables, the "is ready" log lines, the SOCKS greeting used for readiness) is unchanged; CI still refuses a build
+whose source no longer mentions a variable the app sets. What changes by itself: the default MASQUE SNI is
+`www.cloudflare.com`, a gateway whose tunnel ends twice in under five minutes is set aside for five minutes, and the
+Zero Trust certificate is checked. Upstream raised its Android API level to 29; this build still targets API 24
+(`cargo ndk --platform 24`), which CI exercises on every build.
+
 ## Updated to Aether core v2.3.0
 
 - The app now configures the core **only through `AETHER_*` environment

@@ -18,6 +18,13 @@ object EngineEnv {
 /** Thrown BEFORE the engine is launched when the shipped binary cannot possibly start. */
 class EnginePreflightException(message: String) : IllegalStateException(message)
 
+/**
+ * Result of a live switch of the custom-chain link ([EngineProcessManager.swapChainLink]).
+ * [ok] false + [restored] true: the new link did not work and the previous one is running again.
+ * [ok] false + [restored] false: nothing was changed (bad link, no chain running) or the old link could not be restored either.
+ */
+data class SwapOutcome(val ok: Boolean, val restored: Boolean, val reason: String? = null)
+
 /** How the last engine process ended, kept so the UI can show the real reason. */
 data class EngineExit(val code: Int, val lastLines: List<String>)
 
@@ -39,8 +46,18 @@ class EngineProcessManager(private val context: Context) {
     companion object {
         private const val HASH_ASSET = "native_hashes.properties"
 
-        /** What the custom-chain end-to-end check asks: a literal address (no name lookup), plain HTTP, port 80. */
-        private val E2E_TARGETS = listOf("1.1.1.1" to 80, "1.0.0.1" to 80)
+        /**
+         * What the custom-chain end-to-end check asks: a literal address (no name lookup), plain HTTP, port 80.
+         * The FIRST is deliberately NOT Cloudflare: a VLESS/Trojan server that lives on Cloudflare Workers cannot open
+         * connections to Cloudflare addresses (platform rule), so a probe made only of 1.1.1.1 / 1.0.0.1 could never succeed
+         * for it and the link looked "never connecting" although it carried every other site. 13.107.4.52 is Microsoft's
+         * long-lived connectivity-check address; the Cloudflare ones stay as fallbacks. One answer from any of them is enough.
+         */
+        private val E2E_TARGETS = listOf("13.107.4.52" to 80, "1.1.1.1" to 80, "1.0.0.1" to 80)
+        private const val E2E_TARGET_TIMEOUT_MS = 6_000
+        /** How long a switched link gets to prove itself before the previous one is restored. */
+        private const val SWAP_VERIFY_MS = 25_000L
+        private const val CANCELLED = "\u0000cancelled"
         private const val E2E_EVERY_MS = 90_000L
         /** Result of the integrity check of this process; null until the first engine start. */
         @Volatile var cachedIntegrity: BinaryIntegrity.Result? = null
@@ -69,6 +86,22 @@ class EngineProcessManager(private val context: Context) {
     private var singboxReadyJob: Job? = null
     private val singboxTail = ArrayDeque<String>()
     @Volatile private var singboxPort: Int = 0
+    // Live link switch (update18): what is needed to restart ONLY sing-box, and who may touch its fields.
+    @Volatile private var singboxBinFile: File? = null
+    @Volatile private var singboxCorePort: Int = 0
+    @Volatile private var chainLinkRaw: String? = null
+    private val chainLock = Any()
+    /** Bumped by every start() and stop(): a swap that sees it change knows the engine was restarted or stopped under it. */
+    @Volatile private var generation = 0
+    @Volatile private var swapInProgress = false
+    @Volatile private var swapEndedAt = -1_000_000L
+
+    /**
+     * True while sing-box is being replaced, and for a few seconds after: the health loops skip their checks then (the
+     * chain is down for a moment on purpose, and a probe that started inside that window must not count as a failure).
+     */
+    val swapping: Boolean
+        get() = swapInProgress || android.os.SystemClock.elapsedRealtime() - swapEndedAt < 4_000L
     private var e2eFailures = 0
     private var nextE2eAt = 0L
     @Volatile private var e2eOk = true
@@ -101,6 +134,7 @@ class EngineProcessManager(private val context: Context) {
         stop()
         waitForPreviousToDie()
         chainReady = false
+        synchronized(chainLock) { generation++ }
 
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
         nativeDirPath = nativeDir.absolutePath
@@ -230,7 +264,7 @@ class EngineProcessManager(private val context: Context) {
         val sbLink = singboxLink
         if (sbLink != null) {
             try {
-                startSingBox(singboxBin, sbLink, corePort = plan.corePort, listenPort = plan.chainPort ?: config.socksPort)
+                startSingBox(singboxBin, sbLink, chainLink ?: "", corePort = plan.corePort, listenPort = plan.chainPort ?: config.socksPort)
             } catch (t: Throwable) {
                 // Nothing may be left running behind a failed start.
                 front?.stop(); front = null
@@ -289,7 +323,8 @@ class EngineProcessManager(private val context: Context) {
             try { Thread.sleep(PowerPolicy.readyPollMs(System.currentTimeMillis() - startedAt)) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
         }
         return if (singboxActive) {
-            "the custom chain (sing-box) did not carry traffic in ${timeoutMs / 1000}s: check the link, and that the server is reachable"
+            "the custom chain (sing-box) did not carry traffic in ${timeoutMs / 1000}s: check the link, and that the server is reachable" +
+                (singboxLastLine()?.let { " [$it]" } ?: "")
         } else {
             "the privacy chain (Psiphon/Tor) did not become ready in ${timeoutMs / 1000}s"
         }
@@ -297,7 +332,18 @@ class EngineProcessManager(private val context: Context) {
 
     // ------------------------------------------------------------------------------------ custom chain
 
-    private fun startSingBox(bin: File, link: LinkParse.Ok, corePort: Int, listenPort: Int) {
+    private fun startSingBox(bin: File, link: LinkParse.Ok, rawLink: String, corePort: Int, listenPort: Int) {
+        singboxBinFile = bin
+        singboxCorePort = corePort
+        chainLinkRaw = rawLink
+        launchSingBox(bin, link, corePort, listenPort, null)
+    }
+
+    /**
+     * Starts one sing-box process and its pump and readiness job. [gen] (swap only) is the generation the caller started
+     * under: when start()/stop() ran meanwhile the new process is killed again and null is returned.
+     */
+    private fun launchSingBox(bin: File, link: LinkParse.Ok, corePort: Int, listenPort: Int, gen: Int?): Process? {
         val json = SingBoxConfig.build(link, corePort, listenPort)
         val dir = File(context.cacheDir, "singbox").also { it.mkdirs() }
         // The configuration (it holds your UUID / password) goes in through STDIN: it is never written to a file.
@@ -321,8 +367,14 @@ class EngineProcessManager(private val context: Context) {
             sp.destroy() // never leave a process behind that has no configuration
             throw e
         }
-        singbox = sp
-        singboxPort = listenPort
+        synchronized(chainLock) {
+            if (gen != null && gen != generation) {
+                sp.destroy()
+                return null
+            }
+            singbox = sp
+            singboxPort = listenPort
+        }
 
         singboxPump = scope.launch {
             try {
@@ -361,11 +413,97 @@ class EngineProcessManager(private val context: Context) {
                 pause = minOf(pause * 2, 10_000L)
             }
         }
+        return sp
+    }
+
+    // ------------------------------------------------------------------------------------ live link switch
+
+    /** The link sing-box is running with right now (null: no custom chain). Compared with the saved one by the swapper. */
+    fun chainLinkInUse(): String? = if (singbox != null || swapInProgress) chainLinkRaw else null
+
+    /**
+     * Switches the custom chain to [newRaw] WITHOUT touching the core: only the sing-box process is replaced, so the
+     * WARP tunnel, its endpoint and the TUN bridge stay exactly as they are. Connections that were open through the old
+     * server drop (they have to: they belong to it); new ones go through the new server within a second or two.
+     * The new link must carry traffic end to end within [SWAP_VERIFY_MS]; if it does not, the previous link is started
+     * again and [SwapOutcome.restored] says so. Blocking: call from a background thread.
+     */
+    fun swapChainLink(newRaw: String): SwapOutcome {
+        val bin = singboxBinFile
+        val oldRaw = chainLinkRaw
+        val old = singbox
+        if (bin == null || oldRaw == null || old == null || process?.isAlive != true) {
+            return SwapOutcome(false, false, "no custom chain is running")
+        }
+        val fresh = when (val r = ProxyLink.parse(newRaw)) {
+            is LinkParse.Ok -> r
+            is LinkParse.Err -> return SwapOutcome(false, false, "Custom chain (sing-box): " + LinkMessages.english(r))
+        }
+        if (newRaw == oldRaw) return SwapOutcome(true, false, null)
+        val oldParsed = ProxyLink.parse(oldRaw) as? LinkParse.Ok
+            ?: return SwapOutcome(false, false, "the running link cannot be read back")
+        val gen = generation
+        val port = singboxPort
+        val corePort = singboxCorePort
+        if (swapInProgress) return SwapOutcome(false, false, "a switch is already in progress")
+        swapInProgress = true
+        try {
+            RingLogBuffer.append("[singbox] switching link without reconnecting: ${fresh.summary}")
+            // 1. the old process goes away and frees the port (the core and WARP are not touched)
+            if (!retireSingBox(old, port, gen)) return SwapOutcome(false, false, "cancelled")
+            // 2. the new one starts and has to prove itself
+            val failure = startAndVerify(bin, fresh, corePort, port, gen)
+            if (failure == null) {
+                chainLinkRaw = newRaw
+                RingLogBuffer.append("[singbox] link switched; the tunnel stayed up")
+                return SwapOutcome(true, false, null)
+            }
+            if (failure == CANCELLED) return SwapOutcome(false, false, "cancelled")
+            // 3. it did not work: bring the previous link back
+            RingLogBuffer.append("[singbox] the new link failed ($failure); restoring the previous one")
+            val dead = singbox
+            if (dead != null && !retireSingBox(dead, port, gen)) return SwapOutcome(false, false, "cancelled")
+            val back = launchSingBox(bin, oldParsed, corePort, port, gen)
+            return SwapOutcome(false, back != null, failure)
+        } finally {
+            swapEndedAt = android.os.SystemClock.elapsedRealtime()
+            swapInProgress = false
+        }
+    }
+
+    /** Detaches [sp] from the bookkeeping (so its exit is not reported as a crash), stops it and waits for the port. */
+    private fun retireSingBox(sp: Process, port: Int, gen: Int): Boolean {
+        synchronized(chainLock) {
+            if (gen != generation) return false
+            singboxReadyJob?.cancel(); singboxReadyJob = null
+            singboxPump?.cancel(); singboxPump = null
+            if (singbox === sp) singbox = null
+        }
+        sp.destroy()
+        CoreProcessGuard.stop(sp, 1_500)
+        SocksProbe.awaitPortFree(port, 3_000)
+        return gen == generation
+    }
+
+    /** null = the new process carries traffic end to end; otherwise why not (or [CANCELLED]). */
+    private fun startAndVerify(bin: File, link: LinkParse.Ok, corePort: Int, port: Int, gen: Int): String? {
+        val sp = launchSingBox(bin, link, corePort, port, gen) ?: return CANCELLED
+        val deadline = System.currentTimeMillis() + SWAP_VERIFY_MS
+        while (System.currentTimeMillis() < deadline) {
+            if (gen != generation) return CANCELLED
+            if (!sp.isAlive) return "sing-box stopped" + (singboxLastLine()?.let { ": $it" } ?: "")
+            if (e2eProbe(port)) return null
+            try { Thread.sleep(700) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return CANCELLED }
+        }
+        return "the new link did not carry traffic in ${SWAP_VERIFY_MS / 1000}s" + (singboxLastLine()?.let { " [$it]" } ?: "")
     }
 
     private fun e2eProbe(port: Int): Boolean =
-        SocksProbe.httpAnswersThrough(TunnelConfig.SOCKS_HOST, port, E2E_TARGETS[0].first, E2E_TARGETS[0].second) ||
-            SocksProbe.httpAnswersThrough(TunnelConfig.SOCKS_HOST, port, E2E_TARGETS[1].first, E2E_TARGETS[1].second)
+        E2E_TARGETS.any { (host, p) -> SocksProbe.httpAnswersThrough(TunnelConfig.SOCKS_HOST, port, host, p, E2E_TARGET_TIMEOUT_MS) }
+
+    /** Last line sing-box printed (it does not log the UUID / password), for failure messages. */
+    private fun singboxLastLine(): String? =
+        synchronized(singboxTail) { singboxTail.lastOrNull { it.isNotBlank() } }?.take(160)
 
     /**
      * Called by the health loops. With a custom chain on, and ONLY while the screen is on (nobody is waiting for the
@@ -457,10 +595,16 @@ class EngineProcessManager(private val context: Context) {
     fun stop() {
         pumpJob?.cancel()
         pumpJob = null
-        singboxReadyJob?.cancel(); singboxReadyJob = null
-        singboxPump?.cancel(); singboxPump = null
-        singbox?.let { sp ->
+        val sbToStop: Process?
+        synchronized(chainLock) {
+            generation++ // a live link switch in progress sees this and gives up
+            singboxReadyJob?.cancel(); singboxReadyJob = null
+            singboxPump?.cancel(); singboxPump = null
+            sbToStop = singbox
             singbox = null
+            chainLinkRaw = null
+        }
+        sbToStop?.let { sp ->
             RingLogBuffer.append("[singbox] stopping")
             sp.destroy()
             scope.launch { CoreProcessGuard.stop(sp, 750) }

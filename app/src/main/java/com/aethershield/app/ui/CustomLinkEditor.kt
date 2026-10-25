@@ -25,17 +25,21 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aethershield.app.R
+import com.aethershield.app.core.AetherController
+import com.aethershield.app.core.ConnectionState
 import com.aethershield.app.core.LinkAdd
 import com.aethershield.app.core.LinkError
 import com.aethershield.app.core.LinkParse
 import com.aethershield.app.core.LinkProfile
 import com.aethershield.app.core.LinkProfileBook
 import com.aethershield.app.core.LinkProfiles
+import com.aethershield.app.core.LinkSwapState
 import com.aethershield.app.core.ProxyLink
 import com.aethershield.app.core.SettingsStore
 import com.aethershield.app.ui.components.CookieBadge
 import com.aethershield.app.ui.components.HelperText
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -45,7 +49,8 @@ import kotlinx.coroutines.withContext
  * The saved links of the custom chain (update17): a short list you can switch between with one tap, instead of one
  * text box that had to be overwritten each time.
  *
- * Tap a link = it becomes the one the chain uses (on the next connect, like every profile change). Each link is
+ * Tap a link = it becomes the one the chain uses. While connected that happens LIVE (update18): only the sing-box part
+ * is replaced, the WARP tunnel stays up (see ChainLinkSwapper); when disconnected it is used on the next connect. Each link is
  * checked by the same parser as before before it can be saved, so nothing is stored that the app could not turn into a
  * sing-box configuration. The links hold a UUID or a password: they live only in the Keystore-backed store
  * ([SettingsStore.saveLinkBook]), the page shows only a name and a credential-free summary, and the field where you
@@ -70,20 +75,34 @@ fun CustomLinkEditor() {
     var adding by rememberSaveable { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<LinkProfile?>(null) }
     var deleting by remember { mutableStateOf<LinkProfile?>(null) }
+    val swap by AetherController.linkSwap.collectAsState()
+    val connected = AetherController.state.collectAsState().value is ConnectionState.Connected
 
     LaunchedEffect(Unit) {
         book = withContext(Dispatchers.IO) { store.loadLinkBook() }
         loaded = true
     }
+    // The service puts the saved choice back to the working link when a switch fails: show what is really saved.
+    LaunchedEffect(swap) {
+        when (swap) {
+            is LinkSwapState.Failed -> book = withContext(Dispatchers.IO) { store.loadLinkBook() }
+            is LinkSwapState.Done -> { delay(4_000); if (AetherController.linkSwap.value is LinkSwapState.Done) AetherController.setLinkSwap(LinkSwapState.Idle) }
+            else -> Unit
+        }
+    }
 
     /** One change at a time: each is computed from the latest saved book and only shown once it really was saved. */
-    fun commit(transform: (LinkProfileBook) -> LinkProfileBook) {
+    fun commit(switchLive: Boolean = false, transform: (LinkProfileBook) -> LinkProfileBook) {
         scope.launch {
             lock.withLock {
                 val next = transform(book)
                 if (next != book) {
                     val ok = withContext(Dispatchers.IO) { store.saveLinkBook(next) }
-                    if (ok) { book = next; storeFailed = false } else { storeFailed = true }
+                    if (ok) {
+                        book = next; storeFailed = false
+                        // Saved first, then asked: the running service reads the saved link itself (nothing secret is passed on).
+                        if (switchLive && next.activeId != null) AetherController.requestLinkSwap()
+                    } else { storeFailed = true }
                 }
             }
         }
@@ -133,7 +152,7 @@ fun CustomLinkEditor() {
                     LinkRow(
                         profile = p,
                         active = p.id == book.activeId,
-                        onUse = { commit { LinkProfiles.activate(it, p.id) } },
+                        onUse = { commit(switchLive = true) { LinkProfiles.activate(it, p.id) } },
                         onRename = { renaming = p },
                         onDelete = { deleting = p }
                     )
@@ -166,6 +185,21 @@ fun CustomLinkEditor() {
                 message != null -> HelperText(message.orEmpty(), error = true)
                 book.profiles.isEmpty() -> HelperText(stringResource(R.string.link_need), error = true)
                 book.active == null -> HelperText(stringResource(R.string.link_pick), error = true)
+            }
+            when (val sw = swap) {
+                LinkSwapState.Swapping -> {
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    HelperText(stringResource(R.string.link_swapping))
+                }
+                is LinkSwapState.Done -> HelperText(stringResource(R.string.link_swapped))
+                is LinkSwapState.Failed -> HelperText(
+                    stringResource(if (sw.restored) R.string.link_swap_failed_restored else R.string.link_swap_failed, sw.reason.take(160)),
+                    error = true
+                )
+                LinkSwapState.Idle -> if (connected && book.active != null && !storeFailed && message == null) {
+                    HelperText(stringResource(R.string.link_live_hint))
+                }
             }
         }
     }

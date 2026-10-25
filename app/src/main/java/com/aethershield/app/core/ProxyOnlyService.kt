@@ -37,6 +37,7 @@ class ProxyOnlyService : Service() {
     @Volatile private var userRequestedStop = false
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
+    private lateinit var chainSwapper: ChainLinkSwapper
     private lateinit var settingsStore: SettingsStore
     private lateinit var netWatcher: NetworkWatcher
     private lateinit var screen: ScreenWatcher
@@ -54,6 +55,9 @@ class ProxyOnlyService : Service() {
         netWatcher = NetworkWatcher(this)
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
+        // Live switch between saved custom links: only sing-box is replaced, the proxy stays up (see ChainLinkSwapper).
+        chainSwapper = ChainLinkSwapper(engine, settingsStore)
+        scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getSystemService(NotificationManager::class.java).createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel_proxy), NotificationManager.IMPORTANCE_LOW)
@@ -171,6 +175,7 @@ class ProxyOnlyService : Service() {
         while (currentCoroutineContext().isActive) {
             // Long sleep while idle (screen off, quiet); a screen-on or network change cuts it short.
             if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
+            if (engine.swapping) continue // the custom link is being switched on purpose: not an outage
             // No byte counters in proxy-only mode, so only the screen decides.
             val wasIdle = idle
             idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), isScreenOn(), null)
@@ -211,6 +216,7 @@ class ProxyOnlyService : Service() {
                 ) &&
                 (config.effectiveChain == PrivacyChain.NONE || engine.chainReady) &&
                 engine.chainStillWorks(isScreenOn()) // custom chain only: a rare end-to-end check, screen on
+            if (!ok && engine.swapping) continue // a switch started while this probe was running
             if (ok) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (healthySince == 0L) healthySince = now
@@ -277,7 +283,8 @@ class ProxyOnlyService : Service() {
     private suspend fun restartEngine(c: EngineConfig, secretEnv: Map<String, String>, chainLink: String?): Boolean {
         val self = currentCoroutineContext()[Job]
         try {
-            engine.start(c, ruleWriter, secretEnv, chainLink)
+            // The saved link is read again: the user may have switched it while connected (the live switch updates it).
+            engine.start(c, ruleWriter, secretEnv, settingsStore.chainLinkFor(c) ?: chainLink)
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
             RingLogBuffer.append("[proxy] restart failed: ${t.message}")

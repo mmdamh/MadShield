@@ -379,4 +379,10 @@
     <string name="link_delete_title">«%1$s» حذف شود؟</string>
     <string name="link_delete_body">لینک از این گوشی پاک می‌شود و برگشت‌پذیر نیست.</string>
     <string name="link_unusable">این لینک دیگر قابل استفاده نیست</string>
+    <!-- update18: live link switch -->
+    <string name="link_live_hint">روی لینک دیگری بزنید تا همان لحظه جابه‌جا شود؛ تونل وصل می‌ماند.</string>
+    <string name="link_swapping">در حال جابه‌جایی… تونل وصل می‌ماند.</string>
+    <string name="link_swapped">جابه‌جا شد. تونل دوباره وصل نشد.</string>
+    <string name="link_swap_failed_restored">این لینک کار نکرد و لینک قبلی دوباره فعال شد. (%1$s)</string>
+    <string name="link_swap_failed">جابه‌جایی لینک انجام نشد. (%1$s)</string>
 </resources>
