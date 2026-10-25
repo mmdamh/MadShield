@@ -15,6 +15,13 @@ Every place that's a genuine guess rather than a confirmed fact is marked
 inline with a comment saying so -- search for "VERIFY" across the repo to
 find all of them at once.
 
+## Phone check (scripts/phone-check.py)
+
+Run it in Termux on the phone while connected (`pkg install python`, then `python phone-check.py [port]`). It lists the
+app's local SOCKS ports and whether they ask for a password, prints the exit address of the TCP path, and sends a DNS
+question over SOCKS5 UDP ASSOCIATE to tell apart "the app refuses UDP" (reply 0x07), "the chain or server drops UDP"
+(no answer) and "UDP works". It ends with the manual Kill Switch steps. It changes nothing and uses only the standard library.
+
 ## TLS look and MASQUE server name (update19)
 
 Settings has a folded card "TLS look and server name". Both choices are off by default, and with the defaults no new
