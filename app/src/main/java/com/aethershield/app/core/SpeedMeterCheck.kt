@@ -37,9 +37,23 @@ object SpeedMeterCheck {
         private fun factor(v: Long): Double? = if (physical <= 0) null else v.toDouble() / physical
     }
 
-    class Result(val seconds: Double, val down: Flow, val up: Flow) {
+    /** One interface as the page lists it: the raw rates, so a result that makes no sense can still be read. */
+    class Row(val name: String, val kind: Kind, val downBps: Long, val upBps: Long)
+
+    /**
+     * @param rows every interface present in both snapshots
+     * @param linkSeen a real (Wi-Fi / mobile) interface was in both snapshots; false means its counters could not be
+     *        read, or the phone switched network during the window
+     */
+    class Result(val seconds: Double, val down: Flow, val up: Flow, val rows: List<Row>, val linkSeen: Boolean) {
         /** Something moved on the real link, in either direction. */
         val enough: Boolean get() = maxOf(down.physical, up.physical) >= MIN_BPS
+
+        /**
+         * The phone-wide counter moved a lot while the real link's own counter did not: this phone does not give
+         * apps usable per-interface counters, so the factors cannot be worked out here.
+         */
+        val countersHidden: Boolean get() = !enough && maxOf(down.system ?: 0L, up.system ?: 0L) >= MIN_BPS
     }
 
     /**
@@ -57,13 +71,19 @@ object SpeedMeterCheck {
         val start = before.associateBy { it.name }
         val down = LongArray(Kind.values().size)
         val up = LongArray(Kind.values().size)
+        fun perSec(bytes: Long) = (bytes * 1000.0 / windowMs).toLong()
+        val rows = ArrayList<Row>()
+        var linkSeen = false
         for (r in after) {
             val b = start[r.name] ?: continue
             // A counter that went back (interface recreated) is "no traffic", never a negative speed.
-            down[r.kind.ordinal] += (r.rxBytes - b.rxBytes).coerceAtLeast(0)
-            up[r.kind.ordinal] += (r.txBytes - b.txBytes).coerceAtLeast(0)
+            val dRx = (r.rxBytes - b.rxBytes).coerceAtLeast(0)
+            val dTx = (r.txBytes - b.txBytes).coerceAtLeast(0)
+            down[r.kind.ordinal] += dRx
+            up[r.kind.ordinal] += dTx
+            rows += Row(r.name, r.kind, perSec(dRx), perSec(dTx))
+            if (r.kind == Kind.PHYSICAL) linkSeen = true
         }
-        fun perSec(bytes: Long) = (bytes * 1000.0 / windowMs).toLong()
         fun system(i: Int): Long? {
             val a = systemBefore
             val z = systemAfter
@@ -73,6 +93,6 @@ object SpeedMeterCheck {
         fun flow(d: LongArray, sys: Long?) = Flow(
             perSec(d[Kind.PHYSICAL.ordinal]), perSec(d[Kind.TUNNEL.ordinal]), perSec(d[Kind.LOOPBACK.ordinal]), sys
         )
-        return Result(windowMs / 1000.0, flow(down, system(0)), flow(up, system(1)))
+        return Result(windowMs / 1000.0, flow(down, system(0)), flow(up, system(1)), rows, linkSeen)
     }
 }

@@ -294,13 +294,31 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                 ) { Text(stringResource(if (meterRunning) R.string.diag_meter_running else R.string.diag_meter_run)) }
                 if (meterUnavailable) HelperText(stringResource(R.string.diag_meter_unavailable))
                 meterResult?.let { r ->
-                    if (!r.enough) {
-                        HelperText(stringResource(R.string.diag_meter_too_quiet))
-                    } else {
-                        if (r.down.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_download, r.down)
-                        if (r.up.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_upload, r.up)
-                        HelperText(stringResource(R.string.diag_meter_note))
+                    when {
+                        !r.linkSeen -> HelperText(stringResource(R.string.diag_meter_no_link))
+                        r.countersHidden -> HelperText(stringResource(R.string.diag_meter_hidden))
+                        !r.enough -> HelperText(stringResource(R.string.diag_meter_too_quiet))
+                        else -> {
+                            if (r.down.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_download, r.down)
+                            if (r.up.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_upload, r.up)
+                            HelperText(stringResource(R.string.diag_meter_note))
+                        }
                     }
+                    // The raw counters, whatever the verdict: a result that makes no sense can still be read from these.
+                    Text(
+                        stringResource(R.string.diag_meter_raw),
+                        style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp)
+                    )
+                    r.rows.forEach { row ->
+                        StatLine(
+                            "${row.name} (${stringResource(meterKindLabel(row.kind))})",
+                            "↓ ${Diagnosis.formatRate(row.downBps)}  ↑ ${Diagnosis.formatRate(row.upBps)}"
+                        )
+                    }
+                    StatLine(
+                        stringResource(R.string.diag_meter_total),
+                        "↓ ${r.down.system?.let { Diagnosis.formatRate(it) } ?: "-"}  ↑ ${r.up.system?.let { Diagnosis.formatRate(it) } ?: "-"}"
+                    )
                 }
             }
 
@@ -390,6 +408,12 @@ private fun MeterFlow(@StringRes title: Int, f: SpeedMeterCheck.Flow) {
 }
 
 private fun times(v: Double): String = String.format(Locale.US, "%.1f×", v)
+
+private fun meterKindLabel(k: SpeedMeterCheck.Kind): Int = when (k) {
+    SpeedMeterCheck.Kind.PHYSICAL -> R.string.diag_meter_link
+    SpeedMeterCheck.Kind.TUNNEL -> R.string.diag_meter_tunnel
+    SpeedMeterCheck.Kind.LOOPBACK -> R.string.diag_meter_loopback
+}
 
 private fun udpStateText(s: UdpState): Int = when (s) {
     UdpState.OFF -> R.string.diag_udp_state_off

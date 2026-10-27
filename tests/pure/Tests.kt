@@ -1675,4 +1675,13 @@ private fun speedMeterTests() {
     val noSys = SpeedMeterCheck.compute(before, after, longArrayOf(-1, -1), longArrayOf(-1, -1), 10_000)!!
     check("meter: unsupported total counter is null", noSys.down.system == null && noSys.down.systemTotal == null && noSys.down.tunnelPlusLink == 2.0)
     check("meter: non-positive window gives nothing", SpeedMeterCheck.compute(before, after, null, null, 0) == null)
+
+    // the raw rows and the reasons a result can be empty
+    check("meter: raw rows list every interface with its rates", res.rows.size == 3 && res.rows.first { it.name == "wlan0" }.let { it.downBps == 10 * mb && it.upBps == 1 * mb })
+    check("meter: link seen", res.linkSeen && !res.countersHidden)
+    check("meter: switched network means no link seen", !switched.linkSeen)
+    // the phone-wide counter moved 50 MB in 10 s but no interface counter changed: per-interface counters are hidden
+    val hidden = SpeedMeterCheck.compute(before, before, longArrayOf(0, 0), longArrayOf(500 * mb, 0), 10_000)!!
+    check("meter: moving total with a still link means hidden counters", hidden.linkSeen && !hidden.enough && hidden.countersHidden)
+    check("meter: an idle phone is not hidden counters", !quiet.countersHidden)
 }

@@ -437,6 +437,9 @@
     <string name="diag_meter_running">در حال اندازه‌گیری… همین حالا تست سرعت بگیرید</string>
     <string name="diag_meter_unavailable">این گوشی شمارندهٔ هر رابط را به برنامه نمی‌دهد (اندروید ۱۲ یا جدیدتر لازم است).</string>
     <string name="diag_meter_too_quiet">روی لینک واقعی تقریباً ترافیکی نبود. هنگام اندازه‌گیری تست سرعت بگیرید.</string>
+    <string name="diag_meter_no_link">شمارندهٔ لینک واقعی (وای‌فای / دیتا) خوانده نشد، یا هنگام اندازه‌گیری شبکه عوض شد. شمارنده‌های خام پایین فهرست شده‌اند.</string>
+    <string name="diag_meter_hidden">شمارندهٔ کلِ گوشی حرکت کرد ولی شمارندهٔ لینک واقعی نه: این گوشی شمارندهٔ هر رابط را به برنامه‌ها نمی‌دهد، پس ضریب‌ها اینجا قابل محاسبه نیستند.</string>
+    <string name="diag_meter_raw">شمارنده‌های خام (در ثانیه)</string>
     <string name="diag_meter_link">لینک واقعی (وای‌فای / دیتا)</string>
     <string name="diag_meter_tunnel">تونل VPN</string>
     <string name="diag_meter_loopback">داخل برنامه (loopback)</string>

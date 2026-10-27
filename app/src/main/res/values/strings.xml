@@ -437,6 +437,9 @@
     <string name="diag_meter_running">Measuring… run a speed test now</string>
     <string name="diag_meter_unavailable">This phone does not give the app counters per interface (Android 12 or newer is needed).</string>
     <string name="diag_meter_too_quiet">Almost no traffic on the real link. Run a speed test while it measures.</string>
+    <string name="diag_meter_no_link">The counters of the real link (Wi-Fi / mobile) could not be read, or the network changed while measuring. The raw counters are listed below.</string>
+    <string name="diag_meter_hidden">The phone-wide counter moved, but the counters of the real link did not: this phone does not give apps usable per-interface counters, so the factors cannot be worked out here.</string>
+    <string name="diag_meter_raw">Raw counters (per second)</string>
     <string name="diag_meter_link">Real link (Wi-Fi / mobile)</string>
     <string name="diag_meter_tunnel">VPN tunnel</string>
     <string name="diag_meter_loopback">Inside the app (loopback)</string>
