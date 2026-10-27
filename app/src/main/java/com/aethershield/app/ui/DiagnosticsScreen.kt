@@ -299,8 +299,9 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                         r.countersHidden -> HelperText(stringResource(R.string.diag_meter_hidden))
                         !r.enough -> HelperText(stringResource(R.string.diag_meter_too_quiet))
                         else -> {
-                            if (r.down.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_download, r.down)
-                            if (r.up.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_upload, r.up)
+                            // Only the direction that carries the transfer: loopback counts bytes both ways, so the
+                            // other direction's factors (mostly acks over a huge loopback figure) would be nonsense.
+                            if (r.dominantIsDown) MeterFlow(R.string.stat_download, r.down) else MeterFlow(R.string.stat_upload, r.up)
                             HelperText(stringResource(R.string.diag_meter_note))
                         }
                     }

@@ -1684,4 +1684,10 @@ private fun speedMeterTests() {
     val hidden = SpeedMeterCheck.compute(before, before, longArrayOf(0, 0), longArrayOf(500 * mb, 0), 10_000)!!
     check("meter: moving total with a still link means hidden counters", hidden.linkSeen && !hidden.enough && hidden.countersHidden)
     check("meter: an idle phone is not hidden counters", !quiet.countersHidden)
+    // download test: down is the real direction; upload test: up is
+    check("meter: a download test is dominated by down", res.dominantIsDown)
+    val uploadTest = SpeedMeterCheck.compute(
+        listOf(r("wlan0", P, 0, 0)), listOf(r("wlan0", P, 10 * mb, 100 * mb)), null, null, 10_000
+    )!!
+    check("meter: an upload test is dominated by up", !uploadTest.dominantIsDown)
 }

@@ -54,6 +54,12 @@ object SpeedMeterCheck {
          * apps usable per-interface counters, so the factors cannot be worked out here.
          */
         val countersHidden: Boolean get() = !enough && maxOf(down.system ?: 0L, up.system ?: 0L) >= MIN_BPS
+
+        /**
+         * Which direction carries the real transfer. Loopback counts every byte in BOTH directions (what a local hop
+         * receives it also sends), so only this direction's factors mean anything: the other one is mostly acks.
+         */
+        val dominantIsDown: Boolean get() = down.physical >= up.physical
     }
 
     /**
