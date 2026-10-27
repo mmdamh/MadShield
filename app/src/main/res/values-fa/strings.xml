@@ -430,4 +430,19 @@
     <string name="diag_udp_state_chain">ردشده: این زنجیره فقط TCP حمل می‌کند</string>
     <string name="diag_udp_state_pending_on">از اتصال بعدی روشن می‌شود</string>
     <string name="diag_udp_state_pending_off">از اتصال بعدی خاموش می‌شود</string>
+    <!-- update21: speed meter check -->
+    <string name="diag_sec_meter">بررسی نمایشگر سرعت</string>
+    <string name="diag_meter_sub">نمایشگر سرعتِ نوار وضعیت (مثلاً Network Speed در Good Lock) اگر بیشتر از سرعت واقعی نشان بدهد، از شمارنده‌های بایتِ گوشی می‌خواند. دکمه را بزنید و ۱۰ ثانیه تست سرعت بگیرید: نشان می‌دهد بایت‌های اضافه کجا شمرده می‌شوند. فقط با زدن دکمه اجرا می‌شود.</string>
+    <string name="diag_meter_run">اندازه‌گیری ۱۰ ثانیه‌ای</string>
+    <string name="diag_meter_running">در حال اندازه‌گیری… همین حالا تست سرعت بگیرید</string>
+    <string name="diag_meter_unavailable">این گوشی شمارندهٔ هر رابط را به برنامه نمی‌دهد (اندروید ۱۲ یا جدیدتر لازم است).</string>
+    <string name="diag_meter_too_quiet">روی لینک واقعی تقریباً ترافیکی نبود. هنگام اندازه‌گیری تست سرعت بگیرید.</string>
+    <string name="diag_meter_link">لینک واقعی (وای‌فای / دیتا)</string>
+    <string name="diag_meter_tunnel">تونل VPN</string>
+    <string name="diag_meter_loopback">داخل برنامه (loopback)</string>
+    <string name="diag_meter_total">شمارندهٔ کلِ گوشی</string>
+    <string name="diag_meter_factor_tunnel">لینک + تونل</string>
+    <string name="diag_meter_factor_loopback">لینک + تونل + loopback</string>
+    <string name="diag_meter_factor_total">شمارندهٔ کلِ گوشی</string>
+    <string name="diag_meter_note">1.0× همان چیزی است که تست سرعت واقعاً جابه‌جا می‌کند. حدود 2× برای هر برنامهٔ VPN عادی است، چون هم تونل و هم لینک واقعی شمرده می‌شوند. خیلی بیشتر یعنی ترافیک بین بخش‌های خودِ برنامه هم شمرده می‌شود.</string>
 </resources>

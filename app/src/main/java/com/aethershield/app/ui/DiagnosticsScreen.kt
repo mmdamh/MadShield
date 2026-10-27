@@ -73,6 +73,9 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
     var bridgeUp by remember { mutableStateOf<Boolean?>(null) }
     var probes by remember { mutableStateOf(ProbeResults()) }
     var testing by remember { mutableStateOf(false) }
+    var meterRunning by remember { mutableStateOf(false) }
+    var meterResult by remember { mutableStateOf<SpeedMeterCheck.Result?>(null) }
+    var meterUnavailable by remember { mutableStateOf(false) }
     var signals by remember { mutableStateOf(LogSignals()) }
     var udpView by remember { mutableStateOf<DiagnosticsHub.UdpView?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -257,6 +260,50 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                 }
             }
 
+            // ------------------------------------------------------------ speed meter check (update21)
+            // Two reads of the phone's byte counters, ten seconds apart, only when the button is pressed.
+            SectionCard(stringResource(R.string.diag_sec_meter)) {
+                HelperText(stringResource(R.string.diag_meter_sub))
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    enabled = !meterRunning,
+                    onClick = {
+                        scope.launch {
+                            meterRunning = true
+                            meterUnavailable = false
+                            meterResult = null
+                            try {
+                                val first = withContext(Dispatchers.IO) { SpeedMeterProbe.read(ctx) }
+                                if (first == null) {
+                                    meterUnavailable = true
+                                } else {
+                                    val startedAt = SystemClock.elapsedRealtime()
+                                    delay(METER_WINDOW_MS)
+                                    val second = withContext(Dispatchers.IO) { SpeedMeterProbe.read(ctx) }
+                                    val elapsed = SystemClock.elapsedRealtime() - startedAt
+                                    if (second == null) meterUnavailable = true
+                                    else meterResult = SpeedMeterCheck.compute(
+                                        first.readings, second.readings, first.system, second.system, elapsed
+                                    )
+                                }
+                            } finally {
+                                meterRunning = false
+                            }
+                        }
+                    }
+                ) { Text(stringResource(if (meterRunning) R.string.diag_meter_running else R.string.diag_meter_run)) }
+                if (meterUnavailable) HelperText(stringResource(R.string.diag_meter_unavailable))
+                meterResult?.let { r ->
+                    if (!r.enough) {
+                        HelperText(stringResource(R.string.diag_meter_too_quiet))
+                    } else {
+                        if (r.down.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_download, r.down)
+                        if (r.up.physical >= SpeedMeterCheck.MIN_BPS) MeterFlow(R.string.stat_upload, r.up)
+                        HelperText(stringResource(R.string.diag_meter_note))
+                    }
+                }
+            }
+
             // ------------------------------------------------------------ on-demand tests
             SectionCard(stringResource(R.string.diag_sec_tests)) {
                 HelperText(stringResource(R.string.diag_tests_sub))
@@ -327,6 +374,22 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
 
 private const val TEST_IP = "1.1.1.1"
 private const val TEST_NAME = "cloudflare.com"
+private const val METER_WINDOW_MS = 10_000L
+
+/** One direction of the speed meter check: the rate on each interface, then the factors against the real link. */
+@Composable
+private fun MeterFlow(@StringRes title: Int, f: SpeedMeterCheck.Flow) {
+    Text(stringResource(title), style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+    StatLine(stringResource(R.string.diag_meter_link), Diagnosis.formatRate(f.physical))
+    StatLine(stringResource(R.string.diag_meter_tunnel), Diagnosis.formatRate(f.tunnel))
+    StatLine(stringResource(R.string.diag_meter_loopback), Diagnosis.formatRate(f.loopback))
+    f.system?.let { StatLine(stringResource(R.string.diag_meter_total), Diagnosis.formatRate(it)) }
+    f.tunnelPlusLink?.let { StatLine(stringResource(R.string.diag_meter_factor_tunnel), times(it)) }
+    f.withLoopback?.let { StatLine(stringResource(R.string.diag_meter_factor_loopback), times(it)) }
+    f.systemTotal?.let { StatLine(stringResource(R.string.diag_meter_factor_total), times(it)) }
+}
+
+private fun times(v: Double): String = String.format(Locale.US, "%.1f×", v)
 
 private fun udpStateText(s: UdpState): Int = when (s) {
     UdpState.OFF -> R.string.diag_udp_state_off

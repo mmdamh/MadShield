@@ -191,6 +191,7 @@ fun main() {
 
     dohTests()
     linkProfileTests()
+    speedMeterTests()
 
     println(if (fails == 0) "ALL PASSED" else "$fails FAILED")
     if (fails > 0) kotlin.system.exitProcess(1)
@@ -1638,4 +1639,40 @@ fun udpRelayTests() {
             val c = EngineConfig(protocol = Protocol.WIREGUARD, privacyChain = ch, dohOn = d, dohResolvers = if (d) listOf("https://1.1.1.1/dns-query") else emptyList(), udpEnabled = u)
             c.mappedDnsActive == FrontPlan.of(c.effectiveChain, c.dohActive, false, c.socksPort, u).mappedDns } } })
     }
+}
+
+
+// =====================================================================================================
+// update21: speed meter check (SpeedMeterCheck)
+// =====================================================================================================
+
+private fun speedMeterTests() {
+    val P = SpeedMeterCheck.Kind.PHYSICAL; val T = SpeedMeterCheck.Kind.TUNNEL; val L = SpeedMeterCheck.Kind.LOOPBACK
+    fun r(n: String, k: SpeedMeterCheck.Kind, rx: Long, tx: Long) = SpeedMeterCheck.Reading(n, k, rx, tx)
+    val mb = 1_000_000L
+    val before = listOf(r("lo", L, 5 * mb, 5 * mb), r("tun0", T, 7 * mb, 1 * mb), r("wlan0", P, 100 * mb, 10 * mb))
+    // 10 s: the link moved 100 MB down / 10 MB up; the tunnel the same; three loopback hops carried 300 MB down / 30 MB up
+    val after = listOf(r("lo", L, 305 * mb, 35 * mb), r("tun0", T, 107 * mb, 11 * mb), r("wlan0", P, 200 * mb, 20 * mb))
+    val res = SpeedMeterCheck.compute(before, after, longArrayOf(0, 0), longArrayOf(500 * mb, 50 * mb), 10_000)!!
+    check("meter: link rate is bytes per second", res.down.physical == 10 * mb && res.up.physical == 1 * mb)
+    check("meter: tunnel and loopback rates", res.down.tunnel == 10 * mb && res.down.loopback == 30 * mb)
+    check("meter: tunnel + link is 2x", res.down.tunnelPlusLink == 2.0)
+    check("meter: with loopback is 5x", res.down.withLoopback == 5.0)
+    check("meter: phone total counter 5x", res.down.systemTotal == 5.0 && res.up.systemTotal == 5.0)
+    check("meter: enough traffic", res.enough && res.seconds == 10.0)
+
+    // no speed test running: nothing to compare against
+    val quiet = SpeedMeterCheck.compute(before, before, longArrayOf(1, 1), longArrayOf(1, 1), 10_000)!!
+    check("meter: no traffic is not enough and has no factors", !quiet.enough && quiet.down.tunnelPlusLink == null && quiet.down.systemTotal == null)
+
+    // an interface that exists only in one snapshot is ignored; a counter that went back is no traffic
+    val switched = SpeedMeterCheck.compute(
+        before, listOf(r("lo", L, 1 * mb, 1 * mb), r("rmnet_data0", P, 900 * mb, 900 * mb)), null, null, 10_000
+    )!!
+    check("meter: new interface ignored, reset counter is zero", switched.down.physical == 0L && switched.down.loopback == 0L)
+
+    // unsupported system counters (the API returns -1) or none at all: no total, the rest still works
+    val noSys = SpeedMeterCheck.compute(before, after, longArrayOf(-1, -1), longArrayOf(-1, -1), 10_000)!!
+    check("meter: unsupported total counter is null", noSys.down.system == null && noSys.down.systemTotal == null && noSys.down.tunnelPlusLink == 2.0)
+    check("meter: non-positive window gives nothing", SpeedMeterCheck.compute(before, after, null, null, 0) == null)
 }
