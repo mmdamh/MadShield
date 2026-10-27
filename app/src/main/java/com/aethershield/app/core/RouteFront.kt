@@ -150,7 +150,9 @@ class RouteFront(
         server = null
         closeQuietly(s)
         relay?.stop()
-        live.toList().forEach { closeQuietly(it) }
+        // ArrayList(live), not live.toList(): toList() reads size() and then next(), and a connection that ends in
+        // between (handle() removes itself from [live]) made it throw NoSuchElementException. toArray() is safe.
+        ArrayList(live).forEach { closeQuietly(it) }
         live.clear()
         pool.shutdownNow()
         log("[route] front stopped: ${nProxy.get()} via upstream, ${nDirect.get()} direct, ${nBlock.get()} blocked, ${nFailed.get()} failed" +
