@@ -74,6 +74,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
     var probes by remember { mutableStateOf(ProbeResults()) }
     var testing by remember { mutableStateOf(false) }
     var signals by remember { mutableStateOf(LogSignals()) }
+    var udpView by remember { mutableStateOf<DiagnosticsHub.UdpView?>(null) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val window = remember { RateWindow() }
 
@@ -96,6 +97,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
     LaunchedEffect(foreground) {
         if (!foreground) return@LaunchedEffect
         while (true) {
+            udpView = withContext(Dispatchers.IO) { DiagnosticsHub.udpView?.invoke() } // a few counters, no I/O
             delay(2_000)
             now = System.currentTimeMillis()
         }
@@ -142,6 +144,11 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
         chainOn = (active ?: config).effectiveChain != PrivacyChain.NONE
     )
     val findings = remember(input) { Diagnosis.diagnose(input) }
+    // update20: UDP. Only meaningful while connected; the numbers come from the running front, if there is one.
+    val udpState: UdpState? = if (kind == StateKind.CONNECTED) {
+        val running = active ?: config
+        UdpStatus.of(config.udpEnabled, running.effectiveChain, udpView?.carried != null, udpView?.carried == true, running.udpEnabled)
+    } else null
 
     fun reportText(): String = DiagnosticsReport.render(
         appVersion = BuildConfig.VERSION_NAME,
@@ -151,7 +158,8 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
         nowMs = now,
         rates = rates,
         includeLogTail = if (withTail) RingLogBuffer.tail(60) else null,
-        redact = LogRedactor::redact
+        redact = LogRedactor::redact,
+        udp = UdpReport(config.udpEnabled, udpState ?: if (config.udpEnabled) UdpState.RELAY else UdpState.OFF, udpView?.stats)
     )
 
     val copiedText = stringResource(R.string.copied)
@@ -197,6 +205,35 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                         else -> if (r.ok) stringResource(R.string.diag_integrity_ok) else stringResource(R.string.diag_integrity_bad)
                     }
                 )
+            }
+
+            // ------------------------------------------------------------ UDP
+            SectionCard(stringResource(R.string.diag_sec_udp)) {
+                StatLine(
+                    stringResource(R.string.diag_udp_setting),
+                    stringResource(if (config.udpEnabled) R.string.diag_udp_enabled else R.string.diag_udp_disabled)
+                )
+                if (udpState == null) {
+                    HelperText(stringResource(R.string.diag_udp_not_connected))
+                } else {
+                    StatLine(stringResource(R.string.diag_udp_effect), stringResource(udpStateText(udpState)))
+                    val u = udpView?.stats
+                    if (u != null) {
+                        StatLine(stringResource(R.string.diag_udp_active), "${u.active}")
+                        StatLine(stringResource(R.string.diag_udp_refused), "${u.refusedAssociations}")
+                        StatLine(stringResource(R.string.diag_udp_dropped), "${u.droppedTotal}")
+                        if (u.droppedTotal > 0) {
+                            HelperText(
+                                stringResource(
+                                    R.string.diag_udp_dropped_detail,
+                                    u.droppedBlocked, u.droppedGuard, u.droppedBadPacket, u.droppedNoUpstream + u.droppedResolve, u.droppedFull
+                                )
+                            )
+                        }
+                    } else {
+                        HelperText(stringResource(R.string.diag_udp_no_counters))
+                    }
+                }
             }
 
             // ------------------------------------------------------------ live usage
@@ -290,6 +327,15 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
 
 private const val TEST_IP = "1.1.1.1"
 private const val TEST_NAME = "cloudflare.com"
+
+private fun udpStateText(s: UdpState): Int = when (s) {
+    UdpState.OFF -> R.string.diag_udp_state_off
+    UdpState.RELAY -> R.string.diag_udp_state_relay
+    UdpState.UPSTREAM_DIRECT -> R.string.diag_udp_state_direct
+    UdpState.CHAIN_REFUSES -> R.string.diag_udp_state_chain
+    UdpState.PENDING_ON -> R.string.diag_udp_state_pending_on
+    UdpState.PENDING_OFF -> R.string.diag_udp_state_pending_off
+}
 
 @Composable
 private fun StatLine(label: String, value: String) {

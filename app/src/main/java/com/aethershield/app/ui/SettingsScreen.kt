@@ -243,6 +243,14 @@ fun SettingsScreen(
                 }) { Text(stringResource(R.string.lockdown_open)) }
             }
             SwitchRow(
+                stringResource(R.string.sw_udp), stringResource(R.string.sw_udp_sub),
+                config.udpEnabled, { v -> onUpdate { it.copy(udpEnabled = v) } }
+            )
+            if (!config.udpEnabled) HelperText(stringResource(R.string.udp_off_dns_note))
+            if (config.udpEnabled && config.effectiveChain.let { it == PrivacyChain.PSIPHON || it == PrivacyChain.TOR }) {
+                HelperText(stringResource(R.string.udp_chain_note))
+            }
+            SwitchRow(
                 stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
                 config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
             )

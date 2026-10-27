@@ -33,8 +33,8 @@ import java.util.concurrent.atomic.AtomicLong
  *                       Names use the system DNS (the connection leaves the tunnel anyway, and domestic
  *                       sites need a domestic answer) unless [Options.directResolver] is set.
  *             PROXY  -> upstream on [upstreamPort]; names via DoH when [Options.resolver] is set
- *             UDP ASSOCIATE -> relayed to the upstream untouched when [Options.udpPassThrough] (no chain),
- *                       otherwise refused (0x07): the chains carry TCP only
+ *             UDP ASSOCIATE -> carried by [UdpRelay] (rules per datagram) when [Options.udpCapable] and UDP is on
+ *                       (see [setUdpEnabled]); refused (0x07) when UDP is off or the chain carries TCP only
  *
  * Safety properties:
  *  - fail closed: a connection that cannot be classified or reached is refused, never silently sent direct;
@@ -52,14 +52,19 @@ class RouteFront(
     /**
      * @property resolver DoH for PROXY names (through the upstream); null = names are forwarded unresolved (update10).
      * @property directResolver DoH for DIRECT names, from the phone's own network; null = system DNS.
-     * @property udpPassThrough relay UDP ASSOCIATE to the upstream (only valid without a chain).
+     * @property udpCapable the upstream can carry UDP (no chain, or sing-box): a [UdpRelay] exists. False = every
+     *   UDP ASSOCIATE is refused (Psiphon/Tor).
+     * @property udpOn UDP is switched on at start; [setUdpEnabled] changes it while running.
+     * @property udpTuning timeouts of the relay (tests shorten them).
      * @property guardFakeIps refuse IP destinations in hev's fake-IP network and DNS range (see [FrontGuard]).
      * @property allowOnion pass *.onion names to the upstream unresolved (Tor chain only); otherwise refused.
      */
     class Options(
         val resolver: FrontResolver? = null,
         val directResolver: FrontResolver? = null,
-        val udpPassThrough: Boolean = false,
+        val udpCapable: Boolean = false,
+        val udpOn: Boolean = true,
+        val udpTuning: UdpRelay.Tuning = UdpRelay.Tuning(),
         val guardFakeIps: Boolean = false,
         val allowOnion: Boolean = false
     )
@@ -84,6 +89,11 @@ class RouteFront(
     private val nBlock = AtomicLong()
     private val nFailed = AtomicLong()
     private val nUdp = AtomicLong()
+    private val nUdpRefused = AtomicLong()
+    @Volatile private var udpOn: Boolean = options.udpOn
+    private val relay: UdpRelay? = if (options.udpCapable) {
+        UdpRelay(upstreamPort, matcher, options.resolver, options.directResolver, options.guardFakeIps, log, options.udpTuning)
+    } else null
     private val nRefusedFake = AtomicLong()
     private val nRefusedOther = AtomicLong()
     private val nResolveFailed = AtomicLong()
@@ -103,9 +113,31 @@ class RouteFront(
         log(
             "[route] front on $listenPort -> upstream on $upstreamPort (${matcher.blockCount} block, ${matcher.directCount} direct rules; " +
                 "doh=${if (options.resolver != null) "on" else "off"}, doh-direct=${if (options.directResolver != null) "on" else "off"}, " +
-                "udp=${if (options.udpPassThrough) "pass-through" else "refused"})"
+                "udp=${udpLabel()})"
         )
     }
+
+    private fun udpLabel(): String = when {
+        relay == null -> "refused (this chain carries TCP only)"
+        udpOn -> "relay, rules per datagram"
+        else -> "off"
+    }
+
+    /** UDP is currently carried (switched on AND the upstream can carry it). */
+    val udpActive: Boolean get() = relay != null && udpOn
+
+    /**
+     * UDP Support switched while the tunnel runs. Off: every association ends now (its sockets and the relay thread
+     * are freed) and new ASSOCIATEs are refused. On: new ones are accepted again. TCP is not touched.
+     */
+    fun setUdpEnabled(on: Boolean) {
+        if (udpOn == on) return
+        udpOn = on
+        if (!on) relay?.closeAll()
+        log("[udp] ${if (on) "switched on" else "switched off: associations closed"}")
+    }
+
+    fun udpStats(): UdpStats = (relay?.stats() ?: UdpStats()).copy(refusedAssociations = nUdpRefused.get())
 
     /** Screen off and quiet: drop idle DoH connections. Cheap, starts nothing. */
     fun onIdle() {
@@ -117,11 +149,16 @@ class RouteFront(
         val s = server ?: return
         server = null
         closeQuietly(s)
+        relay?.stop()
         live.toList().forEach { closeQuietly(it) }
         live.clear()
         pool.shutdownNow()
         log("[route] front stopped: ${nProxy.get()} via upstream, ${nDirect.get()} direct, ${nBlock.get()} blocked, ${nFailed.get()} failed" +
-            if (options.udpPassThrough) ", ${nUdp.get()} udp associations" else "")
+            if (relay != null) {
+                val u = relay.stats()
+                ", ${nUdp.get()} udp associations (${u.toUpstream} datagrams out, ${u.fromUpstream} in via upstream, " +
+                    "${u.toDirect}/${u.fromDirect} direct, ${u.droppedTotal} dropped)"
+            } else ", ${nUdpRefused.get()} udp refused")
         if (options.resolver != null || options.guardFakeIps) {
             log("[route] ${options.resolver?.summary() ?: "doh off"}; ${nResolveFailed.get()} refused after a failed lookup, " +
                 "${nRefusedFake.get()} stale fake addresses refused, ${nRefusedOther.get()} reserved addresses refused")
@@ -179,12 +216,7 @@ class RouteFront(
             when (cmd) {
                 CMD_CONNECT -> {}
                 CMD_UDP_ASSOCIATE -> {
-                    if (!options.udpPassThrough) { reply(cout, 0x07); return }
-                    val control = associateUdp(cout, raw.toByteArray()) ?: return
-                    remote = control
-                    client.soTimeout = 0
-                    control.soTimeout = 0
-                    pipe(client, control) // the control connection: closing it ends the association in the core
+                    serveUdpAssociate(client, cin, cout)
                     return
                 }
                 else -> { reply(cout, 0x07); return }
@@ -340,23 +372,26 @@ class RouteFront(
     // ------------------------------------------------------------------- UDP
 
     /**
-     * UDP ASSOCIATE pass-through. The control request goes to the upstream UNCHANGED and the upstream's reply
-     * (which carries the address of its UDP relay) comes back UNCHANGED, so hev sends its datagrams straight to
-     * that relay: no UDP ever passes through this class. Only the TCP control connection is piped by the caller.
+     * UDP ASSOCIATE. The client (hev) gets the address of a loopback UDP socket owned by [UdpRelay]; every datagram
+     * it sends there is checked against the rules. The association lives as long as this control connection: the
+     * client closing it, the relay ending the association (idle, UDP switched off) or the front stopping all end it.
+     * Nothing is relayed when UDP is off or the chain cannot carry it: the client gets "command not supported".
      */
-    private fun associateUdp(cout: OutputStream, request: ByteArray): Socket? {
-        val r = Socket()
-        live.add(r)
+    private fun serveUdpAssociate(client: Socket, cin: InputStream, cout: OutputStream) {
+        val r = relay
+        if (r == null || !udpOn) { nUdpRefused.incrementAndGet(); reply(cout, 0x07); return }
+        val a = r.open(client)
+        if (a == null) { nFailed.incrementAndGet(); reply(cout, 0x01); return }
+        nUdp.incrementAndGet()
         try {
-            val rep = upstreamExchange(r, request, CONNECT_MS)
+            val rep = byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (a.port shr 8).toByte(), (a.port and 0xff).toByte())
             cout.write(rep); cout.flush()
-            if (rep[1].toInt() != 0) { closeQuietly(r); live.remove(r); nFailed.incrementAndGet(); return null }
-            nUdp.incrementAndGet()
-            return r
+            client.soTimeout = 0
+            val sink = ByteArray(16)
+            while (cin.read(sink) >= 0) { /* a control connection carries nothing after the reply */ }
         } catch (_: IOException) {
-            closeQuietly(r); live.remove(r)
-            nFailed.incrementAndGet(); reply(cout, 0x01)
-            return null
+        } finally {
+            a.close()
         }
     }
 

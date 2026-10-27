@@ -7,11 +7,13 @@ package com.aethershield.app.core
  *       no chain:  hev -> core on the PUBLIC port
  *       chain:     hev -> Psiphon/Tor on the PUBLIC port, core on UNDERLAY_PORT
  *   front ON    ([RouteFront] owns the PUBLIC port; the core ALWAYS sits on UNDERLAY_PORT)
- *       no chain:  hev -> front -> core (UNDERLAY_PORT)                  UDP is passed through to the core
- *       chain:     hev -> front -> Psiphon/Tor (CHAIN_PORT) -> core      UDP is refused (chains carry TCP only)
+ *       no chain:  hev -> front -> core (UNDERLAY_PORT)                  UDP goes through [UdpRelay] (per-datagram rules)
+ *       sing-box:  hev -> front -> sing-box (CHAIN_PORT) -> core         UDP goes through [UdpRelay] (per-datagram rules)
+ *       Psiphon/Tor: hev -> front -> chain (CHAIN_PORT) -> core          UDP is refused (these chains carry TCP only)
  *
- * The front is on when local DoH is active (it must see every name), or, as in update10, when a chain is on
- * and routing rules exist (the core would otherwise never see app traffic).
+ * The front is on when local DoH is active (it must see every name), when a chain is on and routing rules exist
+ * (the core would otherwise never see app traffic), or when UDP is switched OFF (only the front can refuse a
+ * UDP ASSOCIATE; hev has no "no UDP" mode).
  */
 data class FrontPlan(
     val frontOn: Boolean,
@@ -21,16 +23,24 @@ data class FrontPlan(
     val chainPort: Int?,
     /** Where the front sends proxied connections and where DoH connects: the chain, or the core without one. */
     val upstreamPort: Int,
-    /** UDP ASSOCIATE is relayed byte-for-byte to the core (only possible without a chain). */
-    val udpPassThrough: Boolean,
+    /**
+     * The front carries UDP itself ([UdpRelay]): UDP is on, the front is on and the chain can carry UDP (none, or
+     * sing-box). False with the front on means every UDP ASSOCIATE is refused (UDP off, or Psiphon/Tor).
+     */
+    val udpRelay: Boolean,
+    /**
+     * hev answers DNS itself (mapped DNS, names instead of fake IPs). It is the only DNS that does not need UDP
+     * through the proxy, so it is forced on when UDP is off. Names are IPv4-only then (no HTTPS/AAAA records).
+     */
+    val mappedDns: Boolean,
     /** The core gets AETHER_ROUTES_FILE. See [of] for why that also holds with the front on and no chain. */
     val coreGetsRoutes: Boolean,
     /** Names are resolved by the local DoH client. */
     val localDoh: Boolean
 ) {
     companion object {
-        fun of(chain: PrivacyChain, dohActive: Boolean, rulesNonEmpty: Boolean, publicPort: Int): FrontPlan {
-            val front = dohActive || (chain != PrivacyChain.NONE && rulesNonEmpty)
+        fun of(chain: PrivacyChain, dohActive: Boolean, rulesNonEmpty: Boolean, publicPort: Int, udpEnabled: Boolean = true): FrontPlan {
+            val front = dohActive || (chain != PrivacyChain.NONE && rulesNonEmpty) || !udpEnabled
             val corePort = if (chain == PrivacyChain.NONE && !front) publicPort else Chain.UNDERLAY_PORT
             val chainPort = when {
                 chain == PrivacyChain.NONE -> null
@@ -42,10 +52,11 @@ data class FrontPlan(
                 corePort = corePort,
                 chainPort = chainPort,
                 upstreamPort = chainPort ?: corePort,
-                udpPassThrough = front && chain == PrivacyChain.NONE,
-                // Without a chain the core still sees the UDP the front passes through and every IP the front
-                // connects to, so it keeps enforcing block/direct for UDP and for IP-based rules, exactly as in
-                // update10. With a chain the core never sees app traffic and the front is the only rule engine.
+                udpRelay = front && udpEnabled && (chain == PrivacyChain.NONE || chain == PrivacyChain.SINGBOX),
+                mappedDns = dohActive || chain != PrivacyChain.NONE || !udpEnabled,
+                // Without a chain the core still sees the UDP the front relays and every IP the front connects to,
+                // so it keeps enforcing block/direct for UDP and for IP-based rules, exactly as in update10.
+                // With a chain the core never sees app traffic and the front is the only rule engine.
                 coreGetsRoutes = chain == PrivacyChain.NONE || !front,
                 localDoh = dohActive
             )

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
  *    A disconnect pressed by the user clears it again, like the rest of the log.
  *  - [engineCpuTicks]: how the page asks the running service for the engine's CPU time, only while the
  *    page is open. Set by the service while it runs, null otherwise.
+ *  - [udpView]: same pattern for the UDP section (update20).
  */
 object DiagnosticsHub {
     data class LastExit(val atMs: Long, val reason: String, val tail: List<String>)
@@ -23,6 +24,10 @@ object DiagnosticsHub {
     val lastExit = _lastExit.asStateFlow()
 
     @Volatile var engineCpuTicks: (() -> Long?)? = null
+
+    /** What UDP is doing in the running tunnel: [udpCarried] (null = no front runs) and the counters. Set while a service runs. */
+    class UdpView(val carried: Boolean?, val stats: UdpStats?)
+    @Volatile var udpView: (() -> UdpView)? = null
 
     fun recordExit(reason: String, tail: List<String>) {
         _lastExit.value = LastExit(

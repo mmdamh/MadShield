@@ -56,6 +56,7 @@ class SettingsStore(private val context: Context) {
 
         // Local DoH (update11). The resolver list is ONE newline-separated string, not a set: order is the
         // order they are tried in, and a string set would lose it.
+        val UDP_ENABLED = booleanPreferencesKey("udp_enabled")
         val DOH_ON = booleanPreferencesKey("doh_on")
         val DOH_RESOLVERS = stringPreferencesKey("doh_resolvers")
         val DOH_VIA_TOR = booleanPreferencesKey("doh_via_tor")
@@ -120,7 +121,8 @@ class SettingsStore(private val context: Context) {
             dohServeStale = p[Keys.DOH_SERVE_STALE] ?: false,
             dohForDirect = p[Keys.DOH_FOR_DIRECT] ?: false,
             masqueSni = MasqueSni.normalize(p[Keys.MASQUE_SNI]) ?: "",
-            tlsPreset = TlsPreset.fromStored(p[Keys.TLS_PRESET])
+            tlsPreset = TlsPreset.fromStored(p[Keys.TLS_PRESET]),
+            udpEnabled = p[Keys.UDP_ENABLED] ?: true
         )
 
     val configFlow: Flow<EngineConfig> = context.dataStore.data.map { readConfig(it) }
@@ -174,6 +176,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.PERF] = CoreChoices.perfOrDefault(current.perfProfile)
             p[Keys.NOTIF_SPEED] = current.notifSpeed
             p[Keys.POWER_SAVER] = current.powerSaver
+            p[Keys.UDP_ENABLED] = current.udpEnabled
             p[Keys.DOH_ON] = current.dohOn
             if (current.dohResolvers.isEmpty()) p.remove(Keys.DOH_RESOLVERS) else p[Keys.DOH_RESOLVERS] = current.dohResolvers.joinToString("\n")
             p[Keys.DOH_VIA_TOR] = current.dohViaTor

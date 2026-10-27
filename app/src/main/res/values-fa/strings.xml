@@ -123,7 +123,7 @@
     <string name="doh_test_ok">DoH کار می‌کند: یک نام resolve شد و اتصال برقرار شد.</string>
     <string name="doh_test_doh_fail">تونل کار می‌کند ولی resolve نام با DoH شکست خورد. resolver و IP آن را بررسی کن.</string>
     <string name="doh_test_tunnel_fail">خود تونل الان ترافیک نمی‌برد.</string>
-    <string name="doh_limits">محدودیت‌ها: برنامه‌هایی که DoH/DoT خودشان را دارند و Private DNS اندروید کنترل نمی‌شوند. نام‌هایی که با UDP (مثل QUIC) و بدون chain استفاده می‌شوند هنوز با دی‌ان‌اس هسته resolve می‌شوند: آی‌پی ساده‌ی همان resolver را در بخش دی‌ان‌اس پایین بگذار. IPv6 و رکوردهای HTTPS جواب داده نمی‌شوند. حالت Proxy Only: فقط برنامه‌هایی که نام را به proxy می‌دهند (socks5h) از DoH رد می‌شوند. تا وقتی این قابلیت روشن است بازهٔ 100.64.0.0/10 برای آن رزرو است.</string>
+    <string name="doh_limits">محدودیت‌ها: برنامه‌هایی که DoH/DoT خودشان را دارند و Private DNS اندروید کنترل نمی‌شوند. نام‌هایی که با UDP (مثل QUIC) استفاده می‌شوند هم با DoH resolve می‌شوند، چون UDP از relay خود برنامه رد می‌شود (با chain از نوع Psiphon/Tor اصلاً UDP نداریم). IPv6 و رکوردهای HTTPS جواب داده نمی‌شوند. حالت Proxy Only: فقط برنامه‌هایی که نام را به proxy می‌دهند (socks5h) از DoH رد می‌شوند. تا وقتی این قابلیت روشن است بازهٔ 100.64.0.0/10 برای آن رزرو است.</string>
     <string name="sec_dns_presets">انتخاب سریع</string>
     <string name="dns_presets_help">فقط آی‌پی ساده، چون موتور فقط همین را می‌فهمد. «پیش‌فرض» یعنی موتور از دی‌ان‌اس خودش استفاده کند.</string>
     <string name="sec_dns_custom">دی‌ان‌اس سفارشی</string>
@@ -407,4 +407,27 @@
     <string name="lockdown_warning">Kill Switch فقط تا وقتی برنامه در حال اجراست کار می‌کند. اگر اندروید برنامه را ببندد (کمبود حافظه، Force stop) ترافیک می‌تواند بدون محافظت خارج شود. برای محافظت کامل در تنظیمات VPN اندروید «Always-on VPN» و «Block connections without VPN» را برای MadShield روشن کنید.</string>
     <string name="lockdown_open">باز کردن تنظیمات VPN</string>
     <string name="link_insecure">هشدار: این لینک بررسی گواهی را خاموش می‌کند (allowInsecure). هر کسی بین شما و سرور می‌تواند ترافیک را بخواند یا تغییر دهد. فقط اگر می‌دانید چرا لازم است استفاده کنید.</string>
+
+    <!-- update20: UDP Support -->
+    <string name="sw_udp">پشتیبانی UDP</string>
+    <string name="sw_udp_sub">روشن (پیش‌فرض): UDP از تونل رد می‌شود (تماس صوتی و تصویری، بازی، QUIC) و قانون‌های block/direct شما روی تک‌تک بسته‌های UDP هم اعمال می‌شود. خاموش: هیچ UDP ارسال نمی‌شود؛ TCP، VPN و Kill Switch تغییری نمی‌کنند. اگر front مسیریابی برنامه فعال باشد همان لحظه اعمال می‌شود، وگرنه از اتصال بعدی.</string>
+    <string name="udp_off_dns_note">با UDP خاموش، نام‌ها با DNS داخلی برنامه (فقط IPv4) پاسخ داده می‌شوند و از مسیر TCP می‌روند. برنامه‌هایی که UDP لازم دارند (تماس، QUIC) کار نمی‌کنند.</string>
+    <string name="udp_chain_note">Psiphon و Tor فقط TCP حمل می‌کنند، پس تا وقتی یکی از آن‌ها زنجیره است UDP رد می‌شود. از زنجیرهٔ سفارشی (sing-box) با سروری که UDP را پشتیبانی کند استفاده کنید.</string>
+    <string name="diag_sec_udp">UDP</string>
+    <string name="diag_udp_setting">پشتیبانی UDP</string>
+    <string name="diag_udp_enabled">فعال</string>
+    <string name="diag_udp_disabled">غیرفعال</string>
+    <string name="diag_udp_effect">وضعیت فعلی</string>
+    <string name="diag_udp_active">Associationهای فعال</string>
+    <string name="diag_udp_refused">Associationهای ردشده</string>
+    <string name="diag_udp_dropped">بسته‌های دورریخته‌شده</string>
+    <string name="diag_udp_dropped_detail">بلاک با قانون %1$d، guard ‏%2$d، ناقص %3$d، بدون upstream/DNS ‏%4$d، صف پر %5$d</string>
+    <string name="diag_udp_not_connected">برای دیدن وضعیت UDP وصل شوید.</string>
+    <string name="diag_udp_no_counters">شمارنده‌ای نیست: front مسیریابی اجرا نمی‌شود و VPN خودش مستقیم با upstream UDP رد و بدل می‌کند.</string>
+    <string name="diag_udp_state_off">خاموش: UDP رد می‌شود</string>
+    <string name="diag_udp_state_relay">روشن: قانون‌ها روی هر بسته اعمال می‌شود</string>
+    <string name="diag_udp_state_direct">روشن: مستقیم به upstream (قانونی برای اعمال نیست)</string>
+    <string name="diag_udp_state_chain">ردشده: این زنجیره فقط TCP حمل می‌کند</string>
+    <string name="diag_udp_state_pending_on">از اتصال بعدی روشن می‌شود</string>
+    <string name="diag_udp_state_pending_off">از اتصال بعدی خاموش می‌شود</string>
 </resources>

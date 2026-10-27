@@ -123,7 +123,7 @@
     <string name="doh_test_ok">DoH works: a name was resolved and reached.</string>
     <string name="doh_test_doh_fail">The tunnel works, but resolving a name through DoH failed. Check the resolver and its IP.</string>
     <string name="doh_test_tunnel_fail">The tunnel itself is not carrying traffic right now.</string>
-    <string name="doh_limits">Limits: apps with their own DoH/DoT, and Android\'s Private DNS, are not controlled. Names used over UDP (QUIC) with no chain are still resolved by the engine\'s DNS: put the plain IP of the same resolver in the resolvers below. IPv6 and HTTPS records are not answered. Proxy-only mode: only apps that send the NAME to the proxy (socks5h) use DoH. 100.64.0.0/10 is reserved for this feature while it is on.</string>
+    <string name="doh_limits">Limits: apps with their own DoH/DoT, and Android\'s Private DNS, are not controlled. Names used over UDP (QUIC) are resolved by DoH too, because UDP goes through the app\'s own relay (with a Psiphon/Tor chain there is no UDP at all). IPv6 and HTTPS records are not answered. Proxy-only mode: only apps that send the NAME to the proxy (socks5h) use DoH. 100.64.0.0/10 is reserved for this feature while it is on.</string>
     <string name="sec_dns_presets">Quick choice</string>
     <string name="dns_presets_help">Plain-IP resolvers, which is the only kind the engine understands. “Default” lets the engine use its own.</string>
     <string name="sec_dns_custom">Custom resolvers</string>
@@ -407,4 +407,27 @@
     <string name="lockdown_warning">The Kill Switch works only while this app is running. If Android stops the app (low memory, force stop), traffic can leave unprotected. For full protection turn on Always-on VPN and Block connections without VPN for MadShield in Android\'s VPN settings.</string>
     <string name="lockdown_open">Open VPN settings</string>
     <string name="link_insecure">Warning: this link turns certificate checking off (allowInsecure). Anyone between you and the server could read or change the traffic. Use it only if you know why it is needed.</string>
+
+    <!-- update20: UDP Support -->
+    <string name="sw_udp">UDP Support</string>
+    <string name="sw_udp_sub">On (default): UDP is carried through the tunnel (voice and video calls, games, QUIC) and your block/direct rules are applied to every UDP packet too. Off: no UDP is sent at all; TCP, the VPN and the Kill Switch are not affected. Applied at once while the app\'s routing front runs, otherwise at the next connect.</string>
+    <string name="udp_off_dns_note">With UDP off, names are answered by the app\'s own DNS (IPv4 only) and travel over TCP. Apps that need UDP (calls, QUIC) will not work.</string>
+    <string name="udp_chain_note">Psiphon and Tor carry TCP only, so UDP is refused while one of them is the chain. Use a custom (sing-box) chain whose server supports UDP.</string>
+    <string name="diag_sec_udp">UDP</string>
+    <string name="diag_udp_setting">UDP Support</string>
+    <string name="diag_udp_enabled">Enabled</string>
+    <string name="diag_udp_disabled">Disabled</string>
+    <string name="diag_udp_effect">In effect</string>
+    <string name="diag_udp_active">Active associations</string>
+    <string name="diag_udp_refused">Refused associations</string>
+    <string name="diag_udp_dropped">Dropped packets</string>
+    <string name="diag_udp_dropped_detail">Blocked by rule %1$d, guard %2$d, malformed %3$d, no upstream/lookup %4$d, queue full %5$d</string>
+    <string name="diag_udp_not_connected">Connect to see what UDP is doing.</string>
+    <string name="diag_udp_no_counters">No counters: no routing front runs, so the VPN talks UDP to the upstream itself.</string>
+    <string name="diag_udp_state_off">Off: UDP is refused</string>
+    <string name="diag_udp_state_relay">On: rules apply to every packet</string>
+    <string name="diag_udp_state_direct">On: straight to the upstream (no rules to apply)</string>
+    <string name="diag_udp_state_chain">Refused: this chain carries TCP only</string>
+    <string name="diag_udp_state_pending_on">Turns on at the next connect</string>
+    <string name="diag_udp_state_pending_off">Turns off at the next connect</string>
 </resources>

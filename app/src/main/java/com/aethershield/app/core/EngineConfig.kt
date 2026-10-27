@@ -195,7 +195,14 @@ data class EngineConfig(
     /** MASQUE server name in the ClientHello (AETHER_MASQUE_SNI). "" = the core's own www.cloudflare.com. See [MasqueSni]. */
     val masqueSni: String = "",
     /** One-choice TLS fingerprint tuning for the handshakes (see [TlsPreset]). */
-    val tlsPreset: TlsPreset = TlsPreset.DEFAULT
+    val tlsPreset: TlsPreset = TlsPreset.DEFAULT,
+
+    /**
+     * update20 "UDP Support". On (default): UDP is carried, with the routing rules applied to every datagram
+     * ([UdpRelay]). Off: no UDP association is ever made, nothing UDP is sent out of the phone and DNS is answered by
+     * hev's mapped DNS; TCP and the VPN work as before. Independent of the Kill Switch.
+     */
+    val udpEnabled: Boolean = true
 ) {
     /** DoH switched on AND at least one resolver written. */
     val dohEnabled: Boolean get() = dohOn && dohResolvers.isNotEmpty()
@@ -206,6 +213,13 @@ data class EngineConfig(
      */
     val dohActive: Boolean
         get() = dohEnabled && !(effectiveChain == PrivacyChain.TOR && !dohViaTor)
+
+    /**
+     * hev answers DNS itself (names instead of fake IPs). Needed for DoH and for the chains, and forced on when UDP is
+     * off, because without UDP the phone's DNS (plain UDP 53) could not reach any resolver. See [FrontPlan.mappedDns].
+     */
+    val mappedDnsActive: Boolean
+        get() = dohActive || effectiveChain != PrivacyChain.NONE || !udpEnabled
 
     /** The chain that will really run (none for SMART). */
     val effectiveChain: PrivacyChain

@@ -22,6 +22,22 @@ app's local SOCKS ports and whether they ask for a password, prints the exit add
 question over SOCKS5 UDP ASSOCIATE to tell apart "the app refuses UDP" (reply 0x07), "the chain or server drops UDP"
 (no answer) and "UDP works". It ends with the manual Kill Switch steps. It changes nothing and uses only the standard library.
 
+## UDP Support and per-packet rules (update20)
+
+Settings > Protection > **UDP Support** (on by default, kept across restarts).
+
+- **On**: UDP (calls, games, QUIC) is carried. When the app's routing front runs (local DoH, rules with a chain, or UDP off),
+  UDP goes through `UdpRelay`: every datagram is checked by the same rules as TCP (Block = dropped, Direct = sent from the
+  app's own socket outside the VPN, Proxy = through the upstream). Names come from hev's mapped DNS, so domain rules work.
+  A proxy that fails never turns into Direct: the datagram is dropped and counted. Without a front (default setup) hev talks
+  UDP to the upstream itself and the core applies the rules, as before.
+- **Off**: every SOCKS5 UDP ASSOCIATE is refused (0x07), no UDP socket or thread exists and nothing UDP leaves the phone.
+  TCP, the VPN and the Kill Switch are unchanged. DNS is answered by hev's mapped DNS (IPv4 only) and the name travels over TCP.
+  Applied at once while the front runs, otherwise at the next connect (Diagnostics says which).
+- **Psiphon / Tor** carry TCP only: UDP is refused there, with either setting. A custom (sing-box) chain carries UDP if the
+  server does (a VLESS server on Cloudflare Workers usually cannot carry call traffic).
+- Diagnostics > UDP shows Enabled/Disabled, what is in effect, active associations and dropped packets with the reason.
+
 ## TLS look and MASQUE server name (update19)
 
 Settings has a folded card "TLS look and server name". Both choices are off by default, and with the defaults no new

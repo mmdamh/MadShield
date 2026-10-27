@@ -192,12 +192,18 @@ class EngineProcessManager(private val context: Context) {
         // Who owns which port, and whether RouteFront runs at all (see FrontPlan). With a chain on and no local
         // DoH this is exactly update10: the front only exists when routing rules need it.
         val dohActive = config.dohActive
-        val ruleMatcher = if (routesFile != null && (chain != PrivacyChain.NONE || dohActive)) RouteMatcher.fromFile(routesFile) else null
-        val plan = FrontPlan.of(chain, dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort)
+        val ruleMatcher = if (routesFile != null) RouteMatcher.fromFile(routesFile) else null
+        val plan = FrontPlan.of(chain, dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort, config.udpEnabled)
         probePort = plan.upstreamPort
 
         // DoH resolvers are built BEFORE the engine is launched, so a bad setting can never leave a process behind.
-        val frontOptions: RouteFront.Options? = if (!plan.frontOn) null else if (!plan.localDoh) RouteFront.Options() else {
+        // UDP: the front carries it when the chain can (none / sing-box); with UDP off it only refuses ASSOCIATE.
+        val udpCapable = chain == PrivacyChain.NONE || chain == PrivacyChain.SINGBOX
+        val frontOptions: RouteFront.Options? = if (!plan.frontOn) null else if (!plan.localDoh) {
+            RouteFront.Options(udpCapable = udpCapable, udpOn = config.udpEnabled,
+                // hev's fake addresses only exist in VPN mode (proxy-only has no hev)
+                guardFakeIps = config.mode == ConnectionMode.VPN && config.mappedDnsActive)
+        } else {
             val specs = DohSpec.parseList(config.dohResolvers.joinToString("\n")).valid
             if (specs.isEmpty()) {
                 throw IllegalStateException("Local DoH is on but none of the resolvers is valid. Fix them in the DNS tab.")
@@ -207,7 +213,8 @@ class EngineProcessManager(private val context: Context) {
                 directResolver = if (config.dohForDirect) {
                     FrontResolver(DohTransports.create(specs, null), config.ipMode, config.dohServeStale)
                 } else null,
-                udpPassThrough = plan.udpPassThrough,
+                udpCapable = udpCapable,
+                udpOn = config.udpEnabled,
                 guardFakeIps = true,
                 allowOnion = chain == PrivacyChain.TOR
             )
@@ -591,6 +598,23 @@ class EngineProcessManager(private val context: Context) {
 
     /** Screen off and the tunnel quiet: lets the local DoH client drop its idle connection. Starts no timer. */
     fun onIdle() { front?.onIdle() }
+
+    /**
+     * UDP Support changed while connected. True = applied now (the front exists, so its relay is closed or opened
+     * without touching TCP or the tunnel). False = no front is running (default setup: hev talks to the core
+     * directly), so nothing here can refuse or carry UDP and the new value takes effect at the next connection.
+     */
+    fun applyUdpEnabled(on: Boolean): Boolean {
+        val f = front ?: return false
+        f.setUdpEnabled(on)
+        return true
+    }
+
+    /** What UDP is doing right now, for Diagnostics. Null when no front runs (UDP then goes hev -> upstream directly). */
+    fun udpStats(): UdpStats? = front?.udpStats()
+
+    /** True when the running front carries UDP, false when it refuses it; null without a front. */
+    fun udpCarried(): Boolean? = front?.udpActive
 
     fun stop() {
         pumpJob?.cancel()

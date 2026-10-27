@@ -13,7 +13,7 @@ What it measures (these are the things any OTHER app on the phone could do, beca
   1. Which of the app's local ports answer a SOCKS5 greeting, and whether they ask for a password (they do not).
   2. The exit address seen through the TCP path of the app's SOCKS port.
   3. Whether UDP works through the app: a DNS question sent with SOCKS5 UDP ASSOCIATE.
-        refused 0x07  -> the app itself refuses UDP in this mode (front + chain, see FrontPlan.kt)
+        refused 0x07  -> the app itself refuses UDP: UDP Support is off in Settings, or the chain is Psiphon/Tor (see FrontPlan.kt)
         no answer     -> the app passed it on, but the chain/server dropped it (typical for a vless server on Workers)
         answer        -> UDP works; the exit address of the UDP path is printed too
      UDP is what Telegram voice calls, WhatsApp calls, games and QUIC need.
@@ -223,7 +223,7 @@ def main():
     if all(r == "answer" for r in results):
         print("Result: UDP works through the app.")
     elif "refused" in results:
-        print("Result: the app REFUSES UDP in this mode (reply 0x07). Calls over UDP cannot connect.")
+        print("Result: the app REFUSES UDP (reply 0x07): UDP Support is off, or the chain is Psiphon/Tor. Calls over UDP cannot connect.")
         print("        Chain + DoH or routing rules turn the front on; see FrontPlan.kt. Turn DoH and the rules off to test.")
     elif "silent" in results:
         print("Result: UDP was accepted by the app but nothing came back: the chain or the server drops UDP.")

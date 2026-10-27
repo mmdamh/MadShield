@@ -107,6 +107,9 @@ class AetherVpnService : VpnService() {
         netWatcher = NetworkWatcher(this)
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
+        DiagnosticsHub.udpView = { DiagnosticsHub.UdpView(engine.udpCarried(), engine.udpStats()) }
+        // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
+        scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the tunnel stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
@@ -316,7 +319,9 @@ class AetherVpnService : VpnService() {
         // so name lookups are answered locally and resolved at the chain's exit over TCP.
         // With local DoH (update11) it is hev's mapped DNS in EVERY mode: apps get a fake address, RouteFront
         // receives the NAME and resolves it through DoH. With DoH off, behaviour is exactly update10.
-        val dnsToUse = if (config.effectiveChain != PrivacyChain.NONE || config.dohActive) {
+        // update20: with UDP Support OFF hev's mapped DNS is used too: plain DNS is UDP and no UDP may leave, so hev
+        // answers it locally (names are IPv4-only then) and the name travels over TCP.
+        val dnsToUse = if (config.mappedDnsActive) {
             listOf(Chain.MAPDNS_ADDRESS)
         } else {
             config.dnsResolvers.mapNotNull { DnsConfig.vpnAddress(it) }.distinct()
@@ -380,7 +385,7 @@ class AetherVpnService : VpnService() {
         val file = File(cacheDir, "hev.yaml")
         // Same keys and values as ZedSecure's field-tested hev config (hev's own defaults for
         // everything else; no stack-size or timeout overrides that could starve a session).
-        val mapdns = if (config.effectiveChain == PrivacyChain.NONE && !config.dohActive) "" else """
+        val mapdns = if (!config.mappedDnsActive) "" else """
 
             mapdns:
               address: ${Chain.MAPDNS_ADDRESS}
@@ -693,6 +698,7 @@ class AetherVpnService : VpnService() {
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
+        DiagnosticsHub.udpView = null
         stopBridge()
         engine.stop()
         releaseTun()

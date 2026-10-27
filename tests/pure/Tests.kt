@@ -419,19 +419,19 @@ fun dohTests() {
         val none = PrivacyChain.NONE; val psi = PrivacyChain.PSIPHON; val tor = PrivacyChain.TOR
         val p1 = FrontPlan.of(none, false, false, 1819)
         check("plan: no chain, no DoH: update10 (core on the public port, no front)",
-            !p1.frontOn && p1.corePort == 1819 && p1.chainPort == null && p1.upstreamPort == 1819 && !p1.udpPassThrough && p1.coreGetsRoutes && !p1.localDoh)
+            !p1.frontOn && p1.corePort == 1819 && p1.chainPort == null && p1.upstreamPort == 1819 && !p1.udpRelay && p1.coreGetsRoutes && !p1.localDoh)
         val p1b = FrontPlan.of(none, false, true, 1819)
         check("plan: no chain, rules but no DoH: still no front (the core applies them)", !p1b.frontOn && p1b.corePort == 1819 && p1b.coreGetsRoutes)
         val p2 = FrontPlan.of(psi, false, true, 1819)
-        check("plan: chain + rules, no DoH: update10 front", p2.frontOn && p2.corePort == 1823 && p2.chainPort == 1824 && p2.upstreamPort == 1824 && !p2.udpPassThrough && !p2.coreGetsRoutes && !p2.localDoh)
+        check("plan: chain + rules, no DoH: update10 front", p2.frontOn && p2.corePort == 1823 && p2.chainPort == 1824 && p2.upstreamPort == 1824 && !p2.udpRelay && !p2.coreGetsRoutes && !p2.localDoh)
         val p3 = FrontPlan.of(tor, false, false, 1819)
         check("plan: chain, no rules, no DoH: update10 (chain on the public port)", !p3.frontOn && p3.corePort == 1823 && p3.chainPort == 1819 && p3.upstreamPort == 1819 && p3.coreGetsRoutes)
         val p4 = FrontPlan.of(none, true, false, 1819)
-        check("plan: DoH without a chain: front on, core on 1823, UDP passes through, core keeps the rules",
-            p4.frontOn && p4.corePort == 1823 && p4.chainPort == null && p4.upstreamPort == 1823 && p4.udpPassThrough && p4.coreGetsRoutes && p4.localDoh)
+        check("plan: DoH without a chain: front on, core on 1823, UDP goes through the relay, core keeps the rules",
+            p4.frontOn && p4.corePort == 1823 && p4.chainPort == null && p4.upstreamPort == 1823 && p4.udpRelay && p4.coreGetsRoutes && p4.localDoh)
         val p5 = FrontPlan.of(psi, true, false, 1819)
         check("plan: DoH with Psiphon (no rules): front on, chain on 1824, no UDP, no routes for the core",
-            p5.frontOn && p5.corePort == 1823 && p5.chainPort == 1824 && p5.upstreamPort == 1824 && !p5.udpPassThrough && !p5.coreGetsRoutes && p5.localDoh)
+            p5.frontOn && p5.corePort == 1823 && p5.chainPort == 1824 && p5.upstreamPort == 1824 && !p5.udpRelay && !p5.coreGetsRoutes && p5.localDoh)
         check("plan: DoH with Tor behaves like Psiphon", FrontPlan.of(tor, true, true, 1900).let { it.upstreamPort == 1824 && it.corePort == 1823 && it.frontOn })
         check("plan: the front never shares a port with the core or the chain", listOf(none, psi, tor).all { ch ->
             listOf(false, true).all { d -> listOf(false, true).all { r ->
@@ -591,6 +591,7 @@ fun dohTests() {
         !r.summary().contains("secret") })
 
     routeFrontTests()
+    udpRelayTests()
 }
 
 
@@ -598,13 +599,37 @@ fun dohTests() {
 // RouteFront end to end: a real front on a loopback port, a fake SOCKS5 upstream, a fake DoH transport.
 // ---------------------------------------------------------------------------------------------------
 
-private class FakeUpstream(val rejectIps: Set<String> = emptySet()) {
+/**
+ * [udp]: a real UDP relay behind ASSOCIATE. It echoes every datagram back with the same SOCKS5 header and the payload
+ * prefixed "R:", and records the destination of each ("host:port"). [failUdp]: ASSOCIATE is answered with an error.
+ */
+private class FakeUpstream(val rejectIps: Set<String> = emptySet(), val udp: Boolean = false, val failUdp: Boolean = false) {
     val server = java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
     val port: Int get() = server.localPort
     val requests = java.util.concurrent.ConcurrentLinkedQueue<String>()
-    val udpBnd = byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, 0x15, 0xB3.toByte()) // 127.0.0.1:5555
+    val udpSeen = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    val udpSock: java.net.DatagramSocket? = if (udp) java.net.DatagramSocket(0, java.net.InetAddress.getByName("127.0.0.1")) else null
+    val udpBnd = byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, 0x15, 0xB3.toByte()).also {
+        udpSock?.let { u -> it[8] = (u.localPort shr 8).toByte(); it[9] = u.localPort.toByte() } // 127.0.0.1:5555 unless real
+    }
     val controlClosed = java.util.concurrent.CountDownLatch(1)
     init {
+        udpSock?.let { u ->
+            Thread {
+                val b = ByteArray(65535)
+                while (!u.isClosed) {
+                    val pk = java.net.DatagramPacket(b, b.size)
+                    try { u.receive(pk) } catch (_: Exception) { break }
+                    val n = pk.length
+                    val hs = when (b[3].toInt()) { 1 -> 10; 4 -> 22; else -> 7 + (b[4].toInt() and 0xff) }
+                    val host = when (b[3].toInt()) { 1 -> (4..7).joinToString(".") { (b[it].toInt() and 0xff).toString() }; 3 -> String(b, 5, b[4].toInt() and 0xff); else -> "v6" }
+                    val prt = ((b[hs - 2].toInt() and 0xff) shl 8) or (b[hs - 1].toInt() and 0xff)
+                    udpSeen.add("$host:$prt")
+                    val out = b.copyOfRange(0, hs) + "R:".toByteArray() + b.copyOfRange(hs, n)
+                    try { u.send(java.net.DatagramPacket(out, out.size, pk.socketAddress)) } catch (_: Exception) { }
+                }
+            }.apply { isDaemon = true }.start()
+        }
         Thread {
             while (!server.isClosed) {
                 val c = try { server.accept() } catch (_: Exception) { break }
@@ -625,7 +650,9 @@ private class FakeUpstream(val rejectIps: Set<String> = emptySet()) {
             }
             val pb = rd(i, 2); val prt = ((pb[0].toInt() and 0xff) shl 8) or (pb[1].toInt() and 0xff)
             if (h[1].toInt() == 3) {
-                requests.add("UDP"); o.write(udpBnd); o.flush()
+                requests.add("UDP")
+                if (failUdp) { o.write(byteArrayOf(5, 5, 0, 1, 0, 0, 0, 0, 0, 0)); o.flush(); return }
+                o.write(udpBnd); o.flush()
                 try { while (i.read() >= 0) { } } catch (_: Exception) { }
                 controlClosed.countDown()
                 return
@@ -637,7 +664,7 @@ private class FakeUpstream(val rejectIps: Set<String> = emptySet()) {
             while (true) { val n = i.read(buf); if (n < 0) break; o.write(buf, 0, n); o.flush() }
         } catch (_: Exception) { } finally { try { c.close() } catch (_: Exception) { } }
     }
-    fun close() { try { server.close() } catch (_: Exception) { } }
+    fun close() { try { server.close() } catch (_: Exception) { }; udpSock?.close() }
 }
 
 /** Plain TCP echo server: the target of DIRECT connections. */
@@ -786,23 +813,17 @@ fun routeFrontTests() {
         check("front: at most three addresses are tried, then the upstream's error is reported", code2 == 5 && up2.requests.size == 3)
         f2.stop(); up2.close()
     }
-    // --- UDP
+    // --- UDP ASSOCIATE: refusals (the carried case is in udpRelayTests)
     run {
-        val up = FakeUpstream(); val (f, port) = front(up, FrontResolver(transportFor("1.1.1.1")), RouteFront.Options(resolver = FrontResolver(transportFor("1.1.1.1")), udpPassThrough = true, guardFakeIps = true))
-        val (code, s) = socks(port, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0))
-        check("front: UDP ASSOCIATE is relayed and the upstream's reply (its relay address) comes back byte for byte", code == 0 && lastReply.contentEquals(up.udpBnd) && up.requests.toList() == listOf("UDP"))
-        s.close()
-        check("front: closing the control connection ends the association upstream", up.controlClosed.await(3, java.util.concurrent.TimeUnit.SECONDS))
-        f.stop(); up.close()
         val up2 = FakeUpstream(); val (f2, port2) = front(up2, FrontResolver(transportFor("1.1.1.1")))
         val (code2, s2) = socks(port2, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); s2.close()
-        check("front: UDP ASSOCIATE with a chain (no pass-through) is refused with 0x07", code2 == 7 && up2.requests.isEmpty())
+        check("front: UDP ASSOCIATE on a chain that cannot carry UDP (udpCapable=false) is refused with 0x07", code2 == 7 && up2.requests.isEmpty())
         f2.stop(); up2.close()
         val up3 = FakeUpstream(); val (f3, port3) = front(up3, null, RouteFront.Options())
         val (code3, s3) = socks(port3, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); s3.close()
         check("front: update10 behaviour for UDP is unchanged (0x07)", code3 == 7)
         f3.stop(); up3.close()
-        val up4 = FakeUpstream(); val (f4, port4) = front(up4, null, RouteFront.Options(udpPassThrough = true))
+        val up4 = FakeUpstream(); val (f4, port4) = front(up4, null, RouteFront.Options(udpCapable = true))
         val (code4, s4) = socks(port4, byteArrayOf(5, 4, 0, 1, 0, 0, 0, 0, 0, 0)); s4.close()
         check("front: an unknown command is 0x07", code4 == 7 && up4.requests.isEmpty())
         f4.stop(); up4.close()
@@ -1131,7 +1152,8 @@ fun routeFrontTests() {
             val a = FrontPlan.of(chain, false, false, 1819)
             val b = FrontPlan.of(chain, true, false, 1819)
             check("plan $chain: no front -> chain on the public port, core underneath", !a.frontOn && a.chainPort == 1819 && a.corePort == Chain.UNDERLAY_PORT && a.upstreamPort == 1819)
-            check("plan $chain: with front -> chain on 1824, UDP refused", b.frontOn && b.chainPort == Chain.CHAIN_PORT && b.upstreamPort == Chain.CHAIN_PORT && !b.udpPassThrough && !b.coreGetsRoutes)
+            check("plan $chain: with front -> chain on 1824, UDP via the relay only for sing-box (Psiphon/Tor refuse it)",
+                b.frontOn && b.chainPort == Chain.CHAIN_PORT && b.upstreamPort == Chain.CHAIN_PORT && b.udpRelay == (chain == PrivacyChain.SINGBOX) && !b.coreGetsRoutes)
         }
         val sbCfg = EngineConfig(protocol = Protocol.WIREGUARD, privacyChain = PrivacyChain.SINGBOX)
         val sbPlan = FrontPlan.of(sbCfg.effectiveChain, false, false, sbCfg.socksPort)
@@ -1337,5 +1359,283 @@ fun linkProfileTests() {
         val secure = ProxyLink.parse("vless://11111111-1111-4111-8111-111111111111@example.com:443?security=tls&type=ws&path=%2Fa")
         check("update19: a link with allowInsecure is recognised (and still parses)", insecure is LinkParse.Ok && ProxyLink.isInsecure(insecure))
         check("update19: a normal link is not flagged", secure is LinkParse.Ok && !ProxyLink.isInsecure(secure))
+    }
+}
+
+
+// ====================================================================== UDP relay (update20)
+
+private fun udpHdrName(name: String, port: Int) = byteArrayOf(0, 0, 0, 3, name.length.toByte()) + name.toByteArray() + w16(port)
+private fun udpHdrIp(ip: String, port: Int) = byteArrayOf(0, 0, 0, 1) + ip.split('.').map { it.toInt().toByte() }.toByteArray() + w16(port)
+
+/** One SOCKS5 UDP ASSOCIATE through [frontPort]: the reply code, the control socket and a datagram socket aimed at the BND port. */
+private class UdpFlow(frontPort: Int) {
+    val code: Int
+    val ctrl: java.net.Socket
+    val sock = java.net.DatagramSocket(0, java.net.InetAddress.getByName("127.0.0.1"))
+    init {
+        val (c, s) = socks(frontPort, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0))
+        code = c; ctrl = s
+        if (c == 0) {
+            val port = ((lastReply[8].toInt() and 0xff) shl 8) or (lastReply[9].toInt() and 0xff)
+            sock.connect(java.net.InetAddress.getByName("127.0.0.1"), port)
+            sock.soTimeout = 1500
+        }
+    }
+    fun send(header: ByteArray, payload: String) { val b = header + payload.toByteArray(); sock.send(java.net.DatagramPacket(b, b.size)) }
+    /** The datagram that comes back, or null after [ms] of silence. */
+    fun recv(ms: Int = 1500): ByteArray? = try {
+        sock.soTimeout = ms
+        val pk = java.net.DatagramPacket(ByteArray(2048), 2048); sock.receive(pk); pk.data.copyOf(pk.length)
+    } catch (_: java.net.SocketTimeoutException) { null } catch (_: java.io.IOException) { null }
+    fun ctrlClosedWithin(ms: Int): Boolean = try { ctrl.soTimeout = ms; ctrl.getInputStream().read() < 0 } catch (_: java.net.SocketTimeoutException) { false } catch (_: java.io.IOException) { true }
+    fun close() { try { ctrl.close() } catch (_: Exception) { }; sock.close() }
+}
+
+private fun relayThreads(): Int = Thread.getAllStackTraces().keys.count { it.name == "udp-relay" && it.isAlive }
+private fun waitFor(ms: Long, cond: () -> Boolean): Boolean { val end = System.currentTimeMillis() + ms; while (System.currentTimeMillis() < end) { if (cond()) return true; Thread.sleep(20) }; return cond() }
+
+/** A UDP echo server standing in for a DIRECT destination; counts what reaches it. */
+private class UdpDirectServer {
+    val sock = java.net.DatagramSocket(0, java.net.InetAddress.getByName("127.0.0.1"))
+    val port: Int get() = sock.localPort
+    val got = java.util.concurrent.atomic.AtomicInteger()
+    init {
+        Thread {
+            val b = ByteArray(2048)
+            while (!sock.isClosed) {
+                val pk = java.net.DatagramPacket(b, b.size)
+                try { sock.receive(pk) } catch (_: Exception) { break }
+                got.incrementAndGet()
+                val out = "D:".toByteArray() + b.copyOf(pk.length)
+                try { sock.send(java.net.DatagramPacket(out, out.size, pk.socketAddress)) } catch (_: Exception) { }
+            }
+        }.apply { isDaemon = true }.start()
+    }
+    fun close() = sock.close()
+}
+
+fun udpRelayTests() {
+    val rules = RouteMatcher.parse("[block]\nblocked.example\n198.51.100.7\n[direct]\ndirect.example\n127.0.0.1\n")
+    val tun = UdpRelay.Tuning(idleMs = 120_000L, upstreamRetryMs = 200L, refuseLoopback = false)
+    fun mk(up: FakeUpstream, opts: RouteFront.Options, matcher: RouteMatcher = rules, logs: MutableList<String> = ArrayList()): Pair<RouteFront, Int> {
+        val port = freePort()
+        val f = RouteFront(port, up.port, matcher, opts) { synchronized(logs) { logs.add(it) } }
+        f.start(); return f to port
+    }
+    fun transportFor(ip: String, calls: MutableList<String>? = null) = FakeTransport { q ->
+        calls?.add(qnameOf(q))
+        val it = ip.split('.').map { x -> x.toInt() }
+        mkResp(qnameOf(q), qtypeOf(q), answers = if (qtypeOf(q) == 1) listOf(rr(12, 1, 120, a4(it[0], it[1], it[2], it[3]))) else emptyList())
+    }
+    fun body(r: ByteArray?, hs: Int = 10): String = if (r == null) "" else String(r, hs, r.size - hs)
+
+    // --- PROXY to an IP: carried through the upstream, in both directions; one upstream association for many datagrams
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        check("udp: ASSOCIATE answered with a loopback relay address", fl.code == 0 && lastReply[3].toInt() == 1 && lastReply[4].toInt() == 127)
+        check("udp: nothing is opened upstream before the first datagram", up.requests.isEmpty())
+        fl.send(udpHdrIp("93.184.216.34", 443), "one"); val r1 = fl.recv()
+        fl.send(udpHdrIp("93.184.216.34", 443), "two"); val r2 = fl.recv()
+        check("udp: PROXY datagram reaches the upstream and the answer comes back with its header",
+            body(r1) == "R:one" && body(r2) == "R:two" && r1!!.copyOf(10).contentEquals(udpHdrIp("93.184.216.34", 443)))
+        check("udp: one upstream association serves every datagram of the flow", up.requests.toList() == listOf("UDP") && up.udpSeen.toList() == listOf("93.184.216.34:443", "93.184.216.34:443"))
+        waitFor(1000) { f.udpStats().fromUpstream == 2L } // the counter moves just after the client got the datagram
+        val st = f.udpStats()
+        check("udp: stats count the datagrams and the association", st.active == 1 && st.opened == 1L && st.toUpstream == 2L && st.fromUpstream == 2L && st.droppedTotal == 0L)
+        fl.close()
+        check("udp: closing the control connection ends the association upstream too", up.controlClosed.await(3, java.util.concurrent.TimeUnit.SECONDS))
+        check("udp: with no association left the relay thread ends", waitFor(3000) { relayThreads() == 0 && f.udpStats().active == 0 })
+        f.stop(); up.close()
+    }
+    // --- BLOCK by name and by IP: dropped, nothing opened, nothing sent anywhere
+    run {
+        val up = FakeUpstream(udp = true); val dir = UdpDirectServer()
+        val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrName("blocked.example", 443), "x"); fl.send(udpHdrIp("198.51.100.7", 443), "y")
+        check("udp: a BLOCK rule (name and IP) drops the datagram: no answer", fl.recv(600) == null)
+        check("udp: ... and nothing is opened or sent upstream or direct", up.requests.isEmpty() && up.udpSeen.isEmpty() && dir.got.get() == 0)
+        check("udp: ... and the drop is counted as a rule block", waitFor(1000) { f.udpStats().droppedBlocked == 2L }.also { if (!it) println("   stats: ${f.udpStats()}") })
+        fl.close(); f.stop(); up.close(); dir.close()
+    }
+    // --- DIRECT: from the app's own socket; the upstream is never contacted
+    run {
+        val up = FakeUpstream(udp = true); val dir = UdpDirectServer()
+        val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("127.0.0.1", dir.port), "hi"); val r = fl.recv()
+        check("udp: a DIRECT rule sends the datagram straight out and returns the answer with the right header",
+            body(r) == "D:hi" && r!!.copyOf(10).contentEquals(udpHdrIp("127.0.0.1", dir.port)))
+        check("udp: ... without touching the upstream", up.requests.isEmpty() && up.udpSeen.isEmpty())
+        val st = f.udpStats()
+        check("udp: direct counters", st.toDirect == 1L && st.fromDirect == 1L && st.toUpstream == 0L)
+        fl.close(); f.stop(); up.close(); dir.close()
+    }
+    // --- names: without DoH the NAME goes upstream unresolved
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrName("example.com", 443), "q"); val r = fl.recv()
+        check("udp: a PROXY name without DoH is forwarded as a name", r != null && up.udpSeen.toList() == listOf("example.com:443") && body(r, r.size - 3) == "R:q")
+        fl.close(); f.stop(); up.close()
+    }
+    // --- names with DoH: PROXY names are resolved by the app (cached), DIRECT names by the direct resolver
+    run {
+        val up = FakeUpstream(udp = true); val dir = UdpDirectServer(); val calls = ArrayList<String>(); val dcalls = ArrayList<String>()
+        val opts = RouteFront.Options(
+            resolver = FrontResolver(transportFor("93.184.216.34", calls)), directResolver = FrontResolver(transportFor("127.0.0.1", dcalls)),
+            udpCapable = true, udpTuning = tun, guardFakeIps = true
+        )
+        val (f, port) = mk(up, opts)
+        val fl = UdpFlow(port)
+        fl.send(udpHdrName("example.com", 443), "a"); val r1 = fl.recv(); fl.send(udpHdrName("example.com", 443), "b"); val r2 = fl.recv()
+        check("udp: with DoH a PROXY name reaches the upstream as an IP", r1 != null && r2 != null && up.udpSeen.toList() == listOf("93.184.216.34:443", "93.184.216.34:443"))
+        check("udp: ... resolved once for the whole flow", calls.count { it == "example.com" } == 1)
+        fl.send(udpHdrName("direct.example", dir.port), "d"); val r3 = fl.recv()
+        check("udp: with DoH-for-direct a DIRECT name is resolved by the direct resolver and sent from the app", r3 != null && body(r3, r3.size - 3) == "D:d" && dir.got.get() == 1 && dcalls.contains("direct.example"))
+        check("udp: ... the reply carries an IP header", r3 != null && r3[3].toInt() == 1)
+        fl.close(); f.stop(); up.close(); dir.close()
+    }
+    // --- guard: stale fake IPs, malformed and fragmented packets
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun, guardFakeIps = true))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("100.64.0.9", 443), "stale")                         // hev forgot its name
+        fl.send(udpHdrIp("224.0.0.251", 5353), "mdns")                         // multicast
+        fl.send(byteArrayOf(0, 0, 1, 1, 1, 2, 3, 4, 0, 80), "frag")            // FRAG != 0
+        fl.send(byteArrayOf(0, 0, 0, 9, 1, 2), "junk")                         // bad ATYP
+        check("udp: stale fake IP, multicast, fragments and junk are dropped, nothing is sent", fl.recv(600) == null && up.requests.isEmpty())
+        waitFor(1000) { f.udpStats().droppedTotal == 4L }
+        val st = f.udpStats()
+        check("udp: each drop is counted under its reason", st.droppedGuard == 2L && st.droppedBadPacket == 2L)
+        fl.close(); f.stop(); up.close()
+    }
+    // --- a proxy that fails must NOT become a leak: no fallback to DIRECT
+    run {
+        val dir = UdpDirectServer(); val logs = ArrayList<String>()
+        val up = FakeUpstream(udp = true, failUdp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun), logs = logs)
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("93.184.216.34", 443), "a")
+        check("udp: upstream refuses ASSOCIATE -> the datagram is dropped, no answer", fl.recv(800) == null)
+        check("udp: ... and it is NOT sent direct instead", dir.got.get() == 0 && up.udpSeen.isEmpty())
+        check("udp: ... the drop is counted and logged once without any destination",
+            waitFor(1000) { f.udpStats().droppedNoUpstream >= 1L } && synchronized(logs) { logs.count { it.contains("never sent direct") } == 1 && logs.none { it.contains("93.184") } })
+        fl.close(); f.stop(); up.close()
+        // upstream gone altogether
+        val up2 = FakeUpstream(udp = true); val (f2, port2) = mk(up2, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        up2.close()
+        val fl2 = UdpFlow(port2)
+        fl2.send(udpHdrIp("93.184.216.34", 443), "b")
+        check("udp: upstream down -> dropped, not direct", fl2.recv(800) == null && waitFor(1000) { f2.udpStats().droppedNoUpstream >= 1L } && dir.got.get() == 0)
+        fl2.close(); f2.stop(); dir.close()
+    }
+    // --- UDP switched OFF while connected: associations end at once, new ones are refused, TCP is untouched; ON again works
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("93.184.216.34", 443), "a"); fl.recv()
+        check("udp live: before switching off there is one association and one relay thread", f.udpStats().active == 1 && relayThreads() == 1 && f.udpActive)
+        f.setUdpEnabled(false)
+        check("udp live: switching off closes the control connection", fl.ctrlClosedWithin(2000))
+        check("udp live: ... frees the association and ends the relay thread", waitFor(3000) { f.udpStats().active == 0 && relayThreads() == 0 })
+        check("udp live: ... and the upstream's side is closed too", up.controlClosed.await(3, java.util.concurrent.TimeUnit.SECONDS))
+        val before = up.udpSeen.size
+        try { fl.send(udpHdrIp("93.184.216.34", 443), "late") } catch (_: Exception) { }
+        check("udp live: datagrams sent after switching off get no answer and reach no one", fl.recv(500) == null && up.udpSeen.size == before)
+        val (code, s2) = socks(port, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); s2.close()
+        check("udp live: a new ASSOCIATE is refused with 0x07 and counted", code == 7 && f.udpStats().refusedAssociations == 1L && !f.udpActive)
+        val (tc, ts) = socks(port, reqIp("93.184.216.34", 443))
+        check("udp live: TCP through the same front still works while UDP is off", tc == 0 && echoOk(ts)); ts.close()
+        f.setUdpEnabled(true)
+        val fl2 = UdpFlow(port)
+        fl2.send(udpHdrIp("93.184.216.34", 443), "back"); val r = fl2.recv()
+        check("udp live: switching on again accepts and carries UDP", fl2.code == 0 && body(r) == "R:back")
+        fl2.close(); fl.close(); f.stop(); up.close()
+    }
+    // --- started with UDP OFF: refused, no UDP socket or thread exists, TCP works
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpOn = false, udpTuning = tun))
+        val (code, s) = socks(port, byteArrayOf(5, 3, 0, 1, 0, 0, 0, 0, 0, 0)); s.close()
+        check("udp off: ASSOCIATE is refused (0x07) and the upstream is never contacted", code == 7 && up.requests.isEmpty() && f.udpStats().refusedAssociations == 1L)
+        check("udp off: no relay thread and no association exist", relayThreads() == 0 && f.udpStats().active == 0 && f.udpStats().opened == 0L)
+        val (tc, ts) = socks(port, reqIp("93.184.216.34", 443))
+        check("udp off: TCP works normally", tc == 0 && echoOk(ts)); ts.close()
+        f.stop(); up.close()
+    }
+    // --- idle: the association ends by itself, the thread with it
+    run {
+        val up = FakeUpstream(udp = true)
+        val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = UdpRelay.Tuning(idleMs = 400L, refuseLoopback = false)))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("93.184.216.34", 443), "a"); fl.recv()
+        check("udp idle: an idle association is closed after the idle timeout", fl.ctrlClosedWithin(4000))
+        check("udp idle: ... its sockets and the relay thread are gone", waitFor(3000) { relayThreads() == 0 && f.udpStats().active == 0 })
+        fl.close(); f.stop(); up.close()
+    }
+    // --- many flows: still ONE relay thread; stop() ends everything
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val flows = (1..20).map { UdpFlow(port) }
+        flows.forEachIndexed { i, fl -> fl.send(udpHdrIp("93.184.216.34", 443), "m$i") }
+        val answered = flows.count { it.recv() != null }
+        check("udp: 20 flows are all answered", answered == 20)
+        check("udp: ... by ONE relay thread", relayThreads() == 1 && f.udpStats().active == 20)
+        f.stop()
+        check("udp: stop() ends every association and the relay thread", waitFor(3000) { relayThreads() == 0 } && flows.all { it.ctrlClosedWithin(1000) })
+        flows.forEach { it.close() }; up.close()
+    }
+    // --- the relay only listens to one client port
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("93.184.216.34", 443), "a"); fl.recv()
+        val other = java.net.DatagramSocket(0, java.net.InetAddress.getByName("127.0.0.1"))
+        val b = udpHdrIp("93.184.216.34", 443) + "intruder".toByteArray()
+        other.send(java.net.DatagramPacket(b, b.size, fl.sock.remoteSocketAddress)); other.close()
+        Thread.sleep(300)
+        check("udp: a datagram from another local port is not relayed", up.udpSeen.size == 1)
+        fl.close(); f.stop(); up.close()
+    }
+
+    // --- churn: associations opened and closed in a tight loop (the relay thread starts and ends again and again)
+    run {
+        val up = FakeUpstream(udp = true); val (f, port) = mk(up, RouteFront.Options(udpCapable = true, udpTuning = tun))
+        var allOpened = true
+        for (i in 1..150) {
+            val fl = UdpFlow(port)
+            if (fl.code != 0) allOpened = false
+            if (i % 3 == 0) fl.send(udpHdrIp("93.184.216.34", 443), "c$i")
+            fl.close()
+        }
+        check("udp churn: 150 open/close cycles all succeed", allOpened)
+        check("udp churn: everything is released afterwards", waitFor(5000) { f.udpStats().active == 0 && relayThreads() == 0 })
+        val fl = UdpFlow(port)
+        fl.send(udpHdrIp("93.184.216.34", 443), "after"); val r = fl.recv()
+        check("udp churn: the relay still works after the churn", fl.code == 0 && body(r) == "R:after")
+        fl.close(); f.stop(); up.close()
+    }
+
+    // --- pure: status text, plan
+    run {
+        val none = PrivacyChain.NONE; val sb = PrivacyChain.SINGBOX; val psi = PrivacyChain.PSIPHON
+        check("status: front carrying UDP is RELAY", UdpStatus.of(true, sb, true, true, true) == UdpState.RELAY)
+        check("status: setting off with a front is OFF", UdpStatus.of(false, none, true, false, false) == UdpState.OFF)
+        check("status: no front, setting on, started on -> straight to the upstream", UdpStatus.of(true, none, false, false, true) == UdpState.UPSTREAM_DIRECT)
+        check("status: no front, setting turned off -> applies at the next connect", UdpStatus.of(false, none, false, false, true) == UdpState.PENDING_OFF)
+        check("status: no front, setting turned on after starting off -> PENDING_ON", UdpStatus.of(true, none, false, false, false) == UdpState.PENDING_ON)
+        check("status: Psiphon/Tor refuse UDP", UdpStatus.of(true, psi, true, false, true) == UdpState.CHAIN_REFUSES && UdpStatus.of(true, PrivacyChain.TOR, false, false, true) == UdpState.CHAIN_REFUSES)
+        val off = FrontPlan.of(none, false, false, 1819, udpEnabled = false)
+        check("plan: UDP off without anything else still starts the front (only it can refuse ASSOCIATE) and forces hev's DNS",
+            off.frontOn && !off.udpRelay && off.mappedDns && off.corePort == Chain.UNDERLAY_PORT && off.coreGetsRoutes)
+        check("plan: UDP on, no DoH, no chain: no front, plain DNS as before", FrontPlan.of(none, false, false, 1819).let { !it.frontOn && !it.mappedDns })
+        check("plan: sing-box with rules: relay on; UDP off turns it off", FrontPlan.of(sb, false, true, 1819).udpRelay && !FrontPlan.of(sb, false, true, 1819, udpEnabled = false).udpRelay)
+        check("plan: sing-box without rules and DoH: no front, hev -> sing-box directly", FrontPlan.of(sb, false, false, 1819).let { !it.frontOn && !it.udpRelay })
+        val cfgOff = EngineConfig(udpEnabled = false); val cfgOn = EngineConfig()
+        check("config: UDP on by default, mapped DNS only when needed", cfgOn.udpEnabled && !cfgOn.mappedDnsActive && cfgOff.mappedDnsActive)
+        check("config: mappedDnsActive agrees with the plan", listOf(none, sb, psi, PrivacyChain.TOR).all { ch -> listOf(false, true).all { d -> listOf(false, true).all { u ->
+            val c = EngineConfig(protocol = Protocol.WIREGUARD, privacyChain = ch, dohOn = d, dohResolvers = if (d) listOf("https://1.1.1.1/dns-query") else emptyList(), udpEnabled = u)
+            c.mappedDnsActive == FrontPlan.of(c.effectiveChain, c.dohActive, false, c.socksPort, u).mappedDns } } })
     }
 }

@@ -9,7 +9,9 @@ import com.aethershield.app.MainActivity
 import com.aethershield.app.R
 import com.aethershield.app.util.RingLogBuffer
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 
 /**
  * Proxy-only mode: runs just the engine, no VpnService, no system-wide
@@ -55,6 +57,9 @@ class ProxyOnlyService : Service() {
         netWatcher = NetworkWatcher(this)
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
+        DiagnosticsHub.udpView = { DiagnosticsHub.UdpView(engine.udpCarried(), engine.udpStats()) }
+        // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
+        scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the proxy stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
@@ -327,6 +332,7 @@ class ProxyOnlyService : Service() {
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
+        DiagnosticsHub.udpView = null
         engine.stop()
         RouteMatcher.clearCache()
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error

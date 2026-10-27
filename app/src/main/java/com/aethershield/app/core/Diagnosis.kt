@@ -307,6 +307,9 @@ class ConnStatsTracker(private val maxEvents: Int = 50) {
  * NOTHING else: no log lines, no IP addresses, no tokens, no traffic content. A redacted log tail is added
  * only when [includeLogTail] is given, and it still passes the redactor.
  */
+/** The UDP part of the report: only counts, never an address or a name. */
+class UdpReport(val settingOn: Boolean, val state: UdpState, val stats: UdpStats?)
+
 object DiagnosticsReport {
     fun render(
         appVersion: String,
@@ -316,7 +319,8 @@ object DiagnosticsReport {
         nowMs: Long,
         rates: RateSummary?,
         includeLogTail: List<String>? = null,
-        redact: (String) -> String
+        redact: (String) -> String,
+        udp: UdpReport? = null
     ): String {
         val sb = StringBuilder()
         sb.append("MadShield diagnostics, version ").append(appVersion).append('\n')
@@ -333,6 +337,21 @@ object DiagnosticsReport {
             sb.append("app cpu: %.0f%% of one core\n".format(Locale.US, rates.appCpuPercent ?: 0.0))
         }
         sb.append("screen: ").append(if (input.screenOn) "on" else "off").append('\n')
+        if (udp != null) {
+            sb.append("udp support: ").append(if (udp.settingOn) "enabled" else "disabled")
+                .append(", in effect: ").append(udp.state.name.lowercase()).append('\n')
+            val u = udp.stats
+            if (u != null) {
+                sb.append("  udp associations: ").append(u.active).append(" active, ").append(u.opened).append(" opened, ")
+                    .append(u.refusedAssociations).append(" refused\n")
+                sb.append("  udp datagrams: ").append(u.toUpstream).append(" out / ").append(u.fromUpstream).append(" in via upstream, ")
+                    .append(u.toDirect).append(" out / ").append(u.fromDirect).append(" in direct\n")
+                sb.append("  udp dropped: ").append(u.droppedTotal).append(" (blocked by rule ").append(u.droppedBlocked)
+                    .append(", guard ").append(u.droppedGuard).append(", bad packet ").append(u.droppedBadPacket)
+                    .append(", no upstream ").append(u.droppedNoUpstream).append(", lookup failed ").append(u.droppedResolve)
+                    .append(", queue full ").append(u.droppedFull).append(")\n")
+            }
+        }
         sb.append("findings:\n")
         if (findings.isEmpty()) sb.append("  none\n")
         for (f in findings) {
