@@ -29,20 +29,6 @@ class NetworkWatcher(private val context: Context) {
     @Volatile var onOffline: (() -> Unit)? = null
 
     /**
-     * The system's current default (real, non-tunnel) network, or null when there is none. Our app is kept outside
-     * its own VPN, so this is the network the tunnel's traffic really leaves on.
-     */
-    @Volatile var currentDefault: Network? = null
-        private set
-
-    /**
-     * Called (from a system thread) whenever [currentDefault] changes (null = no network left). The VPN service uses
-     * it to tell Android which network carries the tunnel (VpnService.setUnderlyingNetworks), so the system's
-     * traffic accounting does not count the same bytes again. Event-driven: no timer, no extra callback.
-     */
-    @Volatile var onDefaultNetwork: ((Network?) -> Unit)? = null
-
-    /**
      * False while the phone has no default network at all (data off, airplane mode, Wi-Fi gone). True at the
      * start and whenever the callback could not be registered, so a failure here never pauses anything.
      */
@@ -89,8 +75,6 @@ class NetworkWatcher(private val context: Context) {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                currentDefault = network
-                onDefaultNetwork?.invoke(network)
                 if (tracker.available(network)) { // a new network, or the link coming back after "no network"
                     changes.trySend(Unit)
                     onChanged?.invoke()
@@ -98,12 +82,6 @@ class NetworkWatcher(private val context: Context) {
             }
 
             override fun onLost(network: Network) {
-                // On a Wi-Fi/mobile switch the system reports the new network first and the old one lost afterwards:
-                // only clear when the lost network is still the one we hold.
-                if (currentDefault == network) {
-                    currentDefault = null
-                    onDefaultNetwork?.invoke(null)
-                }
                 if (tracker.lost(network)) onOffline?.invoke()
             }
         }
@@ -119,7 +97,6 @@ class NetworkWatcher(private val context: Context) {
     fun stop() {
         val cb = callback ?: return
         callback = null
-        currentDefault = null
         runCatching { context.getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
     }
 

@@ -2,7 +2,6 @@ package com.aethershield.app.vpn
 
 import android.app.*
 import android.content.Intent
-import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -125,7 +124,6 @@ class AetherVpnService : VpnService() {
         userRequestedStop = false
         netWatcher.onChanged = { screen.poke() }
         netWatcher.onOffline = { screen.poke() } // the health loop looks at the network at once, not at the next tick
-        netWatcher.onDefaultNetwork = { applyUnderlyingNetwork(it) }
         netWatcher.start()
         screen.start()
         // Must happen within seconds of startForegroundService(); do it here,
@@ -349,19 +347,6 @@ class AetherVpnService : VpnService() {
         tunFd = builder.establish()
             ?: throw IllegalStateException("Android could not create the VPN interface (permission revoked?)")
         RingLogBuffer.append("[vpn] TUN established (mtu=${config.effectiveMtu}, killSwitch=${config.killSwitchEnabled})")
-        applyUnderlyingNetwork(netWatcher.currentDefault)
-    }
-
-    /**
-     * Tells Android which real network carries the tunnel's traffic. Without it the system cannot match the
-     * tunnel interface to the physical one, and traffic meters that read system statistics (for example
-     * Samsung's Good Lock network speed) may count the same bytes more than once. Called after the TUN exists and
-     * on every default-network change; a no-op while there is no TUN. null = let the system choose.
-     */
-    private fun applyUnderlyingNetwork(network: Network?) {
-        if (tunFd == null) return
-        runCatching { setUnderlyingNetworks(if (network != null) arrayOf(network) else null) }
-            .onFailure { RingLogBuffer.append("[vpn] setUnderlyingNetworks failed: ${it::class.java.simpleName}") }
     }
 
     /** One read per connect: tells the Settings page whether lockdown (Always-on + block without VPN) is on. */
@@ -694,7 +679,6 @@ class AetherVpnService : VpnService() {
         scope.cancel()
         netWatcher.onChanged = null
         netWatcher.onOffline = null
-        netWatcher.onDefaultNetwork = null
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
