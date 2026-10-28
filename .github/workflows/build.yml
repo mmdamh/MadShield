@@ -22,7 +22,9 @@ name: Build MadShield APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # main publishes the normal "Latest" release; test/** branches build too and publish a PRE-release
+    # (never marked Latest) so a test build can be downloaded on a phone without touching the real releases.
+    branches: [main, "test/**"]
 
 # Least privilege: nothing in this workflow may write to the repository, except the separate
 # "release" job at the end, which is the only one with contents: write and has no signing key.
@@ -528,6 +530,9 @@ jobs:
     # Read-only. This job holds the signing key, so it must not be able to publish or write anything.
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.name.outputs.version }}
+      slug: ${{ steps.name.outputs.slug }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -648,11 +653,32 @@ jobs:
           done < app/src/main/assets/native_hashes.properties
           echo "OK: every stamped native file is byte-identical inside the APK"
 
+      # The file is named after the app and its versionName ("MadShield-1.8.3.apk") instead of Gradle's
+      # "app-release.apk". Builds from a branch other than main carry the branch name too, so a test build can
+      # never be mistaken for a normal one. The branch name comes in through env (never pasted into the script)
+      # and is reduced to [A-Za-z0-9._-].
+      - name: Name the APK after the app and its version
+        id: name
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          IS_MAIN: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          version="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n1)"
+          case "$version" in ''|*[!A-Za-z0-9._-]*) echo "ERROR: could not read a sane versionName from app/build.gradle.kts (got '$version')"; exit 1;; esac
+          slug="$(printf '%s' "$REF_NAME" | sed 's/[^A-Za-z0-9._-]/-/g')"
+          if [ "$IS_MAIN" = "true" ]; then apk_name="MadShield-${version}.apk"; else apk_name="MadShield-${version}-${slug}.apk"; fi
+          mkdir -p dist
+          cp "$(ls app/build/outputs/apk/release/*.apk | head -n1)" "dist/${apk_name}"
+          ls -l dist
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MadShield-release
-          path: app/build/outputs/apk/release/*.apk
+          path: dist/*.apk
 
   # Publishing is a separate job on purpose: it is the only one allowed to write to the repository,
   # and it never sees the signing key or the source tree, only the finished APK.
@@ -668,13 +694,18 @@ jobs:
           name: MadShield-release
           path: release-apk
 
-      # Each build gets its own tag (the run number), so nothing collides or overwrites an older release;
-      # "make_latest" keeps the newest one marked Latest.
+      # Each build gets its own tag (the run number), so nothing collides or overwrites an older release.
+      # main: tag v<run>, marked Latest. Any other branch (test/**): tag test-<branch>-<run>, a PRE-release that is
+      # never marked Latest. target_commitish pins the tag to the commit that was built (without it a new tag
+      # would be created on the default branch's head). version and slug come from build-apk, already reduced
+      # to [A-Za-z0-9._-].
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: MadShield build ${{ github.run_number }}
+          tag_name: ${{ github.ref == 'refs/heads/main' && format('v{0}', github.run_number) || format('test-{0}-{1}', needs.build-apk.outputs.slug, github.run_number) }}
+          name: ${{ github.ref == 'refs/heads/main' && format('MadShield {0} (build {1})', needs.build-apk.outputs.version, github.run_number) || format('MadShield {0} test build {1} ({2})', needs.build-apk.outputs.version, github.run_number, needs.build-apk.outputs.slug) }}
+          target_commitish: ${{ github.sha }}
           files: release-apk/*.apk
-          make_latest: true
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+          make_latest: ${{ github.ref == 'refs/heads/main' }}
           generate_release_notes: true
