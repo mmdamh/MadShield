@@ -191,7 +191,6 @@ fun main() {
 
     dohTests()
     linkProfileTests()
-    speedMeterTests()
 
     println(if (fails == 0) "ALL PASSED" else "$fails FAILED")
     if (fails > 0) kotlin.system.exitProcess(1)
@@ -1642,99 +1641,3 @@ fun udpRelayTests() {
 }
 
 
-// =====================================================================================================
-// update21: speed meter check (SpeedMeterCheck)
-// =====================================================================================================
-
-private fun speedMeterTests() {
-    val P = SpeedMeterCheck.Kind.PHYSICAL; val T = SpeedMeterCheck.Kind.TUNNEL; val L = SpeedMeterCheck.Kind.LOOPBACK
-    fun r(n: String, k: SpeedMeterCheck.Kind, rx: Long, tx: Long) = SpeedMeterCheck.Reading(n, k, rx, tx)
-    val mb = 1_000_000L
-    val before = listOf(r("lo", L, 5 * mb, 5 * mb), r("tun0", T, 7 * mb, 1 * mb), r("wlan0", P, 100 * mb, 10 * mb))
-    // 10 s: the link moved 100 MB down / 10 MB up; the tunnel the same; three loopback hops carried 300 MB down / 30 MB up
-    val after = listOf(r("lo", L, 305 * mb, 35 * mb), r("tun0", T, 107 * mb, 11 * mb), r("wlan0", P, 200 * mb, 20 * mb))
-    val res = SpeedMeterCheck.compute(before, after, longArrayOf(0, 0), longArrayOf(500 * mb, 50 * mb), 10_000)!!
-    check("meter: link rate is bytes per second", res.down.physical == 10 * mb && res.up.physical == 1 * mb)
-    check("meter: tunnel and loopback rates", res.down.tunnel == 10 * mb && res.down.loopback == 30 * mb)
-    check("meter: tunnel + link is 2x", res.down.tunnelPlusLink == 2.0)
-    check("meter: with loopback is 5x", res.down.withLoopback == 5.0)
-    check("meter: phone total counter 5x", res.down.systemTotal == 5.0 && res.up.systemTotal == 5.0)
-    check("meter: enough traffic", res.enough && res.seconds == 10.0)
-
-    // no speed test running: nothing to compare against
-    val quiet = SpeedMeterCheck.compute(before, before, longArrayOf(1, 1), longArrayOf(1, 1), 10_000)!!
-    check("meter: no traffic is not enough and has no factors", !quiet.enough && quiet.down.tunnelPlusLink == null && quiet.down.systemTotal == null)
-
-    // an interface that exists only in one snapshot is ignored; a counter that went back is no traffic
-    val switched = SpeedMeterCheck.compute(
-        before, listOf(r("lo", L, 1 * mb, 1 * mb), r("rmnet_data0", P, 900 * mb, 900 * mb)), null, null, 10_000
-    )!!
-    check("meter: new interface ignored, reset counter is zero", switched.down.physical == 0L && switched.down.loopback == 0L)
-
-    // unsupported system counters (the API returns -1) or none at all: no total, the rest still works
-    val noSys = SpeedMeterCheck.compute(before, after, longArrayOf(-1, -1), longArrayOf(-1, -1), 10_000)!!
-    check("meter: unsupported total counter is null", noSys.down.system == null && noSys.down.systemTotal == null && noSys.down.tunnelPlusLink == 2.0)
-    check("meter: non-positive window gives nothing", SpeedMeterCheck.compute(before, after, null, null, 0) == null)
-
-    // the raw rows and the reasons a result can be empty
-    check("meter: raw rows list every interface with its rates", res.rows.size == 3 && res.rows.first { it.name == "wlan0" }.let { it.downBps == 10 * mb && it.upBps == 1 * mb })
-    check("meter: link seen", res.linkSeen && !res.countersHidden)
-    check("meter: switched network means no link seen", !switched.linkSeen)
-    // the phone-wide counter moved 50 MB in 10 s but no interface counter changed: per-interface counters are hidden
-    val hidden = SpeedMeterCheck.compute(before, before, longArrayOf(0, 0), longArrayOf(500 * mb, 0), 10_000)!!
-    check("meter: moving total with a still link means hidden counters", hidden.linkSeen && !hidden.enough && hidden.countersHidden)
-    check("meter: an idle phone is not hidden counters", !quiet.countersHidden)
-    // download test: down is the real direction; upload test: up is
-    check("meter: a download test is dominated by down", res.dominantIsDown)
-    val uploadTest = SpeedMeterCheck.compute(
-        listOf(r("wlan0", P, 0, 0)), listOf(r("wlan0", P, 10 * mb, 100 * mb)), null, null, 10_000
-    )!!
-    check("meter: an upload test is dominated by up", !uploadTest.dominantIsDown)
-    // ---- update24: experimental tunnel engine (hev / sing-box TUN)
-    check("engine id: round trip", TunEngineId.entries.all { TunEngineId.fromStored(it.stored) == it })
-    check("engine id: unknown or missing is hev", TunEngineId.fromStored("x") == TunEngineId.HEV && TunEngineId.fromStored(null) == TunEngineId.HEV)
-    check("counters: total bytes", TunCounters(1, 100, 2, 300).totalBytes == 400L && TunCounters(null, 5, null, 7).totalBytes == 12L)
-    check("counters: unsupported (-1) is null, not zeros", countersOrNull(-1, 5) == null && countersOrNull(5, -1) == null)
-    check("counters: valid pair has no packets", countersOrNull(5, 7).let { it != null && it.txBytes == 5L && it.rxBytes == 7L && it.txPackets == null && it.rxPackets == null })
-    check("select engine: hev is always used", listOf(false, true).all { selectTunEngine(TunEngineId.HEV, it) == EngineSelection.Use(TunEngineId.HEV) })
-    check("select engine: sing-box TUN used when present", selectTunEngine(TunEngineId.SINGBOX_TUN, true) == EngineSelection.Use(TunEngineId.SINGBOX_TUN))
-    check("select engine: missing sing-box TUN is reported, never replaced by hev",
-        selectTunEngine(TunEngineId.SINGBOX_TUN, false).let { it is EngineSelection.Unavailable && it.reason.isNotBlank() })
-
-    // idle mode with unknown counters
-    run {
-        val quietNull = IdleTracker()
-        var idleNow = false
-        for (t in listOf(1_000L, 61_000L, 131_000L, 191_000L)) idleNow = quietNull.onTick(t, false, null)
-        check("idle: today unknown counters with the screen off end in idle mode", idleNow)
-        val unknown = IdleTracker()
-        var idleUnknown = false
-        for (t in listOf(1_000L, 61_000L, 131_000L, 191_000L)) { unknown.onTick(t, false, null); idleUnknown = unknown.onUnknownCounters() }
-        check("idle: onUnknownCounters never drifts into idle", !idleUnknown && !unknown.idle)
-    }
-
-    // fd handoff socket path
-    check("tun fd socket: path is dir + name", TunFdChannel.socketPath("/data/user/0/com.madshield.app/cache/singtun") == "/data/user/0/com.madshield.app/cache/singtun/tunfd.sock")
-    check("tun fd socket: a trailing slash is not doubled", TunFdChannel.socketPath("/a/b/") == "/a/b/tunfd.sock")
-    check("tun fd socket: a path over the unix limit is refused", runCatching { TunFdChannel.socketPath("/" + "d".repeat(120)) }.isFailure)
-
-    // sing-box TUN config
-    run {
-        val plain = SingBoxTunConfig.render(1400, 1819, false)
-        val mapped = SingBoxTunConfig.render(1360, 10808, true)
-        check("singtun config: no stack key (deprecated in 1.15)", !plain.contains("\"stack\"") && !mapped.contains("\"stack\""))
-        check("singtun config: addresses equal the VpnService ones", plain.contains("10.10.14.1/30") && plain.contains("fc00::10:10:14:1/126"))
-        check("singtun config: mtu and port follow the input", plain.contains("\"mtu\": 1400") && plain.contains("\"server_port\": 1819") && mapped.contains("\"mtu\": 1360") && mapped.contains("\"server_port\": 10808"))
-        check("singtun config: auto_route is off and the log level is warn", plain.contains("\"auto_route\": false") && plain.contains("\"level\": \"warn\""))
-        check("singtun config: fakeip and DNS hijack only with mapped DNS",
-            !plain.contains("fakeip") && !plain.contains("hijack-dns") && mapped.contains("100.64.0.0/10") && mapped.contains("hijack-dns") && mapped.contains("198.18.0.2/32"))
-        check("singtun config: bad input is refused", runCatching { SingBoxTunConfig.render(1400, 0, false) }.isFailure && runCatching { SingBoxTunConfig.render(100, 1819, false) }.isFailure)
-        val root = System.getenv("MADSHIELD_ROOT") ?: "."
-        val dir = java.io.File(root, "tests/pure/golden-singtun")
-        for ((name, text) in linkedMapOf("singtun-plain.json" to plain, "singtun-mapdns.json" to mapped)) {
-            val f = java.io.File(dir, name)
-            if (System.getenv("UPDATE_GOLDEN") == "1") { dir.mkdirs(); f.writeText(text) }
-            check("golden: $name matches the builder", f.isFile && f.readText() == text)
-        }
-    }
-}

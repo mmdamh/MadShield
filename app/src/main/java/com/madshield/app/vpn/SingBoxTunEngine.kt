@@ -55,7 +55,7 @@ class SingBoxTunEngine(private val context: Context) : TunEngine {
 
     @Suppress("DEPRECATION")
     override fun counters(): TunCounters? {
-        // Same lookup and the same Android floor as SpeedMeterProbe: the interface of the network with the VPN transport.
+        // The interface of the network with the VPN transport; reading its counters needs Android 12+.
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
         val name = vpnInterface ?: run {
             val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
