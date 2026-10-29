@@ -3,7 +3,7 @@
 # tests/pure/Tests.kt and runs it. Needs `kotlinc` on PATH (or KOTLINC=/path/to/kotlinc) and a JRE.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/app/src/main/java/com/aethershield/app"
+SRC="$ROOT/app/src/main/java/com/madshield/app"
 KOTLINC="${KOTLINC:-kotlinc}"
 OUT="$(mktemp -d)"
 export MADSHIELD_ROOT="$ROOT"   # the golden files are looked up under it

@@ -635,10 +635,10 @@ jobs:
           SYMS="$("$NM" --dynamic --defined-only "$SO")"
           for sym in \
             JNI_OnLoad \
-            Java_com_aethershield_app_vpn_TProxyService_TProxyStartService \
-            Java_com_aethershield_app_vpn_TProxyService_TProxyStopService \
-            Java_com_aethershield_app_vpn_TProxyService_TProxyIsRunning \
-            Java_com_aethershield_app_vpn_TProxyService_TProxyGetStats; do
+            Java_com_madshield_app_vpn_TProxyService_TProxyStartService \
+            Java_com_madshield_app_vpn_TProxyService_TProxyStopService \
+            Java_com_madshield_app_vpn_TProxyService_TProxyIsRunning \
+            Java_com_madshield_app_vpn_TProxyService_TProxyGetStats; do
             echo "$SYMS" | grep -qw "$sym" || { echo "ERROR: $SO missing $sym -- Kotlin externals would not resolve"; exit 1; }
           done
           echo "OK: libaethertun.so exports all Java_* symbols TProxyService.kt declares"

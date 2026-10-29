@@ -1,4 +1,4 @@
-import com.aethershield.app.core.*
+import com.madshield.app.core.*
 
 var fails = 0
 fun check(name: String, ok: Boolean) { if (!ok) { fails++; println("FAIL: $name") } else println("ok:   $name") }
@@ -1714,7 +1714,7 @@ private fun speedMeterTests() {
     }
 
     // fd handoff socket path
-    check("tun fd socket: path is dir + name", TunFdChannel.socketPath("/data/user/0/com.aethershield.app/cache/singtun") == "/data/user/0/com.aethershield.app/cache/singtun/tunfd.sock")
+    check("tun fd socket: path is dir + name", TunFdChannel.socketPath("/data/user/0/com.madshield.app/cache/singtun") == "/data/user/0/com.madshield.app/cache/singtun/tunfd.sock")
     check("tun fd socket: a trailing slash is not doubled", TunFdChannel.socketPath("/a/b/") == "/a/b/tunfd.sock")
     check("tun fd socket: a path over the unix limit is refused", runCatching { TunFdChannel.socketPath("/" + "d".repeat(120)) }.isFailure)
 

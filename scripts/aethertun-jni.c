@@ -92,7 +92,7 @@ tunnel_thread(void *data)
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_aethershield_app_vpn_TProxyService_TProxyStartService(JNIEnv *env,
+Java_com_madshield_app_vpn_TProxyService_TProxyStartService(JNIEnv *env,
                                                                 jclass clazz,
                                                                 jstring config_path,
                                                                 jint tun_fd)
@@ -151,7 +151,7 @@ fail:
 }
 
 JNIEXPORT void JNICALL
-Java_com_aethershield_app_vpn_TProxyService_TProxyStopService(JNIEnv *env, jclass clazz)
+Java_com_madshield_app_vpn_TProxyService_TProxyStopService(JNIEnv *env, jclass clazz)
 {
     (void)env;
     (void)clazz;
@@ -159,7 +159,7 @@ Java_com_aethershield_app_vpn_TProxyService_TProxyStopService(JNIEnv *env, jclas
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_aethershield_app_vpn_TProxyService_TProxyIsRunning(JNIEnv *env, jclass clazz)
+Java_com_madshield_app_vpn_TProxyService_TProxyIsRunning(JNIEnv *env, jclass clazz)
 {
     jboolean value;
 
@@ -173,7 +173,7 @@ Java_com_aethershield_app_vpn_TProxyService_TProxyIsRunning(JNIEnv *env, jclass 
 }
 
 JNIEXPORT jlongArray JNICALL
-Java_com_aethershield_app_vpn_TProxyService_TProxyGetStats(JNIEnv *env, jclass clazz)
+Java_com_madshield_app_vpn_TProxyService_TProxyGetStats(JNIEnv *env, jclass clazz)
 {
     size_t tx_packets = 0, tx_bytes = 0, rx_packets = 0, rx_bytes = 0;
     jlong values[4];
