@@ -500,7 +500,11 @@ jobs:
           set -e
           fail=0
           for f in tests/pure/golden-singtun/*.json; do
-            if ./sb check -c "$f"; then echo "OK   $f"; else echo "FAIL $f"; fail=1; fi
+            if out="$(./sb check -c "$f" 2>&1)"; then echo "OK   $f"; else
+              echo "FAIL $f"; echo "$out"
+              echo "::error title=sing-box check $f::$(printf '%s' "$out" | head -c 1500 | sed ':a;N;$!ba;s/\n/%0A/g')"
+              fail=1
+            fi
           done
           exit $fail
 
