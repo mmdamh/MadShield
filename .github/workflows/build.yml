@@ -452,6 +452,58 @@ jobs:
           done
           exit $fail
 
+  # Same idea for the experimental sing-box TUN engine: its goldens (tests/pure/golden-singtun/) are written for the
+  # 1.15 alpha in native/singbox-tun.pin, so they are checked by THAT version, not by the 1.14.3 job above.
+  singtun-config-check:
+    name: sing-box check (TUN engine goldens)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch sing-box at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/singbox-tun.pin)"
+          mkdir -p native/sing-box-tun
+          git -C native/sing-box-tun init -q
+          git -C native/sing-box-tun fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
+          git -C native/sing-box-tun checkout -q FETCH_HEAD
+          test "$(git -C native/sing-box-tun rev-parse HEAD)" = "$pin"
+
+      - name: Patch sing-box (same patches as the shipped binary)
+        run: |
+          python3 native/singbox-patches/no-netlink/apply.py native/sing-box-tun
+          python3 native/singbox-patches/tun-fd/apply.py native/sing-box-tun
+
+      - name: Install Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Build sing-box for this runner
+        working-directory: native/sing-box-tun
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          go build -trimpath -o "$GITHUB_WORKSPACE/sb" \
+            -tags "badlinkname,tfogo_checklinkname0" \
+            -ldflags "$(cat release/LDFLAGS) -s -w -buildid=" ./cmd/sing-box
+          "$GITHUB_WORKSPACE/sb" version | head -3
+
+      - name: sing-box check on every TUN golden file
+        run: |
+          set -e
+          fail=0
+          for f in tests/pure/golden-singtun/*.json; do
+            if ./sb check -c "$f"; then echo "OK   $f"; else echo "FAIL $f"; fail=1; fi
+          done
+          exit $fail
+
   build-native-tun2socks:
     name: Build hev-socks5-tunnel + our JNI bridge (${{ matrix.abi }})
     runs-on: ubuntu-24.04

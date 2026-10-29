@@ -143,6 +143,16 @@ class IdleTracker {
         return idle
     }
 
+    /**
+     * The engine cannot tell how much traffic there is (counters unavailable). [onTick] would read that as "quiet" and
+     * drift into idle mode while the phone may be streaming, so the caller reports it here instead: normal cadence.
+     */
+    fun onUnknownCounters(): Boolean {
+        wake()
+        lastBytes = null
+        return false
+    }
+
     /** Screen on, network change, failed probe: back to the normal cadence right now. */
     fun wake() {
         idle = false

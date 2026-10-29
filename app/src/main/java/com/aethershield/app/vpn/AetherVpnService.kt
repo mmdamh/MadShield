@@ -20,7 +20,8 @@ import java.io.File
 
 /**
  * Full-device VPN mode. Data path:
- *   apps -> Android TUN (this service) -> TProxyService (JNI bridge, hev-socks5-tunnel)
+ *   apps -> Android TUN (this service) -> the tunnel engine ([TunEngine]: hev-socks5-tunnel through TProxyService, the default,
+ *        or the experimental sing-box TUN process)
  *        -> 127.0.0.1:<socksPort> -> EngineProcessManager (aether core) -> internet
  *   (with a chain, or with local DoH, RouteFront owns <socksPort>; see FrontPlan)
  *
@@ -67,7 +68,6 @@ class AetherVpnService : VpnService() {
         private const val HEALTH_CHECK_INTERVAL_MS = 5_000L
         private const val HARDENED_PASS_TIMEOUT_MS = 60_000L
         private const val RECOVERY_TIMEOUT_MS = 30_000L
-        private const val BRIDGE_STOP_TIMEOUT_MS = 4_000L
 
         /** Re-attach attempts of the tunnel bridge while the engine is healthy, before giving up (no endless 5-second loop). */
         private const val MAX_BRIDGE_RETRIES = 3
@@ -84,6 +84,8 @@ class AetherVpnService : VpnService() {
     /** update19: this start captured the traffic because the Kill Switch is on; a startup error must not hand it back. */
     @Volatile private var killSwitchHeld = false
     private var tunFd: ParcelFileDescriptor? = null
+    /** The engine of THIS connection, chosen once in connect() from the settings snapshot (a change applies at the next connect). */
+    @Volatile private var tunEngine: TunEngine? = null
     private var healthJob: Job? = null
     private lateinit var engine: EngineProcessManager
     private lateinit var ruleWriter: RuleFileWriter
@@ -106,6 +108,9 @@ class AetherVpnService : VpnService() {
         netWatcher = NetworkWatcher(this)
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
+        DiagnosticsHub.tunCounters = { tunEngine?.counters() }
+        DiagnosticsHub.tunRunning = { tunEngine?.let { e -> runCatching { e.isRunning() }.getOrNull() } }
+        DiagnosticsHub.tunEngineId = { tunEngine?.id }
         DiagnosticsHub.udpView = { DiagnosticsHub.UdpView(engine.udpCarried(), engine.udpStats()) }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
         scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
@@ -154,11 +159,23 @@ class AetherVpnService : VpnService() {
     private suspend fun connect() {
         val baseConfig = settingsStore.configFlow.first()
 
-        if (!TProxyService.available) {
-            throw IllegalStateException(
-                "native tunnel bridge unavailable: ${TProxyService.loadFailure ?: "unknown"}"
-            )
+        // Which engine reads the TUN. hev (default) needs its JNI bridge; the experimental sing-box TUN engine needs its
+        // binary. A missing one is an error with its reason, never a silent switch to the other engine.
+        tunEngine = when (val sel = selectTunEngine(baseConfig.tunEngine, SingBoxTunEngine.isInBuild(this))) {
+            is EngineSelection.Unavailable -> throw IllegalStateException(sel.reason)
+            is EngineSelection.Use -> when (sel.id) {
+                TunEngineId.HEV -> {
+                    if (!TProxyService.available) {
+                        throw IllegalStateException(
+                            "native tunnel bridge unavailable: ${TProxyService.loadFailure ?: "unknown"}"
+                        )
+                    }
+                    HevEngine(this)
+                }
+                TunEngineId.SINGBOX_TUN -> SingBoxTunEngine(this)
+            }
         }
+        RingLogBuffer.append("[vpn] tunnel engine: ${tunEngine?.id?.stored}")
         // Android treats "allow only these apps" with an empty list as "allow every app". Starting anyway would
         // capture the whole phone although the user asked for a handful of apps (or none), so refuse with a reason.
         if (baseConfig.appSelectionMode == AppSelectionMode.INCLUDE_ONLY_SELECTED && baseConfig.selectedPackages.isEmpty()) {
@@ -361,107 +378,22 @@ class AetherVpnService : VpnService() {
         tunFd = null
     }
 
-    /**
-     * hev config: tunnel.ipv4/ipv6 MUST equal the VpnService addAddress values
-     * above -- both come from TunnelConfig. The SOCKS port is the one the
-     * engine is actually bound to (config.socksPort), not a constant.
-     */
-    private fun writeHevConfig(config: EngineConfig): File {
-        val file = File(cacheDir, "hev.yaml")
-        // Same keys and values as ZedSecure's field-tested hev config (hev's own defaults for
-        // everything else; no stack-size or timeout overrides that could starve a session).
-        val mapdns = if (!config.mappedDnsActive) "" else """
-
-            mapdns:
-              address: ${Chain.MAPDNS_ADDRESS}
-              port: 53
-              network: 100.64.0.0
-              netmask: 255.192.0.0
-              cache-size: 10000"""
-        val yaml = """
-            tunnel:
-              mtu: ${config.effectiveMtu}
-              ipv4: ${TunnelConfig.TUN_IPV4}
-              ipv6: '${TunnelConfig.TUN_IPV6}'
-            socks5:
-              port: ${config.socksPort}
-              address: ${TunnelConfig.SOCKS_HOST}
-              udp: 'udp'
-            misc:
-              tcp-buffer-size: 131072
-              udp-recv-buffer-size: 262144
-              tcp-read-write-timeout: 300000
-              udp-read-write-timeout: 60000
-              log-level: warn
-        """.trimIndent() + mapdns.trimIndent().let { if (it.isEmpty()) "" else "\n\n$it" }
-        file.writeText(yaml)
-        return file
-    }
-
-    /**
-     * Asks hev to stop, but only when it is running. hev REMEMBERS a stop request that arrives while it is
-     * not running and then ends the NEXT start immediately: that was the "tunnel bridge stopped right after
-     * start" on the first connect of a session (seen after every earlier disconnect or failed connect), which
-     * only worked on Retry. The native thread flag is exact, so this never races a start.
-     */
+    /** Stops the engine of this connection (each engine ignores the call when it is not running). */
     private fun stopBridge() {
-        if (runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)) {
-            runCatching { TProxyService.TProxyStopService() }
-        }
+        runCatching { tunEngine?.stop() }
     }
 
-    /** @return true if hev accepted the TUN fd. Sets the Error state itself on failure. */
+    /** @return true if the engine accepted the TUN fd. Sets the Error state itself on failure. */
     private suspend fun bridgeTunToEngine(config: EngineConfig): Boolean {
         val fd = tunFd ?: return false
-        val cfgFile = writeHevConfig(config)
-        return try {
-            // A previous hev thread that is still shutting down would make the start a
-            // silent no-op (tunnel published, nothing carried): wait for it first.
-            if (!awaitBridgeStopped()) {
-                RingLogBuffer.append("[vpn] previous tunnel bridge has not shut down yet")
-                AetherController.setState(ConnectionState.Error("previous tunnel bridge still shutting down"))
-                return false
+        val e = tunEngine ?: return false
+        return when (val r = e.start(fd, config)) {
+            StartResult.Ok -> true
+            is StartResult.Failed -> {
+                AetherController.setState(ConnectionState.Error(r.reason))
+                false
             }
-            // Two tries: if the first one ends at once (a stop request left over from an earlier session
-            // is consumed by it), the second one starts cleanly.
-            var up = false
-            for (attempt in 1..2) {
-                val started = TProxyService.TProxyStartService(cfgFile.absolutePath, fd.fd)
-                if (!started) {
-                    RingLogBuffer.append("[vpn] hev refused to start (config/fd rejected)")
-                    AetherController.setState(ConnectionState.Error("tunnel start refused"))
-                    return false
-                }
-                // The native start only schedules a thread. If that thread exits at once the tunnel
-                // would be reported "connected" while carrying nothing ("connected, no internet").
-                delay(700)
-                up = runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)
-                if (up) break
-                RingLogBuffer.append("[vpn] tunnel bridge ended right after start (attempt $attempt/2)")
-                if (!awaitBridgeStopped()) break
-            }
-            if (!up) {
-                RingLogBuffer.append("[vpn] tunnel bridge stopped right after start (config: ${cfgFile.readText().replace('\n', ' ')})")
-                AetherController.setState(ConnectionState.Error("the tunnel bridge stopped right after starting"))
-                return false
-            }
-            RingLogBuffer.append("[vpn] tunnel bridge running (mtu=${config.effectiveMtu}, socks=${config.socksPort})")
-            true
-        } catch (t: Throwable) {
-            RingLogBuffer.append("[vpn] hev start failed: ${t.message}")
-            AetherController.setState(ConnectionState.Error(t.message ?: "tunnel start failed"))
-            false
         }
-    }
-
-    private suspend fun awaitBridgeStopped(): Boolean {
-        val deadline = System.currentTimeMillis() + BRIDGE_STOP_TIMEOUT_MS
-        while (System.currentTimeMillis() < deadline) {
-            val running = runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(false)
-            if (!running) return true
-            delay(100)
-        }
-        return false
     }
 
     // ----------------------------------------------------------------- health
@@ -475,6 +407,8 @@ class AetherVpnService : VpnService() {
             var tick = 0
             var lastCpuAt = 0L
             var lastCpuTicks = 0L
+            var lastAppCpuAt = 0L
+            var lastAppCpuTicks = 0L
             var firstFailAt = 0L
             var healthySince = 0L
             var bridgeRetries = 0
@@ -487,10 +421,12 @@ class AetherVpnService : VpnService() {
                 if (engine.swapping) continue // the custom link is being switched on purpose: not an outage
                 val screenNow = isScreenOn()
                 // Traffic counters are only read with the screen off (that is when idle is decided).
-                val idleBytes = if (screenNow) null else runCatching { TProxyService.TProxyGetStats() }.getOrNull()
-                    ?.takeIf { it.size >= 4 }?.let { it[1] + it[3] }
+                val idleCounters = if (screenNow) null else runCatching { tunEngine?.counters() }.getOrNull()
                 val wasIdle = idle
-                idle = idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), screenNow, idleBytes)
+                // An engine without counters (sing-box TUN on an Android where the interface cannot be read) must not drift
+                // into idle mode: hev keeps its previous handling, where unknown meant quiet.
+                idle = if (!screenNow && idleCounters == null && tunEngine?.id != TunEngineId.HEV) idleTracker.onUnknownCounters()
+                else idleTracker.onTick(android.os.SystemClock.elapsedRealtime(), screenNow, idleCounters?.totalBytes)
                 if (idle && !wasIdle) engine.onIdle() // screen off + quiet: the DoH client drops its idle connection
                 val cadence = PowerPolicy.cadence(screenNow, idle)
                 try {
@@ -541,9 +477,11 @@ class AetherVpnService : VpnService() {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.
                         if (cadence.logCountersEveryTicks > 0 && tick++ % cadence.logCountersEveryTicks == 1) {
-                            val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
-                            if (s != null && s.size >= 4) {
-                                RingLogBuffer.append("[vpn] tunnel counters: ${s[0]} / ${s[1]} B / ${s[2]} / ${s[3]} B (hev order: tx pkts, tx bytes, rx pkts, rx bytes)")
+                            val c = runCatching { tunEngine?.counters() }.getOrNull()
+                            if (c != null) {
+                                val order = if (tunEngine?.id == TunEngineId.HEV) "hev order: tx pkts, tx bytes, rx pkts, rx bytes"
+                                else "tx pkts, tx bytes, rx pkts, rx bytes; - = not counted"
+                                RingLogBuffer.append("[vpn] tunnel counters: ${c.txPackets ?: "-"} / ${c.txBytes} B / ${c.rxPackets ?: "-"} / ${c.rxBytes} B ($order)")
                             }
                         }
                         // CPU use of the engine (and Psiphon), about once a minute, so heat/battery
@@ -551,7 +489,7 @@ class AetherVpnService : VpnService() {
                         val now = android.os.SystemClock.elapsedRealtime()
                         // Screen off / idle: no CPU sampling at all, and the baseline is dropped so the next
                         // sample (screen on again) measures a clean window.
-                        if (!cadence.sampleCpu) lastCpuAt = 0L
+                        if (!cadence.sampleCpu) { lastCpuAt = 0L; lastAppCpuAt = 0L }
                         else if (now - lastCpuAt >= 60_000L) {
                             val ticks = engine.cpuTicks()
                             if (ticks != null && lastCpuAt != 0L) {
@@ -559,6 +497,15 @@ class AetherVpnService : VpnService() {
                                 RingLogBuffer.append("[power] engine cpu %.1f%% of one core over the last %ds (screen %s)".format(
                                     pct, (now - lastCpuAt) / 1000, if (isScreenOn()) "on" else "off"))
                             }
+                            // hev runs INSIDE this app process and the sing-box TUN engine in its own process: to compare the two
+                            // engines, add this line to the one above (update24).
+                            val appTicks = runCatching { CpuSampler.parseTicks(File("/proc/self/stat").readText()) }.getOrNull()
+                            if (appTicks != null && lastAppCpuAt != 0L) {
+                                val pct = CpuSampler.percent(lastAppCpuTicks, appTicks, now - lastAppCpuAt)
+                                RingLogBuffer.append("[power] app cpu %.1f%% of one core over the last %ds (tunnel engine: %s)".format(
+                                    pct, (now - lastAppCpuAt) / 1000, tunEngine?.id?.stored ?: "none"))
+                            }
+                            if (appTicks != null) { lastAppCpuTicks = appTicks; lastAppCpuAt = now }
                             if (ticks != null) { lastCpuTicks = ticks; lastCpuAt = now }
                         }
                         consecutiveFailures = 0
@@ -570,7 +517,7 @@ class AetherVpnService : VpnService() {
                         // never have started: the first attach in connect() failed), and nothing else ever noticed:
                         // the app stayed on "connected" (or "error") with no traffic until the user reconnected.
                         if (!wasDown && tunFd != null && !userRequestedStop &&
-                            !runCatching { TProxyService.TProxyIsRunning() }.getOrDefault(true)) {
+                            !runCatching { tunEngine?.isRunning() ?: true }.getOrDefault(true)) {
                             RingLogBuffer.append("[vpn] tunnel bridge is not running although the engine is healthy: re-attaching it")
                             stopBridge()
                             wasDown = true
@@ -682,6 +629,9 @@ class AetherVpnService : VpnService() {
         netWatcher.stop()
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
+        DiagnosticsHub.tunCounters = null
+        DiagnosticsHub.tunRunning = null
+        DiagnosticsHub.tunEngineId = null
         DiagnosticsHub.udpView = null
         stopBridge()
         engine.stop()
@@ -802,17 +752,17 @@ class AetherVpnService : VpnService() {
 
     /** Runs until the collector cancels it (state, screen or setting changed). */
     private suspend fun runLiveSpeed() {
-        var prev: LongArray? = null
+        var prev: TunCounters? = null
         var prevAt = 0L
         while (true) {
-            val s = runCatching { TProxyService.TProxyGetStats() }.getOrNull()
+            val s = runCatching { tunEngine?.counters() }.getOrNull()
             val now = android.os.SystemClock.elapsedRealtime()
-            if (s != null && s.size >= 4) {
+            if (s != null) {
                 val p = prev
                 if (p != null) {
                     val line = NotificationText.speedLine(
-                        upBps = NotificationText.bps(p[1], s[1], now - prevAt),
-                        downBps = NotificationText.bps(p[3], s[3], now - prevAt)
+                        upBps = NotificationText.bps(p.txBytes, s.txBytes, now - prevAt),
+                        downBps = NotificationText.bps(p.rxBytes, s.rxBytes, now - prevAt)
                     )
                     // Same text as before (an idle tunnel reads "0 B/s" again and again): do not re-post it.
                     if (line != speedText) {

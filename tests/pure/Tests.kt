@@ -1690,4 +1690,51 @@ private fun speedMeterTests() {
         listOf(r("wlan0", P, 0, 0)), listOf(r("wlan0", P, 10 * mb, 100 * mb)), null, null, 10_000
     )!!
     check("meter: an upload test is dominated by up", !uploadTest.dominantIsDown)
+    // ---- update24: experimental tunnel engine (hev / sing-box TUN)
+    check("engine id: round trip", TunEngineId.entries.all { TunEngineId.fromStored(it.stored) == it })
+    check("engine id: unknown or missing is hev", TunEngineId.fromStored("x") == TunEngineId.HEV && TunEngineId.fromStored(null) == TunEngineId.HEV)
+    check("counters: total bytes", TunCounters(1, 100, 2, 300).totalBytes == 400L && TunCounters(null, 5, null, 7).totalBytes == 12L)
+    check("counters: unsupported (-1) is null, not zeros", countersOrNull(-1, 5) == null && countersOrNull(5, -1) == null)
+    check("counters: valid pair has no packets", countersOrNull(5, 7).let { it != null && it.txBytes == 5L && it.rxBytes == 7L && it.txPackets == null && it.rxPackets == null })
+    check("select engine: hev is always used", listOf(false, true).all { selectTunEngine(TunEngineId.HEV, it) == EngineSelection.Use(TunEngineId.HEV) })
+    check("select engine: sing-box TUN used when present", selectTunEngine(TunEngineId.SINGBOX_TUN, true) == EngineSelection.Use(TunEngineId.SINGBOX_TUN))
+    check("select engine: missing sing-box TUN is reported, never replaced by hev",
+        selectTunEngine(TunEngineId.SINGBOX_TUN, false).let { it is EngineSelection.Unavailable && it.reason.isNotBlank() })
+
+    // idle mode with unknown counters
+    run {
+        val quietNull = IdleTracker()
+        var idleNow = false
+        for (t in listOf(1_000L, 61_000L, 131_000L, 191_000L)) idleNow = quietNull.onTick(t, false, null)
+        check("idle: today unknown counters with the screen off end in idle mode", idleNow)
+        val unknown = IdleTracker()
+        var idleUnknown = false
+        for (t in listOf(1_000L, 61_000L, 131_000L, 191_000L)) { unknown.onTick(t, false, null); idleUnknown = unknown.onUnknownCounters() }
+        check("idle: onUnknownCounters never drifts into idle", !idleUnknown && !unknown.idle)
+    }
+
+    // fd handoff socket path
+    check("tun fd socket: path is dir + name", TunFdChannel.socketPath("/data/user/0/com.aethershield.app/cache/singtun") == "/data/user/0/com.aethershield.app/cache/singtun/tunfd.sock")
+    check("tun fd socket: a trailing slash is not doubled", TunFdChannel.socketPath("/a/b/") == "/a/b/tunfd.sock")
+    check("tun fd socket: a path over the unix limit is refused", runCatching { TunFdChannel.socketPath("/" + "d".repeat(120)) }.isFailure)
+
+    // sing-box TUN config
+    run {
+        val plain = SingBoxTunConfig.render(1400, 1819, false)
+        val mapped = SingBoxTunConfig.render(1360, 10808, true)
+        check("singtun config: no stack key (deprecated in 1.15)", !plain.contains("\"stack\"") && !mapped.contains("\"stack\""))
+        check("singtun config: addresses equal the VpnService ones", plain.contains("10.10.14.1/30") && plain.contains("fc00::10:10:14:1/126"))
+        check("singtun config: mtu and port follow the input", plain.contains("\"mtu\": 1400") && plain.contains("\"server_port\": 1819") && mapped.contains("\"mtu\": 1360") && mapped.contains("\"server_port\": 10808"))
+        check("singtun config: auto_route is off and the log level is warn", plain.contains("\"auto_route\": false") && plain.contains("\"level\": \"warn\""))
+        check("singtun config: fakeip and DNS hijack only with mapped DNS",
+            !plain.contains("fakeip") && !plain.contains("hijack-dns") && mapped.contains("100.64.0.0/10") && mapped.contains("hijack-dns") && mapped.contains("198.18.0.2/32"))
+        check("singtun config: bad input is refused", runCatching { SingBoxTunConfig.render(1400, 0, false) }.isFailure && runCatching { SingBoxTunConfig.render(100, 1819, false) }.isFailure)
+        val root = System.getenv("MADSHIELD_ROOT") ?: "."
+        val dir = java.io.File(root, "tests/pure/golden-singtun")
+        for ((name, text) in linkedMapOf("singtun-plain.json" to plain, "singtun-mapdns.json" to mapped)) {
+            val f = java.io.File(dir, name)
+            if (System.getenv("UPDATE_GOLDEN") == "1") { dir.mkdirs(); f.writeText(text) }
+            check("golden: $name matches the builder", f.isFile && f.readText() == text)
+        }
+    }
 }

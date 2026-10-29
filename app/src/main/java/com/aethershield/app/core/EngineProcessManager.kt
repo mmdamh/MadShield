@@ -13,6 +13,8 @@ object EngineEnv {
     const val ENGINE_BIN = "libaether.so"
     const val PSIPHON_BIN = "libpsiphon.so"
     const val SINGBOX_BIN = "libsingbox.so"
+    /** The experimental sing-box TUN tunnel engine (update24), started by vpn/SingBoxTunEngine, not by EngineProcessManager. */
+    const val SINGTUN_BIN = "libsingtun.so"
 }
 
 /** Thrown BEFORE the engine is launched when the shipped binary cannot possibly start. */
@@ -537,7 +539,7 @@ class EngineProcessManager(private val context: Context) {
         val pids = CoreProcessGuard.findOwnPids(
             setOf(
                 File(dir, EngineEnv.ENGINE_BIN).absolutePath, File(dir, EngineEnv.PSIPHON_BIN).absolutePath,
-                File(dir, EngineEnv.SINGBOX_BIN).absolutePath
+                File(dir, EngineEnv.SINGBOX_BIN).absolutePath, File(dir, EngineEnv.SINGTUN_BIN).absolutePath
             ),
             android.os.Process.myPid(), android.os.Process.myUid()
         )

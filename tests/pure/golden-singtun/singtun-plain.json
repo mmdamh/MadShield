@@ -1,0 +1,30 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": [
+        "10.10.14.1/30",
+        "fc00::10:10:14:1/126"
+      ],
+      "mtu": 1400,
+      "auto_route": false
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "upstream",
+      "server": "127.0.0.1",
+      "server_port": 1819,
+      "version": "5"
+    }
+  ],
+  "route": {
+    "final": "upstream"
+  }
+}

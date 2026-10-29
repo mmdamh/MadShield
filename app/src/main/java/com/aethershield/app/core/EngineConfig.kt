@@ -202,7 +202,13 @@ data class EngineConfig(
      * ([UdpRelay]). Off: no UDP association is ever made, nothing UDP is sent out of the phone and DNS is answered by
      * hev's mapped DNS; TCP and the VPN work as before. Independent of the Kill Switch.
      */
-    val udpEnabled: Boolean = true
+    val udpEnabled: Boolean = true,
+
+    /**
+     * update24 EXPERIMENTAL "Tunnel engine": which program reads the TUN device. hev (default) behaves exactly as before.
+     * Read once per connection: a change applies at the next connect. See [TunEngineId].
+     */
+    val tunEngine: TunEngineId = TunEngineId.HEV
 ) {
     /** DoH switched on AND at least one resolver written. */
     val dohEnabled: Boolean get() = dohOn && dohResolvers.isNotEmpty()

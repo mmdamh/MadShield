@@ -448,4 +448,18 @@
     <string name="diag_meter_factor_loopback">لینک + تونل + loopback</string>
     <string name="diag_meter_factor_total">شمارندهٔ کلِ گوشی</string>
     <string name="diag_meter_note">1.0× همان چیزی است که تست سرعت واقعاً جابه‌جا می‌کند. حدود 2× برای هر برنامهٔ VPN عادی است، چون هم تونل و هم لینک واقعی شمرده می‌شوند. خیلی بیشتر یعنی ترافیک بین بخش‌های خودِ برنامه هم شمرده می‌شود.</string>
+
+    <!-- update24: experimental tunnel engine -->
+    <string name="sec_tunengine">موتور تونل (آزمایشی)</string>
+    <string name="lbl_tunengine">چه چیزی ترافیک گوشی را وارد تونل می‌کند</string>
+    <string name="tunengine_hev">hev (پیش‌فرض)</string>
+    <string name="tunengine_singbox">sing-box TUN</string>
+    <string name="tunengine_help_hev">موتور همهٔ نسخه‌های قبلی. چیزی تغییر نمی‌کند.</string>
+    <string name="tunengine_help_singbox">آزمایشی: sing-box نسخهٔ 1.15 با پشتهٔ TCP/IP جدیدش، در پروسهٔ جداگانه. به همان پورت محلیِ hev می‌فرستد، پس DNS، قانون‌های مسیریابی، زنجیره‌ها و Kill Switch مثل قبل کار می‌کنند.</string>
+    <string name="tunengine_missing">این بیلد موتور sing-box TUN ندارد. تا وقتی hev را انتخاب نکنید، اتصال با همین دلیل شکست می‌خورد.</string>
+    <string name="tunengine_info">در اتصال بعدی اعمال می‌شود: قطع کنید و دوباره وصل شوید. اگر موتور شروع نشود دلیلش نشان داده می‌شود و خودش به hev برنمی‌گردد.</string>
+    <string name="diag_sec_tunengine">موتور تونل</string>
+    <string name="diag_tunengine_setting">تنظیم</string>
+    <string name="diag_tunengine_active">در حال استفاده</string>
+    <string name="diag_tunengine_none">متصل نیست</string>
 </resources>

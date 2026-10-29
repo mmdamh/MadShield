@@ -42,7 +42,6 @@ import com.aethershield.app.ui.components.CookieBlob
 import com.aethershield.app.ui.components.NavClearance
 import com.aethershield.app.ui.components.rememberIsForeground
 import com.aethershield.app.ui.components.PillToggle
-import com.aethershield.app.vpn.TProxyService
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -416,7 +415,7 @@ private fun rememberTraffic(active: Boolean): State<Traffic> {
         var last: LongArray? = null
         var lastAt = 0L
         while (true) {
-            val s = if (TProxyService.available) runCatching { TProxyService.TProxyGetStats() }.getOrNull() else null
+            val s = DiagnosticsHub.tunStats()
             if (s != null && s.size >= 4) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 val prev = last

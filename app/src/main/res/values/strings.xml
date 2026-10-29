@@ -448,4 +448,18 @@
     <string name="diag_meter_factor_loopback">Link + tunnel + loopback</string>
     <string name="diag_meter_factor_total">Phone-wide total counter</string>
     <string name="diag_meter_note">1.0× is what the speed test really moves. About 2× is normal for any VPN app, because the tunnel and the real link are both counted. Much more means that traffic between the parts of the app is counted too.</string>
+
+    <!-- update24: experimental tunnel engine -->
+    <string name="sec_tunengine">Tunnel engine (experimental)</string>
+    <string name="lbl_tunengine">What carries the phone\'s traffic into the tunnel</string>
+    <string name="tunengine_hev">hev (default)</string>
+    <string name="tunengine_singbox">sing-box TUN</string>
+    <string name="tunengine_help_hev">The engine of every earlier version. Nothing is changed.</string>
+    <string name="tunengine_help_singbox">EXPERIMENTAL: sing-box 1.15 with its new TCP/IP stack, in its own process. It forwards to the same local port as hev, so DNS, routing rules, chains and the Kill Switch work as before.</string>
+    <string name="tunengine_missing">This build has no sing-box TUN engine. Connecting will fail with that reason until you choose hev.</string>
+    <string name="tunengine_info">Applies at the next connection: disconnect and connect again. If the engine cannot start, the reason is shown; it never switches back to hev by itself.</string>
+    <string name="diag_sec_tunengine">Tunnel engine</string>
+    <string name="diag_tunengine_setting">Setting</string>
+    <string name="diag_tunengine_active">In use now</string>
+    <string name="diag_tunengine_none">Not connected</string>
 </resources>

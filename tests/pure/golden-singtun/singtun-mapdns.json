@@ -1,0 +1,52 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": false
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "fakeip",
+        "tag": "fakeip",
+        "inet4_range": "100.64.0.0/10"
+      }
+    ],
+    "final": "fakeip",
+    "strategy": "ipv4_only"
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": [
+        "10.10.14.1/30",
+        "fc00::10:10:14:1/126"
+      ],
+      "mtu": 1360,
+      "auto_route": false
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "socks",
+      "tag": "upstream",
+      "server": "127.0.0.1",
+      "server_port": 10808,
+      "version": "5"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "ip_cidr": [
+          "198.18.0.2/32"
+        ],
+        "port": [
+          53
+        ],
+        "action": "hijack-dns"
+      }
+    ],
+    "final": "upstream"
+  }
+}

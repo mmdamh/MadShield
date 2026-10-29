@@ -25,6 +25,16 @@ object DiagnosticsHub {
 
     @Volatile var engineCpuTicks: (() -> Long?)? = null
 
+    /**
+     * The tunnel engine in use (hev or sing-box TUN), set while a VPN service runs (update24). Null hooks = no VPN service.
+     * [tunStats] is [txPackets, txBytes, rxPackets, rxBytes] with 0 for packets an engine does not count.
+     */
+    @Volatile var tunCounters: (() -> TunCounters?)? = null
+    @Volatile var tunRunning: (() -> Boolean?)? = null
+    @Volatile var tunEngineId: (() -> TunEngineId?)? = null
+
+    fun tunStats(): LongArray? = tunCounters?.invoke()?.let { longArrayOf(it.txPackets ?: 0L, it.txBytes, it.rxPackets ?: 0L, it.rxBytes) }
+
     /** What UDP is doing in the running tunnel: [udpCarried] (null = no front runs) and the counters. Set while a service runs. */
     class UdpView(val carried: Boolean?, val stats: UdpStats?)
     @Volatile var udpView: (() -> UdpView)? = null

@@ -31,7 +31,6 @@ import com.aethershield.app.ui.components.SwitchRow
 import com.aethershield.app.ui.components.rememberIsForeground
 import com.aethershield.app.util.LogRedactor
 import com.aethershield.app.util.RingLogBuffer
-import com.aethershield.app.vpn.TProxyService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -86,7 +85,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
         val snap = withContext(Dispatchers.IO) {
             Triple(
                 DiagnosticsHub.engineCpuTicks?.invoke() != null,
-                if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null,
+                if (vpnMode) DiagnosticsHub.tunRunning?.invoke() else null,
                 LogSignals.scanRecent(RingLogBuffer.tail(200))
             )
         }
@@ -114,8 +113,8 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
         while (true) {
             val snap = withContext(Dispatchers.IO) {
                 val ticks = DiagnosticsHub.engineCpuTicks?.invoke()
-                val st = if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyGetStats() }.getOrNull() else null
-                val up = if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null
+                val st = if (vpnMode) DiagnosticsHub.tunStats() else null
+                val up = if (vpnMode) DiagnosticsHub.tunRunning?.invoke() else null
                 listOf(ticks, st, up, LogSignals.scanRecent(RingLogBuffer.tail(200)))
             }
             val ticks = snap[0] as Long?
@@ -206,6 +205,23 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                     when (val r = EngineProcessManager.cachedIntegrity) {
                         null -> stringResource(R.string.diag_integrity_unchecked)
                         else -> if (r.ok) stringResource(R.string.diag_integrity_ok) else stringResource(R.string.diag_integrity_bad)
+                    }
+                )
+            }
+
+            // ------------------------------------------------------------ tunnel engine (update24)
+            SectionCard(stringResource(R.string.diag_sec_tunengine)) {
+                val activeEngine = DiagnosticsHub.tunEngineId?.invoke()
+                StatLine(
+                    stringResource(R.string.diag_tunengine_setting),
+                    stringResource(if (config.tunEngine == TunEngineId.HEV) R.string.tunengine_hev else R.string.tunengine_singbox)
+                )
+                StatLine(
+                    stringResource(R.string.diag_tunengine_active),
+                    when (activeEngine) {
+                        null -> stringResource(R.string.diag_tunengine_none)
+                        TunEngineId.HEV -> stringResource(R.string.tunengine_hev)
+                        TunEngineId.SINGBOX_TUN -> stringResource(R.string.tunengine_singbox)
                     }
                 )
             }
@@ -344,7 +360,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
                             val snap = withContext(Dispatchers.IO) {
                                 Triple(
                                     DiagnosticsHub.engineCpuTicks?.invoke() != null,
-                                    if (vpnMode && TProxyService.available) runCatching { TProxyService.TProxyIsRunning() }.getOrNull() else null,
+                                    if (vpnMode) DiagnosticsHub.tunRunning?.invoke() else null,
                                     LogSignals.scanRecent(RingLogBuffer.tail(200))
                                 )
                             }

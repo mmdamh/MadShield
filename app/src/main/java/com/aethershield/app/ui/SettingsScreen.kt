@@ -27,6 +27,7 @@ import com.aethershield.app.ui.components.*
 import com.aethershield.app.ui.theme.DarkMode
 import com.aethershield.app.ui.theme.Palettes
 import com.aethershield.app.ui.theme.UiPrefs
+import com.aethershield.app.vpn.SingBoxTunEngine
 import kotlin.math.roundToInt
 import android.content.Intent
 import android.provider.Settings
@@ -210,6 +211,33 @@ fun SettingsScreen(
             }
             if (!MasqueSni.appliesTo(config.protocol)) HelperText(stringResource(R.string.sni_not_masque))
             InfoHint(stringResource(R.string.tls_info))
+        }
+
+        // ---------------------------------------------------------------- update24: tunnel engine (experimental)
+        // Folded; hev (the engine of every earlier version) stays the default and is what runs unless this is changed.
+        val tunCtx = LocalContext.current
+        val singTunInBuild = remember { SingBoxTunEngine.isInBuild(tunCtx) }
+        FoldCard(
+            title = stringResource(R.string.sec_tunengine),
+            summary = stringResource(if (config.tunEngine == TunEngineId.HEV) R.string.tunengine_hev else R.string.tunengine_singbox),
+            icon = Icons.Rounded.Tune
+        ) {
+            SubLabel(stringResource(R.string.lbl_tunengine))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.tunengine_hev) to TunEngineId.HEV,
+                    stringResource(R.string.tunengine_singbox) to TunEngineId.SINGBOX_TUN
+                ),
+                config.tunEngine,
+                onSelect = { v -> onUpdate { it.copy(tunEngine = v) } }
+            )
+            HelperText(
+                stringResource(if (config.tunEngine == TunEngineId.HEV) R.string.tunengine_help_hev else R.string.tunengine_help_singbox)
+            )
+            if (config.tunEngine == TunEngineId.SINGBOX_TUN && !singTunInBuild) {
+                HelperText(stringResource(R.string.tunengine_missing), error = true)
+            }
+            InfoHint(stringResource(R.string.tunengine_info))
         }
 
         // ---------------------------------------------------------------- protection
