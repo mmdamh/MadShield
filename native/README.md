@@ -31,6 +31,25 @@ The app repeats that check on the phone before starting the engine
 layer (its signatures drifted between upstream versions). CI verifies the
 exported symbols of both libraries with `llvm-nm`.
 
+## sing-box (two builds, two pins)
+
+| Binary | Pin file | Version | Used for |
+|---|---|---|---|
+| `libsingbox.so` | `native/singbox.pin` | v1.14.3 | the custom-link chain (protocol converter on top of the core's SOCKS port) |
+| `libsingtun.so` | `native/singbox-tun.pin` | v1.15.0-alpha.13 (`824dbcfb...`) | EXPERIMENTAL "sing-box TUN" tunnel engine (Settings > Tunnel engine); never used unless chosen |
+
+`libsingtun.so` exists because sing-box 1.15 ships sing-tun's own TCP/IP stack (the `stack` option is deprecated and
+removed in 1.17.0, so no `stack` key is ever written). 1.15.0 is still an alpha: the pin is deliberate and separate so the
+stable chain binary is not affected. Build tags: `badlinkname,tfogo_checklinkname0` (no `with_gvisor`: the new stack needs
+none). Patches applied by CI, each fails the build unless its target matches exactly once
+(`scripts/test-singbox-patches.sh` checks that against the pin):
+
+- `singbox-patches/no-netlink`: switches off the network-change monitor (netlink is denied to apps on Android 11+).
+- `singbox-patches/tun-fd` (only `libsingtun.so`): the `tun` inbound takes the TUN fd the app already owns. The app sends the
+  fd over a unix socket (SCM_RIGHTS) whose path is in the environment variable `MADSHIELD_TUN_FD_SOCKET`; sing-box
+  receives it, makes it non-blocking and passes it as `tun.Options.FileDescriptor` (sing-tun then skips opening
+  `/dev/net/tun` and all netlink work). Without the variable behaviour is upstream's.
+
 ## Updating a pin
 
 Change the commit in `build.yml` (both the `fetch` step and its `test`), then

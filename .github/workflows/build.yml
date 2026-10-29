@@ -312,6 +312,95 @@ jobs:
           path: staged/${{ matrix.abi }}/libsingbox.so
           retention-days: 1
 
+  # EXPERIMENTAL (update24): a SECOND sing-box, built from the 1.15 alpha in native/singbox-tun.pin, used only as the
+  # optional "sing-box TUN" tunnel engine (Settings > Tunnel engine). It has its own pin and its own file name
+  # (libsingtun.so) so the stable chain binary above (v1.14.3) is never touched. 1.15 carries sing-tun's own TCP/IP stack
+  # (no `with_gvisor` needed). The tun-fd patch lets it take the TUN fd the app already owns. Like the job above it may
+  # fail WITHOUT blocking the APK: the app then simply has no sing-box TUN engine and says so.
+  build-native-singtun:
+    name: Build sing-box TUN engine (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+    env:
+      SINGBOX_VERSION: "1.15.0-alpha.13"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch sing-box at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/singbox-tun.pin)"
+          rm -rf native/sing-box-tun
+          mkdir -p native/sing-box-tun
+          git -C native/sing-box-tun init -q
+          git -C native/sing-box-tun fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
+          git -C native/sing-box-tun checkout -q FETCH_HEAD
+          test "$(git -C native/sing-box-tun rev-parse HEAD)" = "$pin"
+          echo "sing-box (tun) @ $pin"
+
+      # Proves both patches apply exactly once to this pin, refuse a second run and refuse a drifted tree.
+      - name: Test the patches against the pinned source
+        run: bash scripts/test-singbox-patches.sh native/sing-box-tun
+
+      - name: Patch sing-box (no netlink network monitor)
+        run: python3 native/singbox-patches/no-netlink/apply.py native/sing-box-tun
+
+      - name: Patch sing-box (TUN file descriptor from the app)
+        run: python3 native/singbox-patches/tun-fd/apply.py native/sing-box-tun
+
+      # go.mod of this pin says go 1.25.5; "1.25" is the latest 1.25 patch release.
+      - name: Install Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Build sing-box (TUN engine)
+        working-directory: native/sing-box-tun
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -e
+          go build -v -trimpath -o "$GITHUB_WORKSPACE/singtun-out" \
+            -tags "badlinkname,tfogo_checklinkname0" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' $(cat release/LDFLAGS) -s -w -buildid=" \
+            ./cmd/sing-box
+          ls -l "$GITHUB_WORKSPACE/singtun-out"
+
+      - name: Check it is a static ELF for this ABI
+        run: |
+          set -e
+          f=singtun-out
+          test -s "$f" || { echo "ERROR: sing-box (tun) binary missing"; exit 1; }
+          READELF="$(command -v llvm-readelf || command -v readelf)"
+          "$READELF" -h "$f" | grep -E 'Class|Machine'
+          if "$READELF" -d "$f" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "ERROR: sing-box (tun) is dynamically linked; it would not start on Android"; exit 1
+          fi
+          echo "OK: sing-box (tun) is a static ELF"
+
+      - name: Rename to lib*.so (required for Android to extract+exec it) and stage
+        run: |
+          mkdir -p "staged/${{ matrix.abi }}"
+          cp singtun-out "staged/${{ matrix.abi }}/libsingtun.so"
+
+      - name: Upload sing-box TUN binary for this ABI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: singtun-${{ matrix.abi }}
+          path: staged/${{ matrix.abi }}/libsingtun.so
+          retention-days: 1
+
   # Hands the golden configurations (tests/pure/golden, written by the app's own builder and compared
   # byte-for-byte by the pure tests) to the REAL `sing-box check`. Never blocks the APK: a red job here means
   # "sing-box does not accept what the app generates", which you want to know about before a user finds out.
@@ -523,8 +612,8 @@ jobs:
           retention-days: 1
 
   build-apk:
-    # build-native-singbox is listed so its artifacts are ready; if it failed (continue-on-error) the APK is built without it.
-    needs: [build-native-aether, build-native-tun2socks, build-native-singbox]
+    # build-native-singbox and build-native-singtun are listed so their artifacts are ready; if one failed (continue-on-error) the APK is built without it.
+    needs: [build-native-aether, build-native-tun2socks, build-native-singbox, build-native-singtun]
     if: ${{ !cancelled() && needs.build-native-aether.result == 'success' && needs.build-native-tun2socks.result == 'success' }}
     runs-on: ubuntu-24.04
     # Read-only. This job holds the signing key, so it must not be able to publish or write anything.
@@ -559,6 +648,12 @@ jobs:
             else
               echo "NOTE: no sing-box for $abi in this build (the custom chain will report it is not included)"
             fi
+            # optional: only the experimental "sing-box TUN" tunnel engine needs it
+            if [ -f "dist-native/singtun-$abi/libsingtun.so" ]; then
+              cp "dist-native/singtun-$abi/libsingtun.so" "app/src/main/jniLibs/$abi/"
+            else
+              echo "NOTE: no sing-box TUN engine for $abi in this build (Settings > Tunnel engine will say so)"
+            fi
           done
 
       # update19: phones with 16 KB memory pages (Android 15+ option) cannot load a library whose segments are only 4 KB
@@ -590,8 +685,8 @@ jobs:
           out=app/src/main/assets/native_hashes.properties
           echo "# generated by CI, do not edit" > "$out"
           for abi in arm64-v8a; do
-            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so libsingbox.so; do
-              [ -f "app/src/main/jniLibs/$abi/$f" ] || continue   # libsingbox.so is optional
+            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so libsingbox.so libsingtun.so; do
+              [ -f "app/src/main/jniLibs/$abi/$f" ] || continue   # libsingbox.so and libsingtun.so are optional
               echo "$abi/$f=$(sha256sum "app/src/main/jniLibs/$abi/$f" | cut -d' ' -f1)" >> "$out"
             done
           done

@@ -19,7 +19,7 @@ import java.security.MessageDigest
 object BinaryIntegrity {
 
     /** The native files CI stamps. Order is only for stable output. */
-    val COVERED_FILES = listOf("libaether.so", "libpsiphon.so", "libhev-socks5-tunnel.so", "libaethertun.so", "libsingbox.so")
+    val COVERED_FILES = listOf("libaether.so", "libpsiphon.so", "libhev-socks5-tunnel.so", "libaethertun.so", "libsingbox.so", "libsingtun.so")
 
     data class Result(val ok: Boolean, val details: List<String>)
 
