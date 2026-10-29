@@ -6,12 +6,30 @@
   "dns": {
     "servers": [
       {
+        "type": "udp",
+        "tag": "dns-void",
+        "server": "198.18.0.2"
+      },
+      {
         "type": "fakeip",
         "tag": "fakeip",
         "inet4_range": "100.64.0.0/10"
       }
     ],
-    "final": "fakeip",
+    "rules": [
+      {
+        "query_type": [
+          "A"
+        ],
+        "action": "route",
+        "server": "fakeip"
+      },
+      {
+        "action": "predefined",
+        "rcode": "NOERROR"
+      }
+    ],
+    "final": "dns-void",
     "strategy": "ipv4_only"
   },
   "inbounds": [

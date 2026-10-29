@@ -22,6 +22,7 @@ object SingBoxTunConfig {
     const val TUN_TAG = "tun-in"
     const val UPSTREAM_TAG = "upstream"
     const val FAKEIP_TAG = "fakeip"
+    const val DNS_VOID_TAG = "dns-void"
     /** The pool hev's mapdns hands fake addresses out of (hev.yaml: network 100.64.0.0, netmask 255.192.0.0). */
     const val FAKEIP_RANGE = "100.64.0.0/10"
 
@@ -32,11 +33,18 @@ object SingBoxTunConfig {
             "log" to linkedMapOf("level" to "warn", "timestamp" to false)
         )
         if (mappedDns) {
+            // sing-box refuses a fakeip server as the default one, so a placeholder default comes first. Nothing ever reaches it:
+            // the rules below answer every query (A -> fakeip, anything else -> an empty NOERROR, like hev's IPv4-only mapdns).
             root["dns"] = linkedMapOf<String, Any?>(
                 "servers" to listOf(
+                    linkedMapOf<String, Any?>("type" to "udp", "tag" to DNS_VOID_TAG, "server" to Chain.MAPDNS_ADDRESS),
                     linkedMapOf<String, Any?>("type" to "fakeip", "tag" to FAKEIP_TAG, "inet4_range" to FAKEIP_RANGE)
                 ),
-                "final" to FAKEIP_TAG,
+                "rules" to listOf(
+                    linkedMapOf<String, Any?>("query_type" to listOf("A"), "action" to "route", "server" to FAKEIP_TAG),
+                    linkedMapOf<String, Any?>("action" to "predefined", "rcode" to "NOERROR")
+                ),
+                "final" to DNS_VOID_TAG,
                 "strategy" to "ipv4_only"
             )
         }
