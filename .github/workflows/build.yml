@@ -55,7 +55,13 @@ jobs:
           unzip -q /tmp/kotlinc.zip -d /tmp
           echo "KOTLINC=/tmp/kotlinc/bin/kotlinc" >> "$GITHUB_ENV"
       - name: Run tests
-        run: bash scripts/run-pure-tests.sh
+        run: |
+          if ! bash scripts/run-pure-tests.sh > /tmp/pure.log 2>&1; then
+            cat /tmp/pure.log
+            echo "::error title=pure tests::$(grep -v -e '^ok' -e 'warning' /tmp/pure.log | tail -n 12 | cut -c1-300 | sed ':a;N;$!ba;s/\n/%0A/g')"
+            exit 1
+          fi
+          tail -n 3 /tmp/pure.log
 
   build-native-aether:
     name: Build aether core (${{ matrix.abi }})
