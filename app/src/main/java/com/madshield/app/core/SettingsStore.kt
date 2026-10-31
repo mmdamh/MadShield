@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.madshield.app.ui.theme.ConnectStyle
 import com.madshield.app.ui.theme.DarkMode
 import com.madshield.app.ui.theme.UiPrefs
 import kotlinx.coroutines.flow.Flow
@@ -72,6 +73,8 @@ class SettingsStore(private val context: Context) {
         val THEME_ID = stringPreferencesKey("ui_theme_id")
         val DARK_MODE = stringPreferencesKey("ui_dark_mode")
         val AMOLED = booleanPreferencesKey("ui_amoled")
+        val CUSTOM_COLOR = intPreferencesKey("ui_custom_color")
+        val CONNECT_STYLE = stringPreferencesKey("ui_connect_style")
     }
 
     private val encryptedPrefs by lazy {
@@ -132,7 +135,9 @@ class SettingsStore(private val context: Context) {
     private fun readUi(p: Preferences): UiPrefs = UiPrefs(
         themeId = p[Keys.THEME_ID] ?: UiPrefs().themeId,
         darkMode = p[Keys.DARK_MODE]?.let { runCatching { DarkMode.valueOf(it) }.getOrNull() } ?: DarkMode.SYSTEM,
-        amoled = p[Keys.AMOLED] ?: false
+        amoled = p[Keys.AMOLED] ?: false,
+        customColor = p[Keys.CUSTOM_COLOR] ?: 0,
+        connectStyle = ConnectStyle.fromStored(p[Keys.CONNECT_STYLE])
     )
 
     val uiPrefsFlow: Flow<UiPrefs> = context.dataStore.data.map { readUi(it) }
@@ -148,6 +153,8 @@ class SettingsStore(private val context: Context) {
             p[Keys.THEME_ID] = current.themeId
             p[Keys.DARK_MODE] = current.darkMode.name
             p[Keys.AMOLED] = current.amoled
+            p[Keys.CUSTOM_COLOR] = current.customColor
+            p[Keys.CONNECT_STYLE] = current.connectStyle.name
         }
     }
 

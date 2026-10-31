@@ -93,6 +93,20 @@
     <string name="lbl_zt_team">Zero Trust team name (optional)</string>
     <string name="zt_help">Leave blank unless your network is enrolled in a Cloudflare Zero Trust organization.</string>
     <string name="sec_appearance">Appearance</string>
+    <string name="lbl_language">Language</string>
+    <string name="lang_system">Phone language</string>
+    <string name="lang_fa" translatable="false">فارسی</string>
+    <string name="lang_en" translatable="false">English</string>
+    <string name="palette_custom">Custom</string>
+    <string name="lbl_connect_style">Connect button</string>
+    <string name="cs_blob">Cookie</string>
+    <string name="cs_pill">Pill</string>
+    <string name="cs_hero">Hero</string>
+    <string name="cs_ring">Ring</string>
+    <string name="cs_bar">Bar</string>
+    <string name="cs_icon">Icon</string>
+    <string name="cs_switch">Switch</string>
+    <string name="connect_style_help">Only the cookie button animates, and only while the app is on screen. The other shapes are static.</string>
     <string name="lbl_palette">Colour theme</string>
     <string name="lbl_dark_mode">Dark mode</string>
     <string name="dark_system">System</string>

@@ -25,8 +25,11 @@ fun MadShieldTheme(prefs: UiPrefs = UiPrefs(), content: @Composable () -> Unit) 
         DarkMode.LIGHT -> false
         DarkMode.DARK -> true
     }
-    val scheme = remember(prefs.themeId, dark, prefs.amoled) {
-        PaletteScheme.build(Palettes.byId(prefs.themeId), dark, prefs.amoled && dark)
+    val scheme = remember(prefs.themeId, prefs.customColor, dark, prefs.amoled) {
+        val palette =
+            if (prefs.themeId == Palettes.CUSTOM_ID && prefs.customColor != 0) Palettes.custom(prefs.customColor)
+            else Palettes.byId(prefs.themeId)
+        PaletteScheme.build(palette, dark, prefs.amoled && dark)
     }
     val tag = LocalConfiguration.current.locales.get(0)?.toLanguageTag() ?: "en"
     MaterialTheme(

@@ -18,12 +18,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.madshield.app.R
 import com.madshield.app.core.*
 import com.madshield.app.ui.components.*
+import com.madshield.app.ui.theme.ConnectStyle
 import com.madshield.app.ui.theme.DarkMode
 import com.madshield.app.ui.theme.Palettes
 import com.madshield.app.ui.theme.UiPrefs
@@ -305,6 +308,25 @@ fun SettingsScreen(
 
         // ---------------------------------------------------------------- appearance
         SectionCard(stringResource(R.string.sec_appearance)) {
+            // Language: empty = follow the phone (default). Changing it restarts this screen once, nothing else.
+            val langCtx = LocalContext.current
+            var lang by remember { mutableStateOf(AppLanguage.get(langCtx)) }
+            SubLabel(stringResource(R.string.lbl_language))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.lang_system) to AppLanguage.SYSTEM,
+                    stringResource(R.string.lang_fa) to AppLanguage.FA,
+                    stringResource(R.string.lang_en) to AppLanguage.EN
+                ),
+                lang
+            ) { v ->
+                lang = v
+                AppLanguage.set(langCtx, v)
+                langCtx.findActivity()?.recreate()
+            }
+            // The hue is local while dragging and saved once on release: no storage write per pixel.
+            var hue by remember { mutableFloatStateOf(hueOf(uiPrefs.customColor)) }
+            val customOn = uiPrefs.themeId == Palettes.CUSTOM_ID
             SubLabel(stringResource(R.string.lbl_palette))
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -332,6 +354,51 @@ fun SettingsScreen(
                         )
                     }
                 }
+                val picked = hueColor(hue)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clip(MaterialTheme.shapes.medium)
+                        .clickable {
+                            onUpdateUi {
+                                it.copy(
+                                    themeId = Palettes.CUSTOM_ID,
+                                    customColor = if (it.customColor != 0) it.customColor else picked
+                                )
+                            }
+                        }
+                        .padding(4.dp)
+                ) {
+                    Box(
+                        Modifier.size(46.dp).clip(CircleShape).background(
+                            if (customOn && uiPrefs.customColor != 0) {
+                                Brush.linearGradient(listOf(Color(uiPrefs.customColor), Color(uiPrefs.customColor)))
+                            } else {
+                                Brush.sweepGradient(
+                                    listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red)
+                                )
+                            }
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (customOn) Icon(Icons.Rounded.Check, null, tint = Color.White)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        stringResource(R.string.palette_custom), style = MaterialTheme.typography.labelSmall,
+                        color = if (customOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (customOn) {
+                Slider(
+                    value = hue,
+                    onValueChange = { hue = it },
+                    onValueChangeFinished = {
+                        val c = hueColor(hue)
+                        onUpdateUi { it.copy(customColor = c) }
+                    },
+                    valueRange = 0f..359f
+                )
             }
             SubLabel(stringResource(R.string.lbl_dark_mode))
             ChoiceChips(
@@ -346,6 +413,20 @@ fun SettingsScreen(
                 stringResource(R.string.sw_amoled), stringResource(R.string.sw_amoled_sub),
                 uiPrefs.amoled, { v -> onUpdateUi { it.copy(amoled = v) } }
             )
+            SubLabel(stringResource(R.string.lbl_connect_style))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.cs_blob) to ConnectStyle.BLOB,
+                    stringResource(R.string.cs_pill) to ConnectStyle.PILL,
+                    stringResource(R.string.cs_hero) to ConnectStyle.HERO,
+                    stringResource(R.string.cs_ring) to ConnectStyle.RING,
+                    stringResource(R.string.cs_bar) to ConnectStyle.BAR,
+                    stringResource(R.string.cs_icon) to ConnectStyle.ICON,
+                    stringResource(R.string.cs_switch) to ConnectStyle.SWITCH
+                ),
+                uiPrefs.connectStyle, { v -> onUpdateUi { it.copy(connectStyle = v) } }
+            )
+            HelperText(stringResource(R.string.connect_style_help))
         }
 
         // ---------------------------------------------------------------- privacy
@@ -372,4 +453,22 @@ private fun SubLabel(text: String) {
         text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
     )
+}
+
+private fun hueOf(argb: Int): Float {
+    if (argb == 0) return 200f
+    val hsl = FloatArray(3)
+    ColorUtils.colorToHSL(argb, hsl)
+    return hsl[0]
+}
+
+private fun hueColor(hue: Float): Int = ColorUtils.HSLToColor(floatArrayOf(hue, 0.62f, 0.40f))
+
+private fun android.content.Context.findActivity(): android.app.Activity? {
+    var c: android.content.Context = this
+    while (c is android.content.ContextWrapper) {
+        if (c is android.app.Activity) return c
+        c = c.baseContext
+    }
+    return null
 }

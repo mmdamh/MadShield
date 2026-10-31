@@ -54,6 +54,10 @@ class MainActivity : ComponentActivity() {
         pendingConnect = false
     }
 
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.madshield.app.core.AppLanguage.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
@@ -95,6 +99,7 @@ class MainActivity : ComponentActivity() {
                                         onConnect = { requestConnect(config) },
                                         onDisconnect = { disconnect(config) },
                                         onOpenLog = { nav.navigate("log") },
+                                        connectStyle = uiPrefs.connectStyle,
                                         contentPadding = padding
                                     )
                                     Tab.Dns -> DnsScreen(config, { t -> updateConfig(t) }, padding, connectionState)

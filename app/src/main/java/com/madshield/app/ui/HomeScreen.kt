@@ -3,6 +3,7 @@ package com.madshield.app.ui
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -42,6 +43,7 @@ import com.madshield.app.ui.components.CookieBlob
 import com.madshield.app.ui.components.NavClearance
 import com.madshield.app.ui.components.rememberIsForeground
 import com.madshield.app.ui.components.PillToggle
+import com.madshield.app.ui.theme.ConnectStyle
 import kotlinx.coroutines.delay
 import java.util.Locale
 
@@ -64,7 +66,8 @@ fun HomeScreen(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenLog: () -> Unit,
-    contentPadding: PaddingValues
+    contentPadding: PaddingValues,
+    connectStyle: ConnectStyle = ConnectStyle.BLOB
 ) {
     Column(
         Modifier
@@ -101,7 +104,7 @@ fun HomeScreen(
         if (connectionState is ConnectionState.Error) {
             ErrorCard(connectionState.message, onRetry = onConnect, onStop = onDisconnect, onLog = onOpenLog)
         } else {
-            HeroCard(config, connectionState, onTap = {
+            HeroCard(config, connectionState, connectStyle, onTap = {
                 when (connectionState) {
                     is ConnectionState.Idle -> onConnect()
                     is ConnectionState.Connected, is ConnectionState.Connecting -> onDisconnect()
@@ -127,7 +130,7 @@ fun HomeScreen(
 // ----------------------------------------------------------------------- hero
 
 @Composable
-private fun HeroCard(config: EngineConfig, state: ConnectionState, onTap: () -> Unit) {
+private fun HeroCard(config: EngineConfig, state: ConnectionState, style: ConnectStyle, onTap: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val live = state is ConnectionState.Connected
     val busy = state is ConnectionState.Connecting || state is ConnectionState.Disconnecting
@@ -142,7 +145,7 @@ private fun HeroCard(config: EngineConfig, state: ConnectionState, onTap: () -> 
             Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            ConnectBlob(state, onTap)
+            ConnectButton(state, style, onTap)
             Spacer(Modifier.height(18.dp))
             AnimatedContent(
                 targetState = statusRes(state),
@@ -190,6 +193,91 @@ private fun statusRes(s: ConnectionState): Int = when (s) {
     is ConnectionState.Connected -> R.string.status_connected
     is ConnectionState.Disconnecting -> R.string.status_disconnecting
     is ConnectionState.Error -> R.string.status_error
+}
+
+/**
+ * The Home connect button in the shape the user picked under Appearance. BLOB is the original animated cookie;
+ * the others are static shapes (only a one-shot colour change when the state changes), so they cost nothing
+ * while idle or in the background.
+ */
+@Composable
+private fun ConnectButton(state: ConnectionState, style: ConnectStyle, onTap: () -> Unit) {
+    if (style == ConnectStyle.BLOB) {
+        ConnectBlob(state, onTap)
+        return
+    }
+    val cs = MaterialTheme.colorScheme
+    val live = state is ConnectionState.Connected
+    val busy = state is ConnectionState.Connecting || state is ConnectionState.Disconnecting
+    val fill by animateColorAsState(
+        when { live -> cs.primary; busy -> cs.tertiary; else -> cs.primaryContainer }, label = "btn-fill"
+    )
+    val fg by animateColorAsState(
+        when { live -> cs.onPrimary; busy -> cs.onTertiary; else -> cs.onPrimaryContainer }, label = "btn-fg"
+    )
+    val action = stringResource(
+        when (state) {
+            is ConnectionState.Disconnecting -> R.string.status_disconnecting
+            is ConnectionState.Connecting -> R.string.action_cancel
+            is ConnectionState.Connected -> R.string.action_disconnect
+            else -> R.string.action_connect
+        }
+    )
+    val tap = Modifier.clickable(enabled = state !is ConnectionState.Disconnecting, onClick = onTap)
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        when (style) {
+            ConnectStyle.HERO -> Box(
+                Modifier.size(204.dp).clip(CircleShape).background(fill.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(Modifier.size(168.dp).clip(CircleShape).background(fill).then(tap), Alignment.Center) {
+                    PowerGlyph(64.dp, fg, action)
+                }
+            }
+            ConnectStyle.RING -> {
+                val edge by animateColorAsState(
+                    when { live -> cs.primary; busy -> cs.tertiary; else -> cs.outline }, label = "btn-edge"
+                )
+                Box(
+                    Modifier.size(184.dp).clip(CircleShape).border(10.dp, edge, CircleShape).then(tap),
+                    contentAlignment = Alignment.Center
+                ) { PowerGlyph(64.dp, edge, action) }
+            }
+            ConnectStyle.ICON -> Box(
+                Modifier.size(112.dp).clip(RoundedCornerShape(36.dp)).background(fill).then(tap),
+                contentAlignment = Alignment.Center
+            ) { PowerGlyph(52.dp, fg, action) }
+            ConnectStyle.SWITCH -> Box(
+                Modifier.width(216.dp).height(112.dp).clip(CircleShape).background(fill).then(tap).padding(8.dp),
+                contentAlignment = if (live) Alignment.CenterEnd else Alignment.CenterStart
+            ) {
+                Box(Modifier.size(96.dp).clip(CircleShape).background(cs.surface), Alignment.Center) {
+                    PowerGlyph(40.dp, if (live) cs.primary else cs.onSurfaceVariant, action)
+                }
+            }
+            else -> Row(
+                (if (style == ConnectStyle.PILL) Modifier.width(280.dp).height(84.dp) else Modifier.fillMaxWidth().height(76.dp))
+                    .clip(RoundedCornerShape(if (style == ConnectStyle.PILL) 42.dp else 22.dp))
+                    .background(fill).then(tap),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                PowerGlyph(if (style == ConnectStyle.PILL) 36.dp else 30.dp, fg, null)
+                Spacer(Modifier.width(10.dp))
+                Text(action, style = MaterialTheme.typography.titleLarge, color = fg, maxLines = 1)
+            }
+        }
+        if (live) {
+            Spacer(Modifier.height(10.dp))
+            UptimeText((state as ConnectionState.Connected).sinceMs, cs.onPrimaryContainer)
+        }
+    }
+}
+
+@Composable
+private fun PowerGlyph(size: androidx.compose.ui.unit.Dp, tint: Color, description: String?) {
+    Icon(Icons.Rounded.PowerSettingsNew, contentDescription = description, tint = tint, modifier = Modifier.size(size))
 }
 
 @Composable

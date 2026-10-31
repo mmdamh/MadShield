@@ -10,11 +10,23 @@ import androidx.core.graphics.ColorUtils
 
 enum class DarkMode { SYSTEM, LIGHT, DARK }
 
+/** Shape of the Home connect button. BLOB is the original scalloped button and stays the default. */
+enum class ConnectStyle { BLOB, PILL, HERO, RING, BAR, ICON, SWITCH;
+
+    companion object {
+        fun fromStored(name: String?): ConnectStyle =
+            name?.let { n -> entries.firstOrNull { it.name == n } } ?: BLOB
+    }
+}
+
 /** Appearance only; never touches the tunnel. */
 data class UiPrefs(
     val themeId: String = Palettes.DEFAULT_ID,
     val darkMode: DarkMode = DarkMode.SYSTEM,
-    val amoled: Boolean = false
+    val amoled: Boolean = false,
+    /** ARGB of the user-picked colour; only used while [themeId] is [Palettes.CUSTOM_ID]. */
+    val customColor: Int = 0,
+    val connectStyle: ConnectStyle = ConnectStyle.BLOB
 )
 
 /**
@@ -47,6 +59,20 @@ object Palettes {
     )
 
     fun byId(id: String?): Palette = ALL.firstOrNull { it.id == id } ?: ALL.first()
+
+    const val CUSTOM_ID = "custom"
+
+    /** A palette built from one picked colour: the other two seeds are the same colour with its hue turned. */
+    fun custom(argb: Int): Palette {
+        val hsl = FloatArray(3)
+        ColorUtils.colorToHSL(argb, hsl)
+        fun turned(deg: Float) = Color(
+            ColorUtils.HSLToColor(
+                floatArrayOf((hsl[0] + deg + 360f) % 360f, hsl[1].coerceIn(0.45f, 1f), hsl[2].coerceIn(0.40f, 0.70f))
+            )
+        )
+        return Palette(CUSTOM_ID, "Custom", Color(argb), turned(30f), turned(-40f))
+    }
 }
 
 object PaletteScheme {
