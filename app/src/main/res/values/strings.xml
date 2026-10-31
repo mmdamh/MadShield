@@ -10,8 +10,8 @@
     <string name="proxy_running">Proxy running on %1$s</string>
     <string name="nav_home">Home</string>
     <string name="nav_dns">DNS</string>
-    <string name="nav_routing">Routing</string>
-    <string name="nav_settings">Settings</string>
+    <string name="nav_routing">Route</string>
+    <string name="nav_settings">More</string>
     <string name="action_save">Save</string>
     <string name="action_revert">Revert</string>
     <string name="action_cancel">Cancel</string>
@@ -154,7 +154,7 @@
     <string name="lbl_ech_resolver">ECH resolver (optional)</string>
     <string name="ech_invalid">Use udp://IP, tcp://IP or an https:// link (optionally with @address=IP).</string>
     <string name="ech_help">Used only to fetch ECH keys. This is the one place the engine speaks DoH. Leave empty for the default.</string>
-    <string name="routing_subtitle">Decide what skips the tunnel</string>
+    <string name="routing_subtitle">Tunnel type, exit and what skips the tunnel</string>
     <string name="routing_rules_title">Bypass and block rules</string>
     <string name="routing_rules_sub">%1$d direct · %2$d blocked</string>
     <string name="routing_apps_title">Per-app routing</string>
@@ -459,4 +459,9 @@
     <string name="diag_tunengine_setting">Setting</string>
     <string name="diag_tunengine_active">In use now</string>
     <string name="diag_tunengine_none">Not connected</string>
+    <string name="sec_traffic_control">Traffic control</string>
+    <string name="appearance_nav_sub">Language, colours, connect button</string>
+    <string name="sec_advanced">Advanced</string>
+    <string name="advanced_nav_sub">Scan, noise, MTU, TLS, tunnel engine</string>
+    <string name="battery_motion_note">Animation runs only while the app is on screen and stops completely in the background, so it never uses battery.</string>
 </resources>

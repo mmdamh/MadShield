@@ -20,6 +20,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.madshield.app.R
 import com.madshield.app.core.AppSelectionMode
+import com.madshield.app.core.Protocol
+import com.madshield.app.ui.components.SegmentedChoice
 import com.madshield.app.core.ConnectionMode
 import com.madshield.app.core.EngineConfig
 import com.madshield.app.core.RuleLists
@@ -34,6 +36,7 @@ import com.madshield.app.ui.components.SwitchRow
 @Composable
 fun RoutingScreen(
     config: EngineConfig,
+    connectionState: com.madshield.app.core.ConnectionState,
     onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
     onOpenBypass: () -> Unit,
     onOpenApps: () -> Unit,
@@ -52,6 +55,27 @@ fun RoutingScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         PageHeader(stringResource(R.string.nav_routing), stringResource(R.string.routing_subtitle))
+        // ---------------------------------------------------------------- protocol
+        SectionCard(stringResource(R.string.sec_protocol)) {
+            SegmentedChoice(
+                options = Protocol.entries.map { protocolLong(it) to it },
+                selected = config.protocol,
+                onSelect = { p -> onUpdate { it.copy(protocol = p) } }
+            )
+            HelperText(stringResource(R.string.protocol_help))
+            if (config.protocol == Protocol.GOOL) {
+                SwitchRow(
+                    stringResource(R.string.sw_gool_h2), stringResource(R.string.sw_gool_h2_sub),
+                    config.masqueHttp2, { v -> onUpdate { it.copy(masqueHttp2 = v) } }
+                )
+            }
+        }
+
+        ProfileCard(config, connectionState, onUpdate)
+        Text(
+            stringResource(R.string.sec_traffic_control), style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+        )
         NavRow(
             Icons.Rounded.Language,
             stringResource(R.string.routing_rules_title),
@@ -72,19 +96,6 @@ fun RoutingScreen(
         )
         if (config.mode == ConnectionMode.PROXY_ONLY) {
             HelperText(stringResource(R.string.routing_proxy_note))
-        }
-        SectionCard(stringResource(R.string.sec_leak)) {
-            SwitchRow(
-                stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
-                config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
-            )
-            HelperText(stringResource(R.string.leak_limits))
-            TextButton(onClick = {
-                runCatching {
-                    ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                }
-            }) { Text(stringResource(R.string.action_open_vpn_settings)) }
-            HelperText(stringResource(R.string.leak_system_lockdown))
         }
         Spacer(Modifier.height(NavClearance))
     }

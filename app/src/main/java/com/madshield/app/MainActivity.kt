@@ -105,15 +105,17 @@ class MainActivity : ComponentActivity() {
                                     Tab.Dns -> DnsScreen(config, { t -> updateConfig(t) }, padding, connectionState)
                                     Tab.Routing -> RoutingScreen(
                                         config,
+                                        connectionState,
                                         onUpdate = { t -> updateConfig(t) },
                                         onOpenBypass = { nav.navigate("bypass") },
                                         onOpenApps = { nav.navigate("apps") },
                                         contentPadding = padding
                                     )
                                     Tab.Settings -> SettingsScreen(
-                                        config, uiPrefs,
+                                        config,
                                         onUpdate = { t -> updateConfig(t) },
-                                        onUpdateUi = { t -> updateUi(t) },
+                                        onOpenAppearance = { nav.navigate("appearance") },
+                                        onOpenAdvanced = { nav.navigate("advanced") },
                                         onOpenDiagnostics = { nav.navigate("diagnostics") },
                                         contentPadding = padding
                                     )
@@ -135,6 +137,12 @@ class MainActivity : ComponentActivity() {
                             onUpdate = { t -> updateConfig(t) },
                             onBack = { nav.popBackStack() }
                         )
+                    }
+                    composable("appearance") {
+                        AppearanceScreen(uiPrefs, { t -> updateUi(t) }, { nav.popBackStack() })
+                    }
+                    composable("advanced") {
+                        AdvancedScreen(config, { t -> updateConfig(t) }, { nav.popBackStack() })
                     }
                     composable("log") { LogScreen(onBack = { nav.popBackStack() }) }
                     composable("diagnostics") {

@@ -10,8 +10,8 @@
     <string name="proxy_running">پروکسی روی %1$s فعال است</string>
     <string name="nav_home">خانه</string>
     <string name="nav_dns">دی‌ان‌اس</string>
-    <string name="nav_routing">مسیریابی</string>
-    <string name="nav_settings">تنظیمات</string>
+    <string name="nav_routing">مسیر</string>
+    <string name="nav_settings">بیشتر</string>
     <string name="action_save">ذخیره</string>
     <string name="action_revert">بازگردانی</string>
     <string name="action_cancel">لغو</string>
@@ -152,7 +152,7 @@
     <string name="lbl_ech_resolver">دی‌ان‌اس ECH (اختیاری)</string>
     <string name="ech_invalid">از udp://IP یا tcp://IP یا یک لینک https:// استفاده کنید (در صورت نیاز با @address=IP).</string>
     <string name="ech_help">فقط برای گرفتن کلیدهای ECH استفاده می‌شود. این تنها جایی است که موتور DoH می‌زند. برای پیش‌فرض خالی بگذارید.</string>
-    <string name="routing_subtitle">تعیین کنید چه چیزی از تونل رد نشود</string>
+    <string name="routing_subtitle">نوع تونل، خروجی و آنچه از تونل رد نمی‌شود</string>
     <string name="routing_rules_title">قوانین عبور و مسدودسازی</string>
     <string name="routing_rules_sub">%1$d مستقیم · %2$d مسدود</string>
     <string name="routing_apps_title">مسیریابی هر برنامه</string>
@@ -457,4 +457,9 @@
     <string name="diag_tunengine_setting">تنظیم</string>
     <string name="diag_tunengine_active">در حال استفاده</string>
     <string name="diag_tunengine_none">متصل نیست</string>
+    <string name="sec_traffic_control">کنترل ترافیک</string>
+    <string name="appearance_nav_sub">زبان، رنگ‌ها، دکمه اتصال</string>
+    <string name="sec_advanced">پیشرفته</string>
+    <string name="advanced_nav_sub">اسکن، نویز، MTU، TLS، موتور تونل</string>
+    <string name="battery_motion_note">انیمیشن فقط وقتی برنامه روی صفحه است اجرا می‌شود و در پس‌زمینه کاملاً متوقف است؛ پس هیچ باری روی باتری ندارد.</string>
 </resources>

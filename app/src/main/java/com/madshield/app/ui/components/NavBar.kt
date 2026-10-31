@@ -30,8 +30,8 @@ import com.madshield.app.R
 
 enum class Tab(val icon: ImageVector, val labelRes: Int) {
     Home(Icons.Rounded.Home, R.string.nav_home),
-    Dns(Icons.Rounded.Dns, R.string.nav_dns),
     Routing(Icons.Rounded.Route, R.string.nav_routing),
+    Dns(Icons.Rounded.Dns, R.string.nav_dns),
     Settings(Icons.Rounded.Settings, R.string.nav_settings),
 }
 

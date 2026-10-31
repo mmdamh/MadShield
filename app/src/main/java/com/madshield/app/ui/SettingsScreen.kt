@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.*
@@ -35,13 +36,12 @@ import kotlin.math.roundToInt
 import android.content.Intent
 import android.provider.Settings
 import android.widget.Toast
-
 @Composable
 fun SettingsScreen(
     config: EngineConfig,
-    uiPrefs: UiPrefs,
     onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
-    onUpdateUi: ((UiPrefs) -> UiPrefs) -> Unit,
+    onOpenAppearance: () -> Unit,
+    onOpenAdvanced: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     contentPadding: PaddingValues
 ) {
@@ -54,23 +54,241 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         PageHeader(stringResource(R.string.nav_settings), stringResource(R.string.settings_apply_next))
-
-        // ---------------------------------------------------------------- protocol
-        SectionCard(stringResource(R.string.sec_protocol)) {
-            SegmentedChoice(
-                options = Protocol.entries.map { protocolLong(it) to it },
-                selected = config.protocol,
-                onSelect = { p -> onUpdate { it.copy(protocol = p) } }
+        // ---------------------------------------------------------------- protection
+        SectionCard(stringResource(R.string.sec_protection)) {
+            SwitchRow(
+                stringResource(R.string.sw_power_saver), stringResource(R.string.sw_power_saver_sub),
+                config.powerSaver, { v -> onUpdate { it.copy(powerSaver = v) } }
             )
-            HelperText(stringResource(R.string.protocol_help))
-            if (config.protocol == Protocol.GOOL) {
-                SwitchRow(
-                    stringResource(R.string.sw_gool_h2), stringResource(R.string.sw_gool_h2_sub),
-                    config.masqueHttp2, { v -> onUpdate { it.copy(masqueHttp2 = v) } }
-                )
+            SwitchRow(
+                stringResource(R.string.sw_exit_guard), stringResource(R.string.sw_exit_guard_sub),
+                config.exitLoc?.contains("!IR") == true,
+                { v -> onUpdate { it.copy(exitLoc = if (v) "!IR" else null) } }
+            )
+            val ctx = LocalContext.current
+            TextButton(onClick = {
+                val n = IdentityReset.reset(ctx.filesDir)
+                Toast.makeText(
+                    ctx,
+                    if (n > 0) ctx.getString(R.string.identity_reset_done, n) else ctx.getString(R.string.identity_reset_none),
+                    Toast.LENGTH_LONG
+                ).show()
+            }) { Text(stringResource(R.string.action_reset_identity)) }
+            HelperText(stringResource(R.string.identity_reset_help))
+            SwitchRow(
+                stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
+                config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
+            )
+            HelperText(stringResource(R.string.leak_limits))
+            // update19: the Kill Switch lives in this app's process. If Android ends the process, only Android's own
+            // lockdown keeps traffic from leaving. Shown only while connected and only when lockdown is known to be off.
+            val lockdown by AetherController.lockdown.collectAsState()
+            if (config.killSwitchEnabled && lockdown == false) {
+                HelperText(stringResource(R.string.lockdown_warning), error = true)
+                TextButton(onClick = {
+                    runCatching { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }) { Text(stringResource(R.string.lockdown_open)) }
             }
+            SwitchRow(
+                stringResource(R.string.sw_udp), stringResource(R.string.sw_udp_sub),
+                config.udpEnabled, { v -> onUpdate { it.copy(udpEnabled = v) } }
+            )
+            if (!config.udpEnabled) HelperText(stringResource(R.string.udp_off_dns_note))
+            if (config.udpEnabled && config.effectiveChain.let { it == PrivacyChain.PSIPHON || it == PrivacyChain.TOR }) {
+                HelperText(stringResource(R.string.udp_chain_note))
+            }
+            SwitchRow(
+                stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
+                config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
+            )
+            Spacer(Modifier.height(8.dp))
+            var team by remember(config.zeroTrustTeam) { mutableStateOf(config.zeroTrustTeam ?: "") }
+            OutlinedTextField(
+                value = team, onValueChange = { team = it },
+                label = { Text(stringResource(R.string.lbl_zt_team)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = {
+                    TextButton(
+                        onClick = { onUpdate { it.copy(zeroTrustTeam = team.trim().ifBlank { null }) } },
+                        enabled = team.trim() != (config.zeroTrustTeam ?: "")
+                    ) { Text(stringResource(R.string.action_save)) }
+                }
+            )
+            HelperText(stringResource(R.string.zt_help))
         }
 
+        NavRow(Icons.Rounded.Palette, stringResource(R.string.sec_appearance), stringResource(R.string.appearance_nav_sub), onOpenAppearance)
+        NavRow(Icons.Rounded.Tune, stringResource(R.string.sec_advanced), stringResource(R.string.advanced_nav_sub), onOpenAdvanced)
+        // ---------------------------------------------------------------- privacy
+        NavRow(
+            Icons.Rounded.Speed,
+            stringResource(R.string.diag_title),
+            stringResource(R.string.diag_nav_sub),
+            onOpenDiagnostics
+        )
+        SectionCard(stringResource(R.string.sec_privacy)) {
+            Text(
+                stringResource(R.string.privacy_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Spacer(Modifier.height(NavClearance))
+    }
+}
+
+@Composable
+fun AppearanceScreen(
+    uiPrefs: UiPrefs,
+    onUpdateUi: ((UiPrefs) -> UiPrefs) -> Unit,
+    onBack: () -> Unit
+) {
+    Scaffold(topBar = { BackTopBar(stringResource(R.string.sec_appearance), onBack) }) { pad ->
+        Column(
+            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+        // ---------------------------------------------------------------- appearance
+        SectionCard(stringResource(R.string.sec_appearance)) {
+            // Language: empty = follow the phone (default). Changing it restarts this screen once, nothing else.
+            val langCtx = LocalContext.current
+            var lang by remember { mutableStateOf(AppLanguage.get(langCtx)) }
+            SubLabel(stringResource(R.string.lbl_language))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.lang_system) to AppLanguage.SYSTEM,
+                    stringResource(R.string.lang_fa) to AppLanguage.FA,
+                    stringResource(R.string.lang_en) to AppLanguage.EN
+                ),
+                lang
+            ) { v ->
+                lang = v
+                AppLanguage.set(langCtx, v)
+                langCtx.findActivity()?.recreate()
+            }
+            // The hue is local while dragging and saved once on release: no storage write per pixel.
+            var hue by remember { mutableFloatStateOf(hueOf(uiPrefs.customColor)) }
+            val customOn = uiPrefs.themeId == Palettes.CUSTOM_ID
+            SubLabel(stringResource(R.string.lbl_palette))
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Palettes.ALL.forEach { p ->
+                    val on = p.id == uiPrefs.themeId
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clip(MaterialTheme.shapes.medium)
+                            .clickable { onUpdateUi { it.copy(themeId = p.id) } }
+                            .padding(4.dp)
+                    ) {
+                        Box(
+                            Modifier.size(46.dp).clip(CircleShape)
+                                .background(Brush.linearGradient(listOf(p.primary, p.tertiary))),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (on) Icon(Icons.Rounded.Check, null, tint = androidx.compose.ui.graphics.Color.White)
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            p.name, style = MaterialTheme.typography.labelSmall,
+                            color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                val picked = hueColor(hue)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.clip(MaterialTheme.shapes.medium)
+                        .clickable {
+                            onUpdateUi {
+                                it.copy(
+                                    themeId = Palettes.CUSTOM_ID,
+                                    customColor = if (it.customColor != 0) it.customColor else picked
+                                )
+                            }
+                        }
+                        .padding(4.dp)
+                ) {
+                    Box(
+                        Modifier.size(46.dp).clip(CircleShape).background(
+                            if (customOn && uiPrefs.customColor != 0) {
+                                Brush.linearGradient(listOf(Color(uiPrefs.customColor), Color(uiPrefs.customColor)))
+                            } else {
+                                Brush.sweepGradient(
+                                    listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red)
+                                )
+                            }
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (customOn) Icon(Icons.Rounded.Check, null, tint = Color.White)
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        stringResource(R.string.palette_custom), style = MaterialTheme.typography.labelSmall,
+                        color = if (customOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (customOn) {
+                Slider(
+                    value = hue,
+                    onValueChange = { hue = it },
+                    onValueChangeFinished = {
+                        val c = hueColor(hue)
+                        onUpdateUi { it.copy(customColor = c) }
+                    },
+                    valueRange = 0f..359f
+                )
+            }
+            SubLabel(stringResource(R.string.lbl_dark_mode))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.dark_system) to DarkMode.SYSTEM,
+                    stringResource(R.string.dark_light) to DarkMode.LIGHT,
+                    stringResource(R.string.dark_dark) to DarkMode.DARK
+                ),
+                uiPrefs.darkMode, { v -> onUpdateUi { it.copy(darkMode = v) } }
+            )
+            SwitchRow(
+                stringResource(R.string.sw_amoled), stringResource(R.string.sw_amoled_sub),
+                uiPrefs.amoled, { v -> onUpdateUi { it.copy(amoled = v) } }
+            )
+            SubLabel(stringResource(R.string.lbl_connect_style))
+            ChoiceChips(
+                listOf(
+                    stringResource(R.string.cs_blob) to ConnectStyle.BLOB,
+                    stringResource(R.string.cs_pill) to ConnectStyle.PILL,
+                    stringResource(R.string.cs_hero) to ConnectStyle.HERO,
+                    stringResource(R.string.cs_ring) to ConnectStyle.RING,
+                    stringResource(R.string.cs_bar) to ConnectStyle.BAR,
+                    stringResource(R.string.cs_icon) to ConnectStyle.ICON,
+                    stringResource(R.string.cs_switch) to ConnectStyle.SWITCH
+                ),
+                uiPrefs.connectStyle, { v -> onUpdateUi { it.copy(connectStyle = v) } }
+            )
+            HelperText(stringResource(R.string.connect_style_help))
+        }
+
+            InfoHint(stringResource(R.string.battery_motion_note))
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+fun AdvancedScreen(
+    config: EngineConfig,
+    onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
+    onBack: () -> Unit
+) {
+    Scaffold(topBar = { BackTopBar(stringResource(R.string.sec_advanced), onBack) }) { pad ->
+        Column(
+            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         // ---------------------------------------------------------------- tuning
         SectionCard(stringResource(R.string.sec_engine)) {
             SubLabel(stringResource(R.string.lbl_scan))
@@ -243,207 +461,8 @@ fun SettingsScreen(
             InfoHint(stringResource(R.string.tunengine_info))
         }
 
-        // ---------------------------------------------------------------- protection
-        SectionCard(stringResource(R.string.sec_protection)) {
-            SwitchRow(
-                stringResource(R.string.sw_exit_guard), stringResource(R.string.sw_exit_guard_sub),
-                config.exitLoc?.contains("!IR") == true,
-                { v -> onUpdate { it.copy(exitLoc = if (v) "!IR" else null) } }
-            )
-            val ctx = LocalContext.current
-            TextButton(onClick = {
-                val n = IdentityReset.reset(ctx.filesDir)
-                Toast.makeText(
-                    ctx,
-                    if (n > 0) ctx.getString(R.string.identity_reset_done, n) else ctx.getString(R.string.identity_reset_none),
-                    Toast.LENGTH_LONG
-                ).show()
-            }) { Text(stringResource(R.string.action_reset_identity)) }
-            HelperText(stringResource(R.string.identity_reset_help))
-            SwitchRow(
-                stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
-                config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
-            )
-            // update19: the Kill Switch lives in this app's process. If Android ends the process, only Android's own
-            // lockdown keeps traffic from leaving. Shown only while connected and only when lockdown is known to be off.
-            val lockdown by AetherController.lockdown.collectAsState()
-            if (config.killSwitchEnabled && lockdown == false) {
-                HelperText(stringResource(R.string.lockdown_warning), error = true)
-                TextButton(onClick = {
-                    runCatching { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                }) { Text(stringResource(R.string.lockdown_open)) }
-            }
-            SwitchRow(
-                stringResource(R.string.sw_udp), stringResource(R.string.sw_udp_sub),
-                config.udpEnabled, { v -> onUpdate { it.copy(udpEnabled = v) } }
-            )
-            if (!config.udpEnabled) HelperText(stringResource(R.string.udp_off_dns_note))
-            if (config.udpEnabled && config.effectiveChain.let { it == PrivacyChain.PSIPHON || it == PrivacyChain.TOR }) {
-                HelperText(stringResource(R.string.udp_chain_note))
-            }
-            SwitchRow(
-                stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
-                config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
-            )
-            SwitchRow(
-                stringResource(R.string.sw_power_saver), stringResource(R.string.sw_power_saver_sub),
-                config.powerSaver, { v -> onUpdate { it.copy(powerSaver = v) } }
-            )
-            Spacer(Modifier.height(8.dp))
-            var team by remember(config.zeroTrustTeam) { mutableStateOf(config.zeroTrustTeam ?: "") }
-            OutlinedTextField(
-                value = team, onValueChange = { team = it },
-                label = { Text(stringResource(R.string.lbl_zt_team)) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                trailingIcon = {
-                    TextButton(
-                        onClick = { onUpdate { it.copy(zeroTrustTeam = team.trim().ifBlank { null }) } },
-                        enabled = team.trim() != (config.zeroTrustTeam ?: "")
-                    ) { Text(stringResource(R.string.action_save)) }
-                }
-            )
-            HelperText(stringResource(R.string.zt_help))
+            Spacer(Modifier.height(24.dp))
         }
-
-        // ---------------------------------------------------------------- appearance
-        SectionCard(stringResource(R.string.sec_appearance)) {
-            // Language: empty = follow the phone (default). Changing it restarts this screen once, nothing else.
-            val langCtx = LocalContext.current
-            var lang by remember { mutableStateOf(AppLanguage.get(langCtx)) }
-            SubLabel(stringResource(R.string.lbl_language))
-            ChoiceChips(
-                listOf(
-                    stringResource(R.string.lang_system) to AppLanguage.SYSTEM,
-                    stringResource(R.string.lang_fa) to AppLanguage.FA,
-                    stringResource(R.string.lang_en) to AppLanguage.EN
-                ),
-                lang
-            ) { v ->
-                lang = v
-                AppLanguage.set(langCtx, v)
-                langCtx.findActivity()?.recreate()
-            }
-            // The hue is local while dragging and saved once on release: no storage write per pixel.
-            var hue by remember { mutableFloatStateOf(hueOf(uiPrefs.customColor)) }
-            val customOn = uiPrefs.themeId == Palettes.CUSTOM_ID
-            SubLabel(stringResource(R.string.lbl_palette))
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Palettes.ALL.forEach { p ->
-                    val on = p.id == uiPrefs.themeId
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clip(MaterialTheme.shapes.medium)
-                            .clickable { onUpdateUi { it.copy(themeId = p.id) } }
-                            .padding(4.dp)
-                    ) {
-                        Box(
-                            Modifier.size(46.dp).clip(CircleShape)
-                                .background(Brush.linearGradient(listOf(p.primary, p.tertiary))),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (on) Icon(Icons.Rounded.Check, null, tint = androidx.compose.ui.graphics.Color.White)
-                        }
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            p.name, style = MaterialTheme.typography.labelSmall,
-                            color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                val picked = hueColor(hue)
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.clip(MaterialTheme.shapes.medium)
-                        .clickable {
-                            onUpdateUi {
-                                it.copy(
-                                    themeId = Palettes.CUSTOM_ID,
-                                    customColor = if (it.customColor != 0) it.customColor else picked
-                                )
-                            }
-                        }
-                        .padding(4.dp)
-                ) {
-                    Box(
-                        Modifier.size(46.dp).clip(CircleShape).background(
-                            if (customOn && uiPrefs.customColor != 0) {
-                                Brush.linearGradient(listOf(Color(uiPrefs.customColor), Color(uiPrefs.customColor)))
-                            } else {
-                                Brush.sweepGradient(
-                                    listOf(Color.Red, Color.Yellow, Color.Green, Color.Cyan, Color.Blue, Color.Magenta, Color.Red)
-                                )
-                            }
-                        ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (customOn) Icon(Icons.Rounded.Check, null, tint = Color.White)
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        stringResource(R.string.palette_custom), style = MaterialTheme.typography.labelSmall,
-                        color = if (customOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            if (customOn) {
-                Slider(
-                    value = hue,
-                    onValueChange = { hue = it },
-                    onValueChangeFinished = {
-                        val c = hueColor(hue)
-                        onUpdateUi { it.copy(customColor = c) }
-                    },
-                    valueRange = 0f..359f
-                )
-            }
-            SubLabel(stringResource(R.string.lbl_dark_mode))
-            ChoiceChips(
-                listOf(
-                    stringResource(R.string.dark_system) to DarkMode.SYSTEM,
-                    stringResource(R.string.dark_light) to DarkMode.LIGHT,
-                    stringResource(R.string.dark_dark) to DarkMode.DARK
-                ),
-                uiPrefs.darkMode, { v -> onUpdateUi { it.copy(darkMode = v) } }
-            )
-            SwitchRow(
-                stringResource(R.string.sw_amoled), stringResource(R.string.sw_amoled_sub),
-                uiPrefs.amoled, { v -> onUpdateUi { it.copy(amoled = v) } }
-            )
-            SubLabel(stringResource(R.string.lbl_connect_style))
-            ChoiceChips(
-                listOf(
-                    stringResource(R.string.cs_blob) to ConnectStyle.BLOB,
-                    stringResource(R.string.cs_pill) to ConnectStyle.PILL,
-                    stringResource(R.string.cs_hero) to ConnectStyle.HERO,
-                    stringResource(R.string.cs_ring) to ConnectStyle.RING,
-                    stringResource(R.string.cs_bar) to ConnectStyle.BAR,
-                    stringResource(R.string.cs_icon) to ConnectStyle.ICON,
-                    stringResource(R.string.cs_switch) to ConnectStyle.SWITCH
-                ),
-                uiPrefs.connectStyle, { v -> onUpdateUi { it.copy(connectStyle = v) } }
-            )
-            HelperText(stringResource(R.string.connect_style_help))
-        }
-
-        // ---------------------------------------------------------------- privacy
-        NavRow(
-            Icons.Rounded.Speed,
-            stringResource(R.string.diag_title),
-            stringResource(R.string.diag_nav_sub),
-            onOpenDiagnostics
-        )
-        SectionCard(stringResource(R.string.sec_privacy)) {
-            Text(
-                stringResource(R.string.privacy_body),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Spacer(Modifier.height(NavClearance))
     }
 }
 

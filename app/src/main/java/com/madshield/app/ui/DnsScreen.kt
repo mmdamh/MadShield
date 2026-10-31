@@ -80,9 +80,6 @@ fun DnsScreen(
     ) {
         PageHeader(stringResource(R.string.nav_dns), stringResource(R.string.dns_subtitle))
 
-        // ------------------------------------------------------------ exit profile (moved from Home in 1.2.1)
-        ProfileCard(config, connectionState, onUpdate)
-
         // ------------------------------------------------------------ secure DNS (local DoH)
         SectionCard(stringResource(R.string.sec_doh), icon = Icons.Rounded.Lock) {
             SwitchRow(
