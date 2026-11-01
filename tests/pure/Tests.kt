@@ -1673,6 +1673,12 @@ fun insightTests() {
         tr.blocked("ads.example", true, 443); tr.blocked("ads.example", true, 443); tr.blocked("other.example", true, 80)
         val s2 = tr.snapshot()
         check("tracker: identical refused requests fold into one row with a count", s2.blocked.size == 2 && s2.blocked[1].repeat == 2 && s2.blocked[0].name == "other.example")
+        run {
+            val t2 = ConnTracker { 0L }
+            t2.blocked("a.com", true, 443); t2.blocked("b.com", true, 443); t2.blocked("c.com", true, 80)
+            val ids = t2.snapshot().blocked.map { it.id }
+            check("tracker: every refused row has its own id (the list uses it as a key)", ids.size == 3 && ids.toSet().size == 3)
+        }
         check("tracker: blocked total counts every request", s2.blockedTotal == 3L && tr.totals().blocked == 3L)
         check("tracker: closeConn closes that connection only", tr.closeConn(c1.id) && closed == 1 && !tr.closeConn(9999))
         tr.close(c1)

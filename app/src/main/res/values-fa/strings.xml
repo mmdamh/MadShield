@@ -524,4 +524,7 @@
     <string name="storage_cleaned">%1$s آزاد شد</string>
     <string name="storage_disconnect_first">برای پاک‌سازی ابتدا اتصال را قطع کنید.</string>
     <string name="storage_safe">هویت WARP، فهرست قوانین، تنظیمات و مجموع مصرف هرگز پاک نمی‌شوند.</string>
+    <string name="tile_conn_sub">مسیر و بستن</string>
+    <string name="tile_usage_sub">روزانه</string>
+    <string name="tile_advanced_sub">موتور</string>
 </resources>

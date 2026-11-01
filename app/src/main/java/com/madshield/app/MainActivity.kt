@@ -103,6 +103,9 @@ class MainActivity : ComponentActivity() {
                                         onConnect = { requestConnect(config) },
                                         onDisconnect = { disconnect(config) },
                                         onOpenLog = { nav.navigate("log") },
+                                        onOpenConnections = { nav.navigate("connections") },
+                                        onOpenUsage = { nav.navigate("usage") },
+                                        onOpenAdvanced = { nav.navigate("advanced") },
                                         connectStyle = uiPrefs.connectStyle,
                                         contentPadding = padding
                                     )

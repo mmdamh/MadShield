@@ -17,6 +17,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DataUsage
+import androidx.compose.material.icons.rounded.SwapVert
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material3.*
@@ -66,6 +69,9 @@ fun HomeScreen(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenLog: () -> Unit,
+    onOpenConnections: () -> Unit,
+    onOpenUsage: () -> Unit,
+    onOpenAdvanced: () -> Unit,
     contentPadding: PaddingValues,
     connectStyle: ConnectStyle = ConnectStyle.BLOB
 ) {
@@ -122,8 +128,33 @@ fun HomeScreen(
         } else {
             ProxyAddressPill(config.socksPort, visible = connectionState is ConnectionState.Connected)
         }
+        Spacer(Modifier.height(10.dp))
+        ShortcutTiles(onOpenConnections, onOpenUsage, onOpenAdvanced)
         // Bottom padding so the floating navigation bar never covers the last card.
         Spacer(Modifier.height(NavClearance))
+    }
+}
+
+/** Three one-tap shortcuts under the status: Connections, Usage, Advanced. They only open pages; nothing runs here. */
+@Composable
+private fun ShortcutTiles(onConnections: () -> Unit, onUsage: () -> Unit, onAdvanced: () -> Unit) {
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ShortcutTile(Icons.Rounded.SwapVert, stringResource(R.string.conn_title), stringResource(R.string.tile_conn_sub), onConnections, Modifier.weight(1f).fillMaxHeight())
+        ShortcutTile(Icons.Rounded.DataUsage, stringResource(R.string.usage_title), stringResource(R.string.tile_usage_sub), onUsage, Modifier.weight(1f).fillMaxHeight())
+        ShortcutTile(Icons.Rounded.Tune, stringResource(R.string.sec_advanced), stringResource(R.string.tile_advanced_sub), onAdvanced, Modifier.weight(1f).fillMaxHeight())
+    }
+}
+
+@Composable
+private fun ShortcutTile(icon: ImageVector, title: String, sub: String, onClick: () -> Unit, modifier: Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Surface(onClick = onClick, shape = RoundedCornerShape(28.dp), color = cs.primaryContainer, modifier = modifier) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
+            Icon(icon, null, tint = cs.onPrimaryContainer, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.height(14.dp))
+            Text(title, style = MaterialTheme.typography.titleSmall, color = cs.onPrimaryContainer, maxLines = 1)
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = cs.onPrimaryContainer.copy(alpha = 0.75f), maxLines = 1)
+        }
     }
 }
 

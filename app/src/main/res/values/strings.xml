@@ -526,4 +526,7 @@
     <string name="storage_cleaned">Freed %1$s</string>
     <string name="storage_disconnect_first">Disconnect first to clean.</string>
     <string name="storage_safe">Your WARP identity, rule lists, settings and usage totals are never removed.</string>
+    <string name="tile_conn_sub">Route and close</string>
+    <string name="tile_usage_sub">Daily</string>
+    <string name="tile_advanced_sub">Engine</string>
 </resources>

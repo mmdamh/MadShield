@@ -84,7 +84,7 @@ class ConnTracker(private val clock: () -> Long = { System.nanoTime() / 1_000_00
         const val MAX_BLOCKED = 40
     }
 
-    private class Refused(val name: String, val hasName: Boolean, val port: Int, var atMs: Long, var count: Int)
+    private class Refused(val id: Long, val name: String, val hasName: Boolean, val port: Int, var atMs: Long, var count: Int)
 
     private val seq = AtomicLong()
     private val active = ConcurrentHashMap<Long, TrackedConn>()
@@ -124,7 +124,7 @@ class ConnTracker(private val clock: () -> Long = { System.nanoTime() / 1_000_00
                 return
             }
             if (refused.size >= MAX_BLOCKED) refused.removeLast()
-            refused.addFirst(Refused(name, hasName, port, now, 1))
+            refused.addFirst(Refused(seq.incrementAndGet(), name, hasName, port, now, 1))
         }
     }
 
@@ -139,7 +139,7 @@ class ConnTracker(private val clock: () -> Long = { System.nanoTime() / 1_000_00
             ConnView(it.id, it.name, it.hasName, it.port, it.route, now - it.openedAtMs, it.upBytes(), it.downBytes())
         }
         val gone = synchronized(refused) {
-            refused.map { ConnView(0, it.name, it.hasName, it.port, RouteAction.BLOCK, now - it.atMs, 0, 0, it.count) }
+            refused.map { ConnView(it.id, it.name, it.hasName, it.port, RouteAction.BLOCK, now - it.atMs, 0, 0, it.count) }
         }
         return ConnSnapshot(
             active = live,
