@@ -16,6 +16,7 @@ import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +50,7 @@ fun SettingsScreen(
     onOpenConnections: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenStorage: () -> Unit,
+    onAskPermission: (PermKind) -> Unit,
     contentPadding: PaddingValues
 ) {
     Column(
@@ -61,31 +63,17 @@ fun SettingsScreen(
     ) {
         PageHeader(stringResource(R.string.nav_settings), stringResource(R.string.settings_apply_next))
         // ---------------------------------------------------------------- protection
+        val ctx = LocalContext.current
+        val foreground by rememberIsForeground()
+        // Re-read when the app comes back from the system's own settings.
+        val notifOk = remember(foreground) { Perms.notificationsAllowed(ctx) }
+        val batteryOk = remember(foreground) { Perms.batteryExempt(ctx) }
         SectionCard(stringResource(R.string.sec_protection)) {
-            SwitchRow(
-                stringResource(R.string.sw_power_saver), stringResource(R.string.sw_power_saver_sub),
-                config.powerSaver, { v -> onUpdate { it.copy(powerSaver = v) } }
-            )
-            SwitchRow(
-                stringResource(R.string.sw_exit_guard), stringResource(R.string.sw_exit_guard_sub),
-                config.exitLoc?.contains("!IR") == true,
-                { v -> onUpdate { it.copy(exitLoc = if (v) "!IR" else null) } }
-            )
-            val ctx = LocalContext.current
-            TextButton(onClick = {
-                val n = IdentityReset.reset(ctx.filesDir)
-                Toast.makeText(
-                    ctx,
-                    if (n > 0) ctx.getString(R.string.identity_reset_done, n) else ctx.getString(R.string.identity_reset_none),
-                    Toast.LENGTH_LONG
-                ).show()
-            }) { Text(stringResource(R.string.action_reset_identity)) }
-            HelperText(stringResource(R.string.identity_reset_help))
-            SwitchRow(
-                stringResource(R.string.sw_kill), stringResource(R.string.sw_kill_sub),
+            InfoSwitchRow(
+                stringResource(R.string.sw_kill),
+                stringResource(R.string.sw_kill_sub) + "\n\n" + stringResource(R.string.leak_limits),
                 config.killSwitchEnabled, { v -> onUpdate { it.copy(killSwitchEnabled = v) } }
             )
-            HelperText(stringResource(R.string.leak_limits))
             // update19: the Kill Switch lives in this app's process. If Android ends the process, only Android's own
             // lockdown keeps traffic from leaving. Shown only while connected and only when lockdown is known to be off.
             val lockdown by AetherController.lockdown.collectAsState()
@@ -95,18 +83,63 @@ fun SettingsScreen(
                     runCatching { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                 }) { Text(stringResource(R.string.lockdown_open)) }
             }
-            SwitchRow(
-                stringResource(R.string.sw_udp), stringResource(R.string.sw_udp_sub),
+            InfoSwitchRow(
+                stringResource(R.string.sw_exit_guard), stringResource(R.string.sw_exit_guard_sub),
+                config.exitLoc?.contains("!IR") == true,
+                { v -> onUpdate { it.copy(exitLoc = if (v) "!IR" else null) } }
+            )
+            val udpInfo = buildString {
+                append(stringResource(R.string.sw_udp_sub))
+                if (!config.udpEnabled) append("\n\n").append(stringResource(R.string.udp_off_dns_note))
+                if (config.udpEnabled && config.effectiveChain.let { it == PrivacyChain.PSIPHON || it == PrivacyChain.TOR }) {
+                    append("\n\n").append(stringResource(R.string.udp_chain_note))
+                }
+            }
+            InfoSwitchRow(
+                stringResource(R.string.sw_udp), udpInfo,
                 config.udpEnabled, { v -> onUpdate { it.copy(udpEnabled = v) } }
             )
-            if (!config.udpEnabled) HelperText(stringResource(R.string.udp_off_dns_note))
-            if (config.udpEnabled && config.effectiveChain.let { it == PrivacyChain.PSIPHON || it == PrivacyChain.TOR }) {
-                HelperText(stringResource(R.string.udp_chain_note))
-            }
-            SwitchRow(
-                stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
-                config.notifSpeed, { v -> onUpdate { it.copy(notifSpeed = v) } }
+        }
+
+        SectionCard(stringResource(R.string.sec_power_notif)) {
+            InfoSwitchRow(
+                stringResource(R.string.sw_power_saver), stringResource(R.string.sw_power_saver_sub),
+                config.powerSaver,
+                { v ->
+                    onUpdate { it.copy(powerSaver = v) }
+                    if (v && !batteryOk) onAskPermission(PermKind.BATTERY)
+                }
             )
+            InfoSwitchRow(
+                stringResource(R.string.sw_notif_speed), stringResource(R.string.sw_notif_speed_sub),
+                config.notifSpeed,
+                { v ->
+                    onUpdate { it.copy(notifSpeed = v) }
+                    if (v && !notifOk) onAskPermission(PermKind.NOTIFICATIONS)
+                }
+            )
+            PermRow(stringResource(R.string.perm_notif_row), notifOk, stringResource(R.string.perm_on), stringResource(R.string.perm_off)) {
+                onAskPermission(PermKind.NOTIFICATIONS)
+            }
+            PermRow(stringResource(R.string.perm_battery_row), batteryOk, stringResource(R.string.perm_unrestricted), stringResource(R.string.perm_restricted)) {
+                onAskPermission(PermKind.BATTERY)
+            }
+        }
+
+        FoldCard(
+            title = stringResource(R.string.sec_account),
+            summary = stringResource(R.string.account_summary),
+            icon = Icons.Rounded.VpnKey
+        ) {
+            TextButton(onClick = {
+                val n = IdentityReset.reset(ctx.filesDir)
+                Toast.makeText(
+                    ctx,
+                    if (n > 0) ctx.getString(R.string.identity_reset_done, n) else ctx.getString(R.string.identity_reset_none),
+                    Toast.LENGTH_LONG
+                ).show()
+            }) { Text(stringResource(R.string.action_reset_identity)) }
+            InfoHint(stringResource(R.string.identity_reset_help))
             Spacer(Modifier.height(8.dp))
             var team by remember(config.zeroTrustTeam) { mutableStateOf(config.zeroTrustTeam ?: "") }
             OutlinedTextField(
@@ -121,7 +154,7 @@ fun SettingsScreen(
                     ) { Text(stringResource(R.string.action_save)) }
                 }
             )
-            HelperText(stringResource(R.string.zt_help))
+            InfoHint(stringResource(R.string.zt_help))
         }
 
         NavRow(Icons.Rounded.SwapVert, stringResource(R.string.conn_title), stringResource(R.string.conn_nav_sub), onOpenConnections)
@@ -499,4 +532,17 @@ private fun android.content.Context.findActivity(): android.app.Activity? {
         c = c.baseContext
     }
     return null
+}
+
+/** One line: what it is, whether the phone allows it now, and a button to fix it. */
+@Composable
+private fun PermRow(title: String, ok: Boolean, okText: String, offText: String, onFix: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, color = cs.onSurface)
+            Text(if (ok) okText else offText, style = MaterialTheme.typography.bodySmall, color = if (ok) cs.onSurfaceVariant else cs.error)
+        }
+        if (!ok) TextButton(onClick = onFix) { Text(stringResource(R.string.perm_allow)) }
+    }
 }

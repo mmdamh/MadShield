@@ -147,6 +147,27 @@ fun SwitchRow(label: String, sub: String? = null, checked: Boolean, onCheckedCha
     }
 }
 
+/**
+ * A switch with its long explanation behind a small "i" beside the label: the page stays one line per option, and
+ * whoever wants the details taps the "i". Open/closed survives a rotation.
+ */
+@Composable
+fun InfoSwitchRow(label: String, info: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    var open by rememberSaveable(label) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.bodyLarge, color = cs.onSurface, modifier = Modifier.weight(1f, fill = false))
+            IconButton(onClick = { open = !open }, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Info, contentDescription = null, tint = if (open) cs.primary else cs.onSurfaceVariant, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            Switch(checked = checked, onCheckedChange = onCheckedChange)
+        }
+        AnimatedVisibility(visible = open) { HelperText(info) }
+    }
+}
+
 /** Tappable row with a round icon badge and a chevron: used for navigation entries. */
 @Composable
 fun NavRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit, modifier: Modifier = Modifier) {

@@ -54,6 +54,80 @@ class MainActivity : ComponentActivity() {
         pendingConnect = false
     }
 
+    // ---- permission prompts: notifications and battery optimization ---------------------------------------
+    // Asked once on the first start, and again when the person turns on something that needs them (Settings).
+    // Our own short dialog comes first, then Android's. Nothing here runs on a timer.
+    private var permPrompt by mutableStateOf<PermKind?>(null)
+    private var permChain = false
+    private val permSkipped = mutableSetOf<PermKind>()
+    private val permPrefs by lazy { getSharedPreferences("perm", MODE_PRIVATE) }
+
+    private val notifPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { afterPermission() }
+    private val settingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { afterPermission() }
+
+    private fun pendingPermission(): PermKind? = when {
+        PermKind.NOTIFICATIONS !in permSkipped && !Perms.notificationsAllowed(this) -> PermKind.NOTIFICATIONS
+        PermKind.BATTERY !in permSkipped && !Perms.batteryExempt(this) -> PermKind.BATTERY
+        else -> null
+    }
+
+    private fun firstRunPermissions() {
+        if (permPrefs.getBoolean("asked", false)) return
+        permChain = true
+        permPrompt = pendingPermission()
+        if (permPrompt == null) permPrefs.edit().putBoolean("asked", true).apply()
+    }
+
+    private fun askPermission(kind: PermKind) {
+        permChain = false
+        permSkipped.remove(kind)
+        permPrompt = kind
+    }
+
+    private fun advancePermissions() {
+        permPrompt = if (permChain) pendingPermission() else null
+        if (permPrompt == null) permPrefs.edit().putBoolean("asked", true).apply()
+    }
+
+    private fun permissionLater() {
+        permPrompt?.let { permSkipped.add(it) }
+        advancePermissions()
+    }
+
+    private fun afterPermission() {
+        permPrompt?.let { permSkipped.add(it) }
+        advancePermissions()
+    }
+
+    private fun permissionAllow() {
+        when (permPrompt ?: return) {
+            PermKind.NOTIFICATIONS -> {
+                val runtime = android.os.Build.VERSION.SDK_INT >= 33 &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) !=
+                    android.content.pm.PackageManager.PERMISSION_GRANTED &&
+                    !permPrefs.getBoolean("notif_requested", false)
+                if (runtime) {
+                    permPrefs.edit().putBoolean("notif_requested", true).apply()
+                    notifPermLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    // Already asked before (Android then stays silent) or switched off in Settings: open the page.
+                    launchSystemPage(Perms.notificationSettingsIntent(this), null)
+                }
+            }
+            PermKind.BATTERY -> launchSystemPage(Perms.batteryRequestIntent(this), Perms.batteryListIntent())
+        }
+    }
+
+    private fun launchSystemPage(intent: Intent, fallback: Intent?) {
+        try {
+            settingsLauncher.launch(intent)
+        } catch (_: Exception) {
+            try {
+                if (fallback != null) settingsLauncher.launch(fallback) else afterPermission()
+            } catch (_: Exception) { afterPermission() }
+        }
+    }
+
     override fun attachBaseContext(newBase: android.content.Context) {
         super.attachBaseContext(com.madshield.app.core.AppLanguage.wrap(newBase))
     }
@@ -61,6 +135,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
+        if (savedInstanceState == null) firstRunPermissions()
         // The automatic clean-up has no timer: it is asked here, acts at most once a day, and only when idle.
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             runCatching { StorageAuto.runIfDue(applicationContext, settingsStore) }
@@ -127,6 +202,7 @@ class MainActivity : ComponentActivity() {
                                         onOpenConnections = { nav.navigate("connections") },
                                         onOpenUsage = { nav.navigate("usage") },
                                         onOpenStorage = { nav.navigate("storage") },
+                                        onAskPermission = { askPermission(it) },
                                         contentPadding = padding
                                     )
                                 }
@@ -169,6 +245,7 @@ class MainActivity : ComponentActivity() {
                         DiagnosticsScreen(config, connectionState, onBack = { nav.popBackStack() })
                     }
                 }
+                permPrompt?.let { kind -> PermissionDialog(kind, onAllow = { permissionAllow() }, onLater = { permissionLater() }) }
             }
         }
     }

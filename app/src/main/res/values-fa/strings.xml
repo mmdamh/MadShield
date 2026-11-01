@@ -527,4 +527,19 @@
     <string name="tile_conn_sub">مسیر و بستن</string>
     <string name="tile_usage_sub">روزانه</string>
     <string name="tile_advanced_sub">موتور</string>
+    <string name="sec_power_notif">باتری و نوتیفیکیشن</string>
+    <string name="sec_account">حساب WARP</string>
+    <string name="account_summary">بازنشانی هویت، تیم Zero Trust</string>
+    <string name="perm_notif_title">اجازه نوتیفیکیشن</string>
+    <string name="perm_notif_body">MadShield وضعیت اتصال (و در صورت تمایل سرعت) را در نوتیفیکیشن نشان می‌دهد. بدون آن نمی‌توانید VPN را از نوار اعلان ببینید یا قطع کنید.</string>
+    <string name="perm_battery_title">اجازه کار در پس‌زمینه</string>
+    <string name="perm_battery_body">اندروید ممکن است وقتی صفحه خاموش است VPN را بخواباند و اتصال قطع شود. با این اجازه اتصال می‌ماند؛ مصرف باتری MadShield همچنان بسیار کم است.</string>
+    <string name="perm_allow">اجازه می‌دهم</string>
+    <string name="perm_later">فعلاً نه</string>
+    <string name="perm_notif_row">نوتیفیکیشن</string>
+    <string name="perm_battery_row">بهینه‌سازی باتری</string>
+    <string name="perm_on">مجاز</string>
+    <string name="perm_off">در تنظیمات اندروید مسدود است</string>
+    <string name="perm_unrestricted">بدون محدودیت</string>
+    <string name="perm_restricted">محدود: اندروید ممکن است VPN را در پس‌زمینه ببندد</string>
 </resources>

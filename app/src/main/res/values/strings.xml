@@ -529,4 +529,19 @@
     <string name="tile_conn_sub">Route and close</string>
     <string name="tile_usage_sub">Daily</string>
     <string name="tile_advanced_sub">Engine</string>
+    <string name="sec_power_notif">Battery and notifications</string>
+    <string name="sec_account">WARP account</string>
+    <string name="account_summary">Identity reset, Zero Trust team</string>
+    <string name="perm_notif_title">Allow notifications</string>
+    <string name="perm_notif_body">MadShield shows the connection status (and speed, if you want) in a notification. Without it you cannot see or stop the VPN from the notification shade.</string>
+    <string name="perm_battery_title">Let it run in the background</string>
+    <string name="perm_battery_body">Android can put the VPN to sleep when the screen is off, which drops the connection. Allowing this keeps it running; MadShield still uses very little battery.</string>
+    <string name="perm_allow">Allow</string>
+    <string name="perm_later">Not now</string>
+    <string name="perm_notif_row">Notifications</string>
+    <string name="perm_battery_row">Battery optimization</string>
+    <string name="perm_on">Allowed</string>
+    <string name="perm_off">Blocked in Android settings</string>
+    <string name="perm_unrestricted">Unrestricted</string>
+    <string name="perm_restricted">Restricted: Android may stop the VPN in the background</string>
 </resources>
