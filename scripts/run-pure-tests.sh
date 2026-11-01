@@ -5,6 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/app/src/main/java/com/madshield/app"
 KOTLINC="${KOTLINC:-kotlinc}"
+# The test file is large; the default compiler heap is not always enough on small machines.
+export JAVA_OPTS="${JAVA_OPTS:--Xmx3g -Xss16m}"
 OUT="$(mktemp -d)"
 export MADSHIELD_ROOT="$ROOT"   # the golden files are looked up under it
 files=()

@@ -1654,6 +1654,15 @@ private fun waitUntil(ms: Long = 3000, cond: () -> Boolean): Boolean {
 }
 
 fun insightTests() {
+    insightPart1()
+    insightPart2()
+    insightPart3()
+    insightPart4()
+    insightPart5()
+    insightPart6()
+}
+
+private fun insightPart1() {
     // --- ConnTracker
     run {
         var now = 1_000L
@@ -1691,6 +1700,9 @@ fun insightTests() {
         many.last().addUp(5)
         check("tracker: connections beyond the cap are counted but not listed", tr2.snapshot().active.size == ConnTracker.MAX_ACTIVE && tr2.totals().vpnUp == 5L)
     }
+}
+
+private fun insightPart2() {
     // --- RouteFront lists live connections, counts bytes, closes on request
     run {
         val rules = RouteMatcher.parse("[block]\nblocked.example\n[direct]\n127.0.0.1\n")
@@ -1715,6 +1727,9 @@ fun insightTests() {
         check("insight: closeAll ends the rest", f.closeAllConnections() == 1 && waitUntil { f.connections().active.isEmpty() })
         s1.close(); s2.close(); f.stop(); up.close(); echo.close()
     }
+}
+
+private fun insightPart3() {
     // --- UsageLedger
     run {
         val l = UsageLedger()
@@ -1735,6 +1750,9 @@ fun insightTests() {
         check("ledger: only the newest ${UsageLedger.KEEP_DAYS} days are kept", big.all().size == UsageLedger.KEEP_DAYS && big.all().last().day == "2026-04-16")
         check("ledger: file stays small", big.serialize().length < 12_000)
     }
+}
+
+private fun insightPart4() {
     // --- counterDelta and UsageRecorder
     run {
         check("delta: normal growth", counterDelta(100, 250) == 150L)
@@ -1779,6 +1797,9 @@ fun insightTests() {
         r.sample("2026-11-01", 8_000 + UsageRecorder.PERSIST_EVERY_MS, 203, 204, RouteTotals(), Transport.MOBILE, false)
         check("recorder: a write after 5 minutes when something changed", writes.size == 3)
     }
+}
+
+private fun insightPart5() {
     // --- UsageFile
     run {
         val dir = java.nio.file.Files.createTempDirectory("usage").toFile()
@@ -1790,6 +1811,9 @@ fun insightTests() {
         check("usage file: a missing folder does not throw", run { UsageFile.write(java.io.File(dir, "nope/never"), "x"); true })
         dir.deleteRecursively()
     }
+}
+
+private fun insightPart6() {
     // --- StorageCleaner
     run {
         val day = 24L * 60 * 60 * 1000
@@ -1834,3 +1858,4 @@ fun insightTests() {
         files.deleteRecursively(); cache.deleteRecursively()
     }
 }
+
