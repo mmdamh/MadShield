@@ -118,6 +118,22 @@ fun SettingsScreen(
                     if (v && !notifOk) onAskPermission(PermKind.NOTIFICATIONS)
                 }
             )
+            if (LiveUpdate.supported()) {
+                val liveOk = remember(foreground) { LiveUpdate.allowed(ctx) }
+                InfoSwitchRow(
+                    stringResource(R.string.sw_live_update), stringResource(R.string.sw_live_update_sub),
+                    config.liveUpdate,
+                    { v ->
+                        onUpdate { it.copy(liveUpdate = v) }
+                        if (v && !liveOk) runCatching { ctx.startActivity(LiveUpdate.settingsIntent(ctx)) }
+                    }
+                )
+                if (config.liveUpdate && !liveOk) {
+                    PermRow(stringResource(R.string.sw_live_update), false, "", stringResource(R.string.live_off)) {
+                        runCatching { ctx.startActivity(LiveUpdate.settingsIntent(ctx)) }
+                    }
+                }
+            }
             PermRow(stringResource(R.string.perm_notif_row), notifOk, stringResource(R.string.perm_on), stringResource(R.string.perm_off)) {
                 onAskPermission(PermKind.NOTIFICATIONS)
             }

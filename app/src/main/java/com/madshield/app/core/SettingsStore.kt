@@ -54,6 +54,7 @@ class SettingsStore(private val context: Context) {
         val PSIPHON_REGION = stringPreferencesKey("psiphon_region")
         val PERF = stringPreferencesKey("perf_profile")
         val NOTIF_SPEED = booleanPreferencesKey("notif_speed")
+        val LIVE_UPDATE = booleanPreferencesKey("live_update")
         val POWER_SAVER = booleanPreferencesKey("power_saver")
 
         // Local DoH (update11). The resolver list is ONE newline-separated string, not a set: order is the
@@ -124,6 +125,7 @@ class SettingsStore(private val context: Context) {
             psiphonRegion = Chain.normalizeRegion(p[Keys.PSIPHON_REGION]),
             perfProfile = CoreChoices.perfOrDefault(p[Keys.PERF]),
             notifSpeed = p[Keys.NOTIF_SPEED] ?: true,
+            liveUpdate = p[Keys.LIVE_UPDATE] ?: false,
             powerSaver = p[Keys.POWER_SAVER] ?: true,
             dohOn = p[Keys.DOH_ON] ?: false,
             dohResolvers = (p[Keys.DOH_RESOLVERS] ?: "").split('\n').map { it.trim() }.filter { it.isNotEmpty() },
@@ -210,6 +212,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.CHAIN] = current.privacyChain.name
             p[Keys.PERF] = CoreChoices.perfOrDefault(current.perfProfile)
             p[Keys.NOTIF_SPEED] = current.notifSpeed
+            p[Keys.LIVE_UPDATE] = current.liveUpdate
             p[Keys.POWER_SAVER] = current.powerSaver
             p[Keys.UDP_ENABLED] = current.udpEnabled
             p[Keys.TUN_ENGINE] = current.tunEngine.stored

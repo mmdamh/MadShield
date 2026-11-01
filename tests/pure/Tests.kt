@@ -116,6 +116,12 @@ fun main() {
 
     // ---- NotificationText
     check("rate B", NotificationText.rate(512) == "512 B/s")
+    check("chip: bytes, KB, MB, GB", NotificationText.chip(512) == "↓512B" && NotificationText.chip(850 * 1024L) == "↓850K" &&
+        NotificationText.chip((1.2 * 1048576).toLong()) == "↓1.2M" && NotificationText.chip(25L * 1048576) == "↓25M" &&
+        NotificationText.chip(2L * 1073741824) == "↓2.0G")
+    check("chip: always under 7 characters (the status-bar chip shows short text whole)",
+        listOf(0L, 1L, 999L, 1023L, 1024L * 1023, 1048576L * 9, 1048576L * 999, 1073741824L * 50).all { NotificationText.chip(it).length < 7 })
+    check("chip: a negative rate reads as zero", NotificationText.chip(-5) == "↓0B")
     check("rate KB", NotificationText.rate(12 * 1024L) == "12 KB/s")
     check("rate MB", NotificationText.rate((1.2 * 1048576).toLong()) == "1.2 MB/s")
     check("speed line", NotificationText.speedLine(1024, 2 * 1048576L).contains("↑ 1 KB/s") && NotificationText.speedLine(1024, 2 * 1048576L).contains("↓ 2.0 MB/s"))

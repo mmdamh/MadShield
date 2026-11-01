@@ -17,6 +17,18 @@ object NotificationText {
         }
     }
 
+    /** Very short download speed for the status-bar chip of a Live update ("↓850K", "↓1.2M"): under 7 characters. */
+    fun chip(downBps: Long): String {
+        val b = downBps.coerceAtLeast(0)
+        return when {
+            b >= 1024L * 1024 * 1024 -> String.format(Locale.US, "↓%.1fG", b / 1073741824.0)
+            b >= 10L * 1024 * 1024 -> String.format(Locale.US, "↓%.0fM", b / 1048576.0)
+            b >= 1024L * 1024 -> String.format(Locale.US, "↓%.1fM", b / 1048576.0)
+            b >= 1024 -> String.format(Locale.US, "↓%.0fK", b / 1024.0)
+            else -> "↓${b}B"
+        }
+    }
+
     fun speedLine(upBps: Long, downBps: Long): String =
         "$LRM↑ ${rate(upBps)}   ↓ ${rate(downBps)}"
 

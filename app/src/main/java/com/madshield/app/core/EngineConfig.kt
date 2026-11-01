@@ -172,6 +172,8 @@ data class EngineConfig(
 
     /** Show upload/download speed in the status notification (VPN mode, only while the screen is on). */
     val notifSpeed: Boolean = true,
+    /** Android 16+: ask Android to show the status notification as a Live update (lock screen, status-bar chip). Off by default. */
+    val liveUpdate: Boolean = false,
 
     /**
      * Battery saver (update15): fewer keepalive and health packets, and a stale limit that no longer kills a working

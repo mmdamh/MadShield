@@ -544,4 +544,7 @@
     <string name="perm_off">Blocked in Android settings</string>
     <string name="perm_unrestricted">Unrestricted</string>
     <string name="perm_restricted">Restricted: Android may stop the VPN in the background</string>
+    <string name="sw_live_update">Live update (Android 16+)</string>
+    <string name="sw_live_update_sub">Shows the status on the lock screen and as a chip in the status bar. With Speed in notification on, the download speed shows in the chip and both speeds on the lock screen. Android decides when to show it, and you can turn it off for this app in Android settings.</string>
+    <string name="live_off">Live updates are off for this app in Android settings</string>
 </resources>

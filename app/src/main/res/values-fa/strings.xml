@@ -542,4 +542,7 @@
     <string name="perm_off">در تنظیمات اندروید مسدود است</string>
     <string name="perm_unrestricted">بدون محدودیت</string>
     <string name="perm_restricted">محدود: اندروید ممکن است VPN را در پس‌زمینه ببندد</string>
+    <string name="sw_live_update">Live update (اندروید ۱۶ به بالا)</string>
+    <string name="sw_live_update_sub">وضعیت را روی صفحه قفل و به‌صورت یک چیپ در نوار وضعیت نشان می‌دهد. اگر «سرعت در نوتیفیکیشن» روشن باشد، سرعت دانلود در چیپ و هر دو سرعت روی صفحه قفل دیده می‌شود. نمایش آن با خود اندروید است و می‌توانید در تنظیمات اندروید برای این برنامه خاموشش کنید.</string>
+    <string name="live_off">Live updates در تنظیمات اندروید برای این برنامه خاموش است</string>
 </resources>

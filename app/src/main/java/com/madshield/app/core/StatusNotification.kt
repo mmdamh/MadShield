@@ -18,7 +18,9 @@ object StatusNotification {
         channelId: String,
         text: String,
         subText: String?,
-        stopIntent: Intent
+        stopIntent: Intent,
+        live: Boolean = false,
+        chip: String? = null
     ): Notification {
         val open = PendingIntent.getActivity(
             ctx, 0, Intent(ctx, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
@@ -39,6 +41,7 @@ object StatusNotification {
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .apply { if (live) LiveUpdate.extras(chip)?.let { addExtras(it) } }
             .build()
     }
 }

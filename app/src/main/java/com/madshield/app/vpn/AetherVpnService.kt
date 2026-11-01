@@ -99,6 +99,8 @@ class AetherVpnService : VpnService() {
     private var speedJob: Job? = null
     private var statusText: String = ""
     @Volatile private var speedText: String? = null
+    @Volatile private var liveUpdate = false
+    @Volatile private var chipText: String? = null
     /** Daily usage totals (update26). Fed from events only, see [sampleUsage]. */
     private lateinit var usage: UsageRecorder
 
@@ -737,7 +739,9 @@ class AetherVpnService : VpnService() {
             this, CHANNEL_ID,
             text = speed ?: statusText,
             subText = if (speed != null) statusText else null,
-            stopIntent = Intent(this, AetherVpnService::class.java).setAction(ACTION_DISCONNECT)
+            stopIntent = Intent(this, AetherVpnService::class.java).setAction(ACTION_DISCONNECT),
+            live = liveUpdate,
+            chip = chipText
         )
     }
 
@@ -765,20 +769,27 @@ class AetherVpnService : VpnService() {
         speedJob?.cancel()
         speedJob = scope.launch {
             val wantSpeed = settingsStore.configFlow.map { it.notifSpeed }.distinctUntilChanged()
-            combine(screen.screenOn, wantSpeed, AetherController.state) { on, want, st ->
-                when {
+            val wantLive = settingsStore.configFlow.map { it.liveUpdate && LiveUpdate.supported() }.distinctUntilChanged()
+            combine(screen.screenOn, wantSpeed, AetherController.state, wantLive) { on, want, st, live ->
+                val mode = when {
                     !on || !want -> SpeedMode.OFF
                     st is ConnectionState.Connected -> SpeedMode.LIVE
                     else -> SpeedMode.ZERO
                 }
-            }.distinctUntilChanged().collectLatest { mode ->
+                mode to live
+            }.distinctUntilChanged().collectLatest { (mode, live) ->
+                val liveChanged = live != liveUpdate
+                liveUpdate = live
                 if (mode == SpeedMode.LIVE) {
+                    if (liveChanged) postNotification()
                     runLiveSpeed()
                 } else if (mode == SpeedMode.ZERO) {
                     speedText = NotificationText.speedLine(0L, 0L)
+                    chipText = NotificationText.chip(0L)
                     postNotification()
-                } else if (speedText != null) {
+                } else if (speedText != null || liveChanged) {
                     speedText = null
+                    chipText = null
                     postNotification()
                 }
             }
@@ -795,10 +806,10 @@ class AetherVpnService : VpnService() {
             if (s != null) {
                 val p = prev
                 if (p != null) {
-                    val line = NotificationText.speedLine(
-                        upBps = NotificationText.bps(p.txBytes, s.txBytes, now - prevAt),
-                        downBps = NotificationText.bps(p.rxBytes, s.rxBytes, now - prevAt)
-                    )
+                    val upBps = NotificationText.bps(p.txBytes, s.txBytes, now - prevAt)
+                    val downBps = NotificationText.bps(p.rxBytes, s.rxBytes, now - prevAt)
+                    val line = NotificationText.speedLine(upBps, downBps)
+                    chipText = NotificationText.chip(downBps)
                     // Same text as before (an idle tunnel reads "0 B/s" again and again): do not re-post it.
                     if (line != speedText) {
                         speedText = line
