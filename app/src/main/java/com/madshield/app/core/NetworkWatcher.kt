@@ -61,6 +61,35 @@ class NetworkWatcher(private val context: Context) {
     fun isOffline(): Boolean = !tracker.online || !hasRealNetwork()
 
     /**
+     * Which kind of network the phone uses right now, for the Usage page's Wi-Fi / mobile split. Our app is kept
+     * outside its own VPN, so the default network seen here is the real one. Anything that is not cellular counts
+     * as Wi-Fi; when it cannot tell, Wi-Fi (the unmetered answer).
+     */
+    @Suppress("DEPRECATION")
+    fun transport(): Transport {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return Transport.WIFI
+        return try {
+            val active = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+            if (active != null && !active.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                return if (active.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                    !active.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) Transport.MOBILE else Transport.WIFI
+            }
+            // The default network reads as the VPN itself: look at the real ones.
+            var cellular = false
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) ||
+                    !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return Transport.WIFI
+                cellular = true
+            }
+            if (cellular) Transport.MOBILE else Transport.WIFI
+        } catch (_: Throwable) {
+            Transport.WIFI
+        }
+    }
+
+    /**
      * Suspends until [hasRealNetwork]. The system callback wakes it at once; [pollMs] is only the safety net for a
      * callback that never comes. It is asked again before every wait, so the interval can follow the screen state.
      */

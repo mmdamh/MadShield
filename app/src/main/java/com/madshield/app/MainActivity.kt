@@ -61,6 +61,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settingsStore = SettingsStore(this)
+        // The automatic clean-up has no timer: it is asked here, acts at most once a day, and only when idle.
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { StorageAuto.runIfDue(applicationContext, settingsStore) }
+        }
 
         setContent {
             val uiPrefs by settingsStore.uiPrefsFlow.collectAsState(initial = UiPrefs())
@@ -117,6 +121,9 @@ class MainActivity : ComponentActivity() {
                                         onOpenAppearance = { nav.navigate("appearance") },
                                         onOpenAdvanced = { nav.navigate("advanced") },
                                         onOpenDiagnostics = { nav.navigate("diagnostics") },
+                                        onOpenConnections = { nav.navigate("connections") },
+                                        onOpenUsage = { nav.navigate("usage") },
+                                        onOpenStorage = { nav.navigate("storage") },
                                         contentPadding = padding
                                     )
                                 }
@@ -145,6 +152,16 @@ class MainActivity : ComponentActivity() {
                         AdvancedScreen(config, { t -> updateConfig(t) }, { nav.popBackStack() })
                     }
                     composable("log") { LogScreen(onBack = { nav.popBackStack() }) }
+                    composable("connections") { ConnectionsScreen(config, onBack = { nav.popBackStack() }) }
+                    composable("usage") { UsageScreen(onBack = { nav.popBackStack() }) }
+                    composable("storage") {
+                        val prefs by settingsStore.storagePrefsFlow.collectAsState(initial = StoragePrefs())
+                        StorageScreen(
+                            prefs,
+                            { t -> lifecycleScope.launch { settingsStore.updateStorage(t) } },
+                            { nav.popBackStack() }
+                        )
+                    }
                     composable("diagnostics") {
                         DiagnosticsScreen(config, connectionState, onBack = { nav.popBackStack() })
                     }

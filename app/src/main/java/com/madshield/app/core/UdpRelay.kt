@@ -30,7 +30,12 @@ data class UdpStats(
     val droppedBadPacket: Long = 0,
     val droppedNoUpstream: Long = 0,
     val droppedResolve: Long = 0,
-    val droppedFull: Long = 0
+    val droppedFull: Long = 0,
+    /** Payload bytes relayed, for the Usage page (the datagram counts above say nothing about size). */
+    val bytesToUpstream: Long = 0,
+    val bytesFromUpstream: Long = 0,
+    val bytesToDirect: Long = 0,
+    val bytesFromDirect: Long = 0
 ) {
     val droppedTotal: Long
         get() = droppedBlocked + droppedGuard + droppedBadPacket + droppedNoUpstream + droppedResolve + droppedFull
@@ -173,6 +178,10 @@ class UdpRelay(
     @Volatile private var nNoUp = 0L
     @Volatile private var nResolve = 0L
     @Volatile private var nFull = 0L
+    @Volatile private var bToUp = 0L
+    @Volatile private var bFromUp = 0L
+    @Volatile private var bToDirect = 0L
+    @Volatile private var bFromDirect = 0L
 
     /** True while the relay thread exists (tests check that it ends with the last association). */
     val threadRunning: Boolean get() = synchronized(lock) { running }
@@ -182,7 +191,8 @@ class UdpRelay(
         opened = nOpened.get(),
         toUpstream = nToUp, fromUpstream = nFromUp, toDirect = nToDirect, fromDirect = nFromDirect,
         droppedBlocked = nBlocked, droppedGuard = nGuard, droppedBadPacket = nBad,
-        droppedNoUpstream = nNoUp, droppedResolve = nResolve, droppedFull = nFull
+        droppedNoUpstream = nNoUp, droppedResolve = nResolve, droppedFull = nFull,
+        bytesToUpstream = bToUp, bytesFromUpstream = bFromUp, bytesToDirect = bToDirect, bytesFromDirect = bFromDirect
     )
 
     // ------------------------------------------------------------------ public API
@@ -393,7 +403,7 @@ class UdpRelay(
         val d = directFor(a, ip, h.port) ?: return
         bb.clear(); bb.limit(len); bb.position(h.dataOff)
         try {
-            if (d.ch.write(bb) == 0) nFull++ else nToDirect++
+            if (d.ch.write(bb) == 0) nFull++ else { nToDirect++; bToDirect += len - h.dataOff }
         } catch (_: IOException) { nNoUp++ }
     }
 
@@ -426,7 +436,7 @@ class UdpRelay(
         val hs = UdpPacket.ipHeaderSize(d.addrBytes.size)
         UdpPacket.writeIpHeader(buf, HEAD_ROOM - hs, d.addrBytes, d.port)
         bb.limit(HEAD_ROOM + n); bb.position(HEAD_ROOM - hs)
-        if (a.ch.send(bb, client) == 0) nFull++ else nFromDirect++
+        if (a.ch.send(bb, client) == 0) nFull++ else { nFromDirect++; bFromDirect += n }
     }
 
     // ---- PROXY
@@ -463,7 +473,7 @@ class UdpRelay(
         val w = when { data === buf -> bb; data === obuf -> obb; else -> ByteBuffer.wrap(data, 0, len) } // else: a queued copy
         w.clear(); w.limit(len); w.position(0)
         try {
-            if (ch.write(w) == 0) nFull++ else nToUp++
+            if (ch.write(w) == 0) nFull++ else { nToUp++; bToUp += len }
         } catch (_: IOException) { nNoUp++ }
     }
 
@@ -566,7 +576,7 @@ class UdpRelay(
         val client = a.client ?: return
         a.lastAt = System.nanoTime()
         bb.limit(n); bb.position(0)
-        if (a.ch.send(bb, client) == 0) nFull++ else nFromUp++
+        if (a.ch.send(bb, client) == 0) nFull++ else { nFromUp++; bFromUp += n }
     }
 
     // ------------------------------------------------------------------ names

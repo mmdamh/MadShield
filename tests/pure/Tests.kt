@@ -592,6 +592,7 @@ fun dohTests() {
 
     routeFrontTests()
     udpRelayTests()
+    insightTests()
 }
 
 
@@ -1641,3 +1642,189 @@ fun udpRelayTests() {
 }
 
 
+
+// ---------------------------------------------------------------------------------------------------
+// update26: Connections list, daily usage, storage clean-up
+// ---------------------------------------------------------------------------------------------------
+
+private fun waitUntil(ms: Long = 3000, cond: () -> Boolean): Boolean {
+    val end = System.currentTimeMillis() + ms
+    while (System.currentTimeMillis() < end) { if (cond()) return true; Thread.sleep(20) }
+    return cond()
+}
+
+fun insightTests() {
+    // --- ConnTracker
+    run {
+        var now = 1_000L
+        val tr = ConnTracker { now }
+        var closed = 0
+        val c1 = tr.open("a.example", true, 443, RouteAction.PROXY) { closed++ }
+        now = 6_000
+        val c2 = tr.open("10.0.0.1", false, 80, RouteAction.DIRECT) { closed++ }
+        c1.addUp(100); c1.addDown(2000); c2.addDown(50); c2.addUp(7)
+        now = 9_000
+        val s = tr.snapshot()
+        check("tracker: newest connection first", s.active.map { it.name } == listOf("10.0.0.1", "a.example"))
+        check("tracker: age and per-connection bytes", s.active[1].ageMs == 8_000L && s.active[1].upBytes == 100L && s.active[1].downBytes == 2000L)
+        check("tracker: counts by route", s.vpnCount == 1 && s.directCount == 1 && s.active[0].hasName.not() && s.active[1].hasName)
+        val t = tr.totals()
+        check("tracker: totals by route", t.vpnUp == 100L && t.vpnDown == 2000L && t.directUp == 7L && t.directDown == 50L && t.blocked == 0L)
+        tr.blocked("ads.example", true, 443); tr.blocked("ads.example", true, 443); tr.blocked("other.example", true, 80)
+        val s2 = tr.snapshot()
+        check("tracker: identical refused requests fold into one row with a count", s2.blocked.size == 2 && s2.blocked[1].repeat == 2 && s2.blocked[0].name == "other.example")
+        check("tracker: blocked total counts every request", s2.blockedTotal == 3L && tr.totals().blocked == 3L)
+        check("tracker: closeConn closes that connection only", tr.closeConn(c1.id) && closed == 1 && !tr.closeConn(9999))
+        tr.close(c1)
+        check("tracker: a closed connection leaves the list but its bytes stay in the totals", tr.snapshot().active.size == 1 && tr.totals().vpnUp == 100L)
+        check("tracker: closeAll tells the rest to close", tr.closeAll() == 1 && closed == 2)
+        for (i in 1..50) tr.blocked("n$i.example", true, 443)
+        check("tracker: refused list is bounded", tr.snapshot().blocked.size == ConnTracker.MAX_BLOCKED)
+        val tr2 = ConnTracker { now }
+        val many = (1..(ConnTracker.MAX_ACTIVE + 25)).map { tr2.open("h$it", true, 443, RouteAction.PROXY) { } }
+        many.last().addUp(5)
+        check("tracker: connections beyond the cap are counted but not listed", tr2.snapshot().active.size == ConnTracker.MAX_ACTIVE && tr2.totals().vpnUp == 5L)
+    }
+    // --- RouteFront lists live connections, counts bytes, closes on request
+    run {
+        val rules = RouteMatcher.parse("[block]\nblocked.example\n[direct]\n127.0.0.1\n")
+        val up = FakeUpstream(); val echo = EchoServer(); val port = freePort()
+        val f = RouteFront(port, up.port, rules, RouteFront.Options()) { }
+        f.start()
+        val (c1, s1) = socks(port, reqName("example.com", 443))
+        val (c2, s2) = socks(port, reqIp("127.0.0.1", echo.port))
+        check("insight: both connections opened", c1 == 0 && c2 == 0 && echoOk(s1) && echoOk(s2))
+        check("insight: bytes are counted", waitUntil { f.connections().active.all { it.upBytes >= 5 && it.downBytes >= 5 } && f.connections().active.size == 2 })
+        val snap = f.connections()
+        val v = snap.active.first { it.route == RouteAction.PROXY }
+        val d = snap.active.first { it.route == RouteAction.DIRECT }
+        check("insight: proxy connection shows the name, port and route", v.name == "example.com" && v.hasName && v.port == 443)
+        check("insight: direct connection by address shows the IP and no name", d.name == "127.0.0.1" && !d.hasName && d.port == echo.port)
+        val totals = f.routeTotals()
+        check("insight: route totals split vpn and direct", totals.vpnUp >= 5 && totals.directUp >= 5 && totals.vpnDown >= 5 && totals.directDown >= 5)
+        val (cb, sb) = socks(port, reqName("blocked.example", 443)); sb.close()
+        check("insight: a refused request is listed as blocked and counted", cb == 2 && f.connections().blocked.any { it.name == "blocked.example" } && f.routeTotals().blocked == 1L)
+        check("insight: closing one connection ends it for the app", f.closeConnection(v.id) && (try { s1.getInputStream().read() < 0 } catch (_: Exception) { true }))
+        check("insight: the closed connection leaves the list, the other stays", waitUntil { f.connections().active.size == 1 } && f.connections().active[0].route == RouteAction.DIRECT)
+        check("insight: closeAll ends the rest", f.closeAllConnections() == 1 && waitUntil { f.connections().active.isEmpty() })
+        s1.close(); s2.close(); f.stop(); up.close(); echo.close()
+    }
+    // --- UsageLedger
+    run {
+        val l = UsageLedger()
+        l.add(DayUsage("2026-10-30", wifiUp = 10, wifiDown = 100))
+        l.add(DayUsage("2026-10-30", mobileUp = 1, mobileDown = 2, blocked = 3))
+        l.add(DayUsage("2026-10-31", wifiDown = 5))
+        l.add(DayUsage("2026-11-01"))
+        val d = l.get("2026-10-30")
+        check("ledger: adds into the same day", d.wifiUp == 10L && d.wifiDown == 100L && d.mobileUp == 1L && d.mobileDown == 2L && d.blocked == 3L && d.total == 113L && d.wifi == 110L && d.mobile == 3L)
+        check("ledger: an all-zero delta is not stored", l.all().map { it.day } == listOf("2026-10-30", "2026-10-31"))
+        val back = UsageLedger.parse(l.serialize())
+        check("ledger: round trip", back.all() == l.all())
+        val rough = UsageLedger.parse("v1\n2026-10-29,1,2,3,4,5,6,7,8,9\nnot a line\n2026-10-28,1,2\n2026-10-27,a,2,3,4,5,6,7,8,9\n2026-10-26,-1,2,3,4,5,6,7,8,9\n")
+        check("ledger: a damaged line is skipped, the good one kept", rough.all().map { it.day } == listOf("2026-10-29") && rough.get("2026-10-29").directDown == 8L)
+        check("ledger: empty or missing text is an empty ledger", UsageLedger.parse(null).all().isEmpty() && UsageLedger.parse("").all().isEmpty())
+        val big = UsageLedger()
+        for (i in 0 until 100) big.add(DayUsage("2026-%02d-%02d".format(1 + i / 28, 1 + i % 28), wifiDown = 1))
+        check("ledger: only the newest ${UsageLedger.KEEP_DAYS} days are kept", big.all().size == UsageLedger.KEEP_DAYS && big.all().last().day == "2026-04-16")
+        check("ledger: file stays small", big.serialize().length < 12_000)
+    }
+    // --- counterDelta and UsageRecorder
+    run {
+        check("delta: normal growth", counterDelta(100, 250) == 150L)
+        check("delta: a counter that restarted counts from zero", counterDelta(1000, 40) == 40L)
+        val ledger = UsageLedger(); val writes = ArrayList<String>()
+        val r = UsageRecorder(ledger) { writes.add(it) }
+        // first sample: baseline only (an interface counter may hold everything since boot)
+        r.sample("2026-10-31", 0, 5_000_000, 90_000_000, RouteTotals(), Transport.WIFI, false)
+        check("recorder: the first sample only sets the baseline", ledger.all().isEmpty() && writes.isEmpty())
+        r.sample("2026-10-31", 1_000, 5_000_100, 90_000_900, RouteTotals(vpnUp = 60, vpnDown = 700, directUp = 40, directDown = 200, blocked = 2), Transport.WIFI, false)
+        val d = ledger.get("2026-10-31")
+        check("recorder: tunnel growth goes to the network in use, route split from the front", d.wifiUp == 100L && d.wifiDown == 900L && d.mobile == 0L && d.vpnUp == 60L && d.vpnDown == 700L && d.directUp == 40L && d.directDown == 200L && d.blocked == 2L)
+        check("recorder: the first change is written at once", writes.size == 1)
+        r.sample("2026-10-31", 2_000, 5_000_200, 90_001_900, RouteTotals(vpnUp = 160, vpnDown = 1700, directUp = 40, directDown = 200, blocked = 5), Transport.WIFI, false)
+        val d2 = ledger.get("2026-10-31")
+        check("recorder: route deltas accumulate", d2.vpnUp == 160L && d2.vpnDown == 1700L && d2.directUp == 40L && d2.blocked == 5L)
+        check("recorder: not written more often than every 5 minutes", writes.size == 1)
+        // a network switch: the bytes before it belong to the OLD network, even though the sample is taken on the new one
+        r.sample("2026-10-31", 3_000, 5_000_300, 90_002_900, RouteTotals(vpnUp = 160, vpnDown = 1700, directUp = 40, directDown = 200, blocked = 5), Transport.MOBILE, true)
+        val d3 = ledger.get("2026-10-31")
+        check("recorder: bytes before a Wi-Fi to mobile switch stay on Wi-Fi", d3.mobile == 0L && d3.wifiUp == 300L)
+        check("recorder: force writes the file", writes.size == 2 && UsageLedger.parse(writes[1]).get("2026-10-31").wifiUp == 300L)
+        r.sample("2026-10-31", 4_000, 5_000_400, 90_003_000, null, Transport.MOBILE, false)
+        check("recorder: now on mobile, new bytes go to mobile", ledger.get("2026-10-31").mobileUp == 100L && ledger.get("2026-10-31").mobileDown == 100L)
+        // a new tunnel: counters start over
+        r.newConnection()
+        r.sample("2026-10-31", 5_000, 10, 20, RouteTotals(), Transport.MOBILE, false)
+        r.sample("2026-10-31", 6_000, 15, 30, RouteTotals(), Transport.MOBILE, false)
+        check("recorder: after newConnection a fresh baseline, nothing is counted twice", ledger.get("2026-10-31").mobileUp == 105L)
+        // counters that went back without newConnection (hev restarted its own counters)
+        r.sample("2026-10-31", 7_000, 3, 4, RouteTotals(), Transport.MOBILE, false)
+        check("recorder: a counter that went back counts from zero", ledger.get("2026-10-31").mobileUp == 108L)
+        // no tunnel counters: the front's totals stand in
+        val l2 = UsageLedger(); val r2 = UsageRecorder(l2) { }
+        r2.sample("2026-11-01", 0, null, null, RouteTotals(vpnUp = 10, vpnDown = 20, directUp = 1, directDown = 2), Transport.WIFI, false)
+        r2.sample("2026-11-01", 1_000, null, null, RouteTotals(vpnUp = 110, vpnDown = 220, directUp = 11, directDown = 22), Transport.WIFI, false)
+        check("recorder: without tunnel counters the route totals are used", l2.get("2026-11-01").wifiUp == 110L && l2.get("2026-11-01").wifiDown == 220L)
+        // a day change: the delta lands on the day of the sample
+        r.sample("2026-11-01", 8_000, 103, 104, RouteTotals(), Transport.MOBILE, false)
+        check("recorder: the sample's day gets the new bytes", ledger.get("2026-11-01").mobileUp == 100L)
+        // a persist after more than 5 minutes
+        r.sample("2026-11-01", 8_000 + UsageRecorder.PERSIST_EVERY_MS, 203, 204, RouteTotals(), Transport.MOBILE, false)
+        check("recorder: a write after 5 minutes when something changed", writes.size == 3)
+    }
+    // --- UsageFile
+    run {
+        val dir = java.nio.file.Files.createTempDirectory("usage").toFile()
+        val l = UsageLedger(); l.add(DayUsage("2026-10-31", wifiUp = 1, wifiDown = 2))
+        UsageFile.write(dir, l.serialize())
+        check("usage file: written and read back", UsageFile.read(dir).get("2026-10-31").wifiDown == 2L && java.io.File(dir, "usage.txt.tmp").exists().not())
+        UsageFile.delete(dir)
+        check("usage file: deleted", UsageFile.read(dir).all().isEmpty())
+        check("usage file: a missing folder does not throw", run { UsageFile.write(java.io.File(dir, "nope/never"), "x"); true })
+        dir.deleteRecursively()
+    }
+    // --- StorageCleaner
+    run {
+        val day = 24L * 60 * 60 * 1000
+        val now = System.currentTimeMillis()
+        val files = java.nio.file.Files.createTempDirectory("files").toFile()
+        val cache = java.nio.file.Files.createTempDirectory("cache").toFile()
+        fun mk(dir: java.io.File, rel: String, bytes: Int, ageDays: Double): java.io.File {
+            val f = java.io.File(dir, rel); f.parentFile.mkdirs(); f.writeBytes(ByteArray(bytes)); f.setLastModified(now - (ageDays * day).toLong()); return f
+        }
+        val oldCache = mk(cache, "singbox/old.bin", 1000, 20.0)
+        val newCache = mk(cache, "singbox/new.bin", 500, 1.0)
+        val deepOld = mk(cache, "a/b/c.bin", 300, 40.0)
+        val identity = mk(files, "aether.toml", 200, 400.0)
+        val rule = mk(files, "rules/list.txt", 700, 400.0)
+        val tmpOld = mk(files, "routes.tmp", 50, 1.0)
+        val tmpNew = mk(files, "rules/x.tmp", 60, 0.0)
+        val usageFile = mk(files, "usage.txt", 80, 100.0)
+        val psiOld = mk(files, "psiphon/data.old", 4000, 40.0)
+        val psiNew = mk(files, "psiphon/data.new", 4000, 1.0)
+        val rep = StorageCleaner.report(files, cache, null)
+        check("storage: report splits rules, engine, cache, settings", rep.rules == 760L && rep.engine == 200L + 8000L && rep.cache == 1800L && rep.settings == 80L && rep.total == 760L + 8200L + 1800L + 80L)
+        val p14 = CleanPolicy(14, true)
+        check("storage: reclaimable counts old cache and stale tmp only; engine data kept", StorageCleaner.reclaimable(files, cache, p14, now) == 1000L + 300L + 50L)
+        check("storage: reclaimable removes nothing", oldCache.exists() && tmpOld.exists())
+        val freed = StorageCleaner.clean(files, cache, p14, now)
+        check("storage: old cache and the stale tmp are removed, the new ones kept", freed == 1350L && !oldCache.exists() && !deepOld.exists() && !tmpOld.exists() && newCache.exists() && tmpNew.exists())
+        check("storage: empty cache folders are removed too", !java.io.File(cache, "a").exists() && java.io.File(cache, "singbox").exists())
+        check("storage: identity, rules, usage totals and engine data are untouched", identity.exists() && rule.exists() && usageFile.exists() && psiOld.exists() && psiNew.exists())
+        val now0 = StorageCleaner.clean(files, cache, CleanPolicy(0, true), now)
+        check("storage: age 0 (clean now) removes every cache file", now0 == 500L && !newCache.exists())
+        val drop = StorageCleaner.clean(files, cache, CleanPolicy(14, false), now)
+        check("storage: with engine data not kept, engine files older than the age go", drop == 4000L && !psiOld.exists() && psiNew.exists())
+        // over the cap: oldest first, only past the age, until under the cap
+        val big1 = mk(files, "tor/a.big", 30 * 1024 * 1024, 30.0)
+        val big2 = mk(files, "tor/b.big", 30 * 1024 * 1024, 20.0)
+        val big3 = mk(files, "tor/c.big", 10 * 1024 * 1024, 1.0)
+        val trimmed = StorageCleaner.clean(files, cache, CleanPolicy(14, true), now)
+        check("storage: over 50 MB the oldest files past the age are trimmed until under the cap", !big1.exists() && big2.exists() && big3.exists() && trimmed >= 30L * 1024 * 1024)
+        check("storage: auto clean runs at most once a day", StoragePrefs(autoClean = true, lastCleanMs = now - 2 * 60 * 60 * 1000).autoDue(now).not() &&
+            StoragePrefs(autoClean = true, lastCleanMs = now - 25 * 60 * 60 * 1000).autoDue(now) && !StoragePrefs(autoClean = false).autoDue(now))
+        check("storage: age choices are normalised", StoragePrefs.normalizeDays(30) == 30 && StoragePrefs.normalizeDays(5) == 14 && StoragePrefs.normalizeDays(null) == 14)
+        files.deleteRecursively(); cache.deleteRecursively()
+    }
+}

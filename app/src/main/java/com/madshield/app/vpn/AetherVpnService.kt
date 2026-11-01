@@ -99,6 +99,23 @@ class AetherVpnService : VpnService() {
     private var speedJob: Job? = null
     private var statusText: String = ""
     @Volatile private var speedText: String? = null
+    /** Daily usage totals (update26). Fed from events only, see [sampleUsage]. */
+    private lateinit var usage: UsageRecorder
+
+    /**
+     * Adds what the tunnel carried since the last sample to today's totals. Called on events (screen on/off, network
+     * change, disconnect) and from the once-per-30-seconds counter read that already exists while the screen is on:
+     * there is no timer for it. [force] writes the file now (screen off, disconnect); otherwise at most every 5 minutes.
+     */
+    private fun sampleUsage(force: Boolean) {
+        runCatching {
+            val c = tunEngine?.counters()
+            usage.sample(
+                java.time.LocalDate.now().toString(), android.os.SystemClock.elapsedRealtime(),
+                c?.txBytes, c?.rxBytes, engine.routeTotals(), netWatcher.transport(), force
+            )
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -112,6 +129,14 @@ class AetherVpnService : VpnService() {
         DiagnosticsHub.tunRunning = { tunEngine?.let { e -> runCatching { e.isRunning() }.getOrNull() } }
         DiagnosticsHub.tunEngineId = { tunEngine?.id }
         DiagnosticsHub.udpView = { DiagnosticsHub.UdpView(engine.udpCarried(), engine.udpStats()) }
+        // Connections and Usage pages (update26): they read through these hooks only while they are on screen.
+        usage = UsageRecorder(UsageFile.read(filesDir)) { text -> UsageFile.write(filesDir, text) }
+        InsightHub.connections = { engine.connectionsSnapshot() }
+        InsightHub.closeConnection = { id -> engine.closeConnection(id) }
+        InsightHub.closeAllConnections = { engine.closeAllConnections() }
+        InsightHub.flushUsage = { sampleUsage(true) }
+        // Screen on/off are the natural moments to add up usage (off: about to sleep, so write the file now).
+        scope.launch { screen.screenOn.collect { on -> sampleUsage(!on) } }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
         scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the tunnel stays up (see ChainLinkSwapper).
@@ -127,7 +152,9 @@ class AetherVpnService : VpnService() {
             return START_NOT_STICKY
         }
         userRequestedStop = false
-        netWatcher.onChanged = { screen.poke() }
+        // A network change is announced AFTER it happened, and traffic is credited to the network of the previous sample:
+        // sampling here puts the bytes before the switch on the old network.
+        netWatcher.onChanged = { sampleUsage(false); screen.poke() }
         netWatcher.onOffline = { screen.poke() } // the health loop looks at the network at once, not at the next tick
         netWatcher.start()
         screen.start()
@@ -176,6 +203,7 @@ class AetherVpnService : VpnService() {
             }
         }
         RingLogBuffer.append("[vpn] tunnel engine: ${tunEngine?.id?.stored}")
+        usage.newConnection() // the counters of a new connection start over: set a fresh baseline at the next sample
         // Android treats "allow only these apps" with an empty list as "allow every app". Starting anyway would
         // capture the whole phone although the user asked for a handful of apps (or none), so refuse with a reason.
         if (baseConfig.appSelectionMode == AppSelectionMode.INCLUDE_ONLY_SELECTED && baseConfig.selectedPackages.isEmpty()) {
@@ -252,6 +280,7 @@ class AetherVpnService : VpnService() {
         AetherController.setActive(config)
         AetherController.setState(ConnectionState.Connected("${TunnelConfig.SOCKS_HOST}:${config.socksPort}"))
         updateNotification(getString(R.string.state_connected))
+        sampleUsage(false) // sets the baseline of this connection's counters
     }
 
     /** Starts the engine with [config] and waits for a real SOCKS5 answer, up to [timeoutMs]. */
@@ -477,6 +506,7 @@ class AetherVpnService : VpnService() {
                         // Packet counters from the tunnel bridge, for diagnosing "connected but no traffic":
                         // all zero => nothing enters the tunnel; tx only => nothing comes back.
                         if (cadence.logCountersEveryTicks > 0 && tick++ % cadence.logCountersEveryTicks == 1) {
+                            sampleUsage(false) // about every 30 s with the screen on; reuses this existing counter read cadence
                             val c = runCatching { tunEngine?.counters() }.getOrNull()
                             if (c != null) {
                                 val order = if (tunEngine?.id == TunEngineId.HEV) "hev order: tx pkts, tx bytes, rx pkts, rx bytes"
@@ -633,6 +663,8 @@ class AetherVpnService : VpnService() {
         DiagnosticsHub.tunRunning = null
         DiagnosticsHub.tunEngineId = null
         DiagnosticsHub.udpView = null
+        sampleUsage(true) // last totals of this connection, while the counters still exist
+        InsightHub.clear()
         stopBridge()
         engine.stop()
         releaseTun()
@@ -665,6 +697,7 @@ class AetherVpnService : VpnService() {
         healthJob?.cancel()
         connectJob?.cancel()
         Thread {
+            sampleUsage(true) // last totals of this connection, while the counters still exist
             stopBridge()
             runCatching { engine.stop() }
             runCatching { releaseTun() }
@@ -673,6 +706,8 @@ class AetherVpnService : VpnService() {
             RingLogBuffer.clear()
             DiagnosticsHub.clear()
             stopSelf()
+            // Nothing is connected now: the automatic storage clean-up may run (at most once a day, and only when switched on).
+            runCatching { runBlocking { StorageAuto.runIfDue(applicationContext, settingsStore) } }
         }.start()
     }
 

@@ -98,6 +98,26 @@ class RouteFront(
     private val nRefusedOther = AtomicLong()
     private val nResolveFailed = AtomicLong()
 
+    /** Live connections and per-route byte totals, read by the Connections and Usage pages (see [ConnTracker]). */
+    private val tracker = ConnTracker()
+
+    /** Open connections, newest first, plus the last refused requests. Cheap, but only the open page asks. */
+    fun connections(): ConnSnapshot = tracker.snapshot()
+
+    fun closeConnection(id: Long): Boolean = tracker.closeConn(id)
+
+    fun closeAllConnections(): Int = tracker.closeAll()
+
+    /** Bytes carried so far by route: TCP through this front plus the UDP relay, which counts its own bytes. */
+    fun routeTotals(): RouteTotals {
+        val t = tracker.totals()
+        val u = relay?.stats() ?: return t
+        return t.copy(
+            vpnUp = t.vpnUp + u.bytesToUpstream, vpnDown = t.vpnDown + u.bytesFromUpstream,
+            directUp = t.directUp + u.bytesToDirect, directDown = t.directDown + u.bytesFromDirect
+        )
+    }
+
     /** Binds the public port. Throws IOException if it cannot (the caller must treat that as a failed start). */
     fun start() {
         val s = ServerSocket()
@@ -173,6 +193,7 @@ class RouteFront(
     private fun handle(client: Socket) {
         live.add(client)
         var remote: Socket? = null
+        var tracked: TrackedConn? = null
         try {
             client.tcpNoDelay = true
             client.soTimeout = HANDSHAKE_MS
@@ -241,6 +262,7 @@ class RouteFront(
             when (action) {
                 RouteAction.BLOCK -> {
                     nBlock.incrementAndGet()
+                    tracker.blocked(labelOf(domain, addr), domain != null, port)
                     reply(cout, 0x02)
                     return
                 }
@@ -283,10 +305,15 @@ class RouteFront(
             val upstream = remote ?: return
             client.soTimeout = 0
             upstream.soTimeout = 0
-            pipe(client, upstream)
+            val tc = tracker.open(labelOf(domain, addr), domain != null, port, action) {
+                closeQuietly(client); closeQuietly(upstream)
+            }
+            tracked = tc
+            pipe(client, upstream, tc)
         } catch (_: IOException) {
             // client vanished or sent garbage: nothing to report per connection
         } finally {
+            tracked?.let { tracker.close(it) }
             closeQuietly(client)
             remote?.let { closeQuietly(it) }
             live.remove(client)
@@ -438,13 +465,14 @@ class RouteFront(
         return head + tail
     }
 
-    private fun pipe(a: Socket, b: Socket) {
-        val back = pool.submit { copy(b, a) }
-        copy(a, b)
+    /** [a] is the app's side, [b] the upstream: bytes a->b are the phone's upload, b->a its download. */
+    private fun pipe(a: Socket, b: Socket, tc: TrackedConn) {
+        val back = pool.submit { copy(b, a, tc, false) }
+        copy(a, b, tc, true)
         try { back.get(LINGER_AFTER_HALF_CLOSE_MS, TimeUnit.MILLISECONDS) } catch (_: Exception) { back.cancel(true) }
     }
 
-    private fun copy(src: Socket, dst: Socket) {
+    private fun copy(src: Socket, dst: Socket, tc: TrackedConn, upload: Boolean) {
         val buf = ByteArray(16 * 1024)
         try {
             val input = src.getInputStream()
@@ -454,12 +482,17 @@ class RouteFront(
                 if (n < 0) break
                 output.write(buf, 0, n)
                 output.flush()
+                if (upload) tc.addUp(n) else tc.addDown(n)
             }
         } catch (_: IOException) {
         } finally {
             try { dst.shutdownOutput() } catch (_: IOException) {}
         }
     }
+
+    /** What the Connections page shows for a request: the name the app asked for, else its IP address. */
+    private fun labelOf(domain: String?, addr: ByteArray): String =
+        domain ?: try { InetAddress.getByAddress(addr).hostAddress ?: "?" } catch (_: Exception) { "?" }
 
     private fun reply(out: OutputStream, code: Int) {
         try {

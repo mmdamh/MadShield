@@ -618,6 +618,18 @@ class EngineProcessManager(private val context: Context) {
     /** True when the running front carries UDP, false when it refuses it; null without a front. */
     fun udpCarried(): Boolean? = front?.udpActive
 
+    // ---- Connections and Usage pages. All null / 0 when no front runs: only the front sees individual connections.
+
+    /** The open connections and recently refused requests, or null when no front runs. */
+    fun connectionsSnapshot(): ConnSnapshot? = front?.connections()
+
+    fun closeConnection(id: Long) { front?.closeConnection(id) }
+
+    fun closeAllConnections(): Int = front?.closeAllConnections() ?: 0
+
+    /** Bytes by route so far in this engine run, or null when no front runs. */
+    fun routeTotals(): RouteTotals? = front?.routeTotals()
+
     fun stop() {
         pumpJob?.cancel()
         pumpJob = null

@@ -75,6 +75,12 @@ class SettingsStore(private val context: Context) {
         val AMOLED = booleanPreferencesKey("ui_amoled")
         val CUSTOM_COLOR = intPreferencesKey("ui_custom_color")
         val CONNECT_STYLE = stringPreferencesKey("ui_connect_style")
+
+        // Storage clean-up (update26). Never affects the tunnel.
+        val STORAGE_AUTO = booleanPreferencesKey("storage_auto_clean")
+        val STORAGE_DAYS = intPreferencesKey("storage_max_age_days")
+        val STORAGE_KEEP_ENGINE = booleanPreferencesKey("storage_keep_engine")
+        val STORAGE_LAST = longPreferencesKey("storage_last_clean_ms")
     }
 
     private val encryptedPrefs by lazy {
@@ -155,6 +161,26 @@ class SettingsStore(private val context: Context) {
             p[Keys.AMOLED] = current.amoled
             p[Keys.CUSTOM_COLOR] = current.customColor
             p[Keys.CONNECT_STYLE] = current.connectStyle.name
+        }
+    }
+
+    private fun readStorage(p: Preferences): StoragePrefs = StoragePrefs(
+        autoClean = p[Keys.STORAGE_AUTO] ?: true,
+        maxAgeDays = StoragePrefs.normalizeDays(p[Keys.STORAGE_DAYS]),
+        keepEngineData = p[Keys.STORAGE_KEEP_ENGINE] ?: true,
+        lastCleanMs = p[Keys.STORAGE_LAST] ?: 0L
+    )
+
+    val storagePrefsFlow: Flow<StoragePrefs> = context.dataStore.data.map { readStorage(it) }
+
+    /** Same single-transaction rule as [updateUi]. */
+    suspend fun updateStorage(transform: (StoragePrefs) -> StoragePrefs) {
+        context.dataStore.edit { p ->
+            val current = transform(readStorage(p))
+            p[Keys.STORAGE_AUTO] = current.autoClean
+            p[Keys.STORAGE_DAYS] = StoragePrefs.normalizeDays(current.maxAgeDays)
+            p[Keys.STORAGE_KEEP_ENGINE] = current.keepEngineData
+            p[Keys.STORAGE_LAST] = current.lastCleanMs
         }
     }
 

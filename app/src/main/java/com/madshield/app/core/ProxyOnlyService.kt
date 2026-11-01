@@ -58,6 +58,10 @@ class ProxyOnlyService : Service() {
         screen = ScreenWatcher(this)
         DiagnosticsHub.engineCpuTicks = { engine.cpuTicks() }
         DiagnosticsHub.udpView = { DiagnosticsHub.UdpView(engine.udpCarried(), engine.udpStats()) }
+        // Connections page (update26): read through these hooks only while the page is on screen.
+        InsightHub.connections = { engine.connectionsSnapshot() }
+        InsightHub.closeConnection = { id -> engine.closeConnection(id) }
+        InsightHub.closeAllConnections = { engine.closeAllConnections() }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
         scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the proxy stays up (see ChainLinkSwapper).
@@ -333,6 +337,7 @@ class ProxyOnlyService : Service() {
         screen.stop()
         DiagnosticsHub.engineCpuTicks = null
         DiagnosticsHub.udpView = null
+        InsightHub.clear()
         engine.stop()
         RouteMatcher.clearCache()
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
