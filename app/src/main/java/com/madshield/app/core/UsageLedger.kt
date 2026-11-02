@@ -210,6 +210,17 @@ class UsageRecorder(
     fun newConnection() {
         prevUp = null; prevDown = null; prevRoute = null; prevTransport = null
     }
+
+    /**
+     * The routing front was rebuilt (an engine restart inside the same connection): its totals start from zero again,
+     * while the tunnel counters go on. Without this the first deltas after a restart were taken against the OLD front's
+     * totals and came out short by that much; a sample taken while no front existed even dropped the baseline altogether.
+     * The new front is counted from zero, so everything it carries lands in the ledger.
+     */
+    @Synchronized
+    fun routeRestarted() {
+        prevRoute = RouteTotals()
+    }
 }
 
 /** Where the ledger lives. Plain files, atomic replace. */

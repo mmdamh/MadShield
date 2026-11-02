@@ -294,7 +294,12 @@ class AetherVpnService : VpnService() {
             ensureActive() // never launch an engine after the user already pressed Disconnect
             // EnginePreflightException propagates on purpose: it cannot work no matter
             // how often we retry, so connect() surfaces it as-is.
+            // engine.start() builds a NEW routing front whose byte totals start from zero. If the previous front is still
+            // here (the engine process died on its own), credit what it carried first; then the recorder counts the new
+            // one from zero. Only on a restart: at the first connect the tunnel bridge does not exist yet.
+            if (engine.routeTotals() != null) sampleUsage(false)
             engine.start(config, ruleWriter, secretEnv, settingsStore.chainLinkFor(config))
+            usage.routeRestarted()
             val deadlineMs = System.currentTimeMillis() + timeoutMs
             when (SocksProbe.awaitReady(
                 host = TunnelConfig.SOCKS_HOST,

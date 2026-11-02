@@ -17,8 +17,8 @@ android {
         applicationId = "com.madshield.app"
         minSdk = 26 // VpnService.Builder per-app APIs need 21+, but 26 keeps things sane/modern
         targetSdk = 35
-        versionCode = 32
-        versionName = "1.12.3"
+        versionCode = 33
+        versionName = "1.12.4"
 
         // Stamped at CI build time from native/aether-core/CORE_VERSION and
         // native/hev-socks5-tunnel/CORE_VERSION -- see .github/workflows/build.yml.

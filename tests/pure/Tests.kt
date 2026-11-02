@@ -1802,6 +1802,22 @@ private fun insightPart4() {
         // a persist after more than 5 minutes
         r.sample("2026-11-01", 8_000 + UsageRecorder.PERSIST_EVERY_MS, 203, 204, RouteTotals(), Transport.MOBILE, false)
         check("recorder: a write after 5 minutes when something changed", writes.size == 3)
+        // an engine restart rebuilds the routing front: its totals start from zero while the baseline still holds the old ones
+        val l3 = UsageLedger(); val r3 = UsageRecorder(l3) { }
+        r3.sample("2026-11-02", 0, 1_000, 1_000, RouteTotals(vpnUp = 5_000, vpnDown = 9_000), Transport.WIFI, false)
+        r3.routeRestarted()
+        r3.sample("2026-11-02", 1_000, 1_100, 1_200, RouteTotals(vpnUp = 7_000, vpnDown = 12_000), Transport.WIFI, false)
+        check("recorder: after routeRestarted the new front counts from zero",
+            l3.get("2026-11-02").vpnUp == 7_000L && l3.get("2026-11-02").vpnDown == 12_000L &&
+                l3.get("2026-11-02").wifiUp == 100L && l3.get("2026-11-02").wifiDown == 200L)
+        // a sample taken while no front existed must not lose the new front's first bytes either
+        val l4 = UsageLedger(); val r4 = UsageRecorder(l4) { }
+        r4.sample("2026-11-02", 0, 1_000, 1_000, RouteTotals(vpnUp = 5_000, vpnDown = 9_000), Transport.WIFI, false)
+        r4.sample("2026-11-02", 500, 1_050, 1_050, null, Transport.WIFI, false)
+        r4.routeRestarted()
+        r4.sample("2026-11-02", 1_000, 1_100, 1_200, RouteTotals(vpnUp = 300, vpnDown = 400), Transport.WIFI, false)
+        check("recorder: a sample while the front was gone does not drop the new front's first bytes",
+            l4.get("2026-11-02").vpnUp == 300L && l4.get("2026-11-02").vpnDown == 400L)
     }
 }
 
