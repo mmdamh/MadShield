@@ -38,8 +38,12 @@ class FallbackTransport(private val chain: List<DnsTransport>) : DnsTransport {
     override fun close() = chain.forEach { it.close() }
 }
 
-/** Why a name could not be resolved. [nxdomain] = the resolver answered "no such name". */
-class ResolveFailure(message: String, val nxdomain: Boolean = false) : IOException(message)
+/**
+ * Why a name could not be resolved. [nxdomain] = the resolver answered "no such name". [answered] = the resolver DID
+ * answer, and the answer was "nothing" (no such name, or no address): a refusal, as opposed to a lookup that never got
+ * an answer (resolver unreachable), which says nothing about the name.
+ */
+class ResolveFailure(message: String, val nxdomain: Boolean = false, val answered: Boolean = nxdomain) : IOException(message)
 
 /**
  * Turns a host name into addresses through [transport], with a cache and one network request per name at a
@@ -92,7 +96,7 @@ class FrontResolver(
             if (r.nxdomain) break // no such name: asking for another record type cannot help
         }
         if (lastNx) nNx.incrementAndGet()
-        throw ResolveFailure(if (lastNx) "no such name" else "no address record", nxdomain = lastNx)
+        throw ResolveFailure(if (lastNx) "no such name" else "no address record", nxdomain = lastNx, answered = true)
     }
 
     private fun lookup(name: String, type: Int): Resolved {

@@ -58,6 +58,7 @@ class RouteFront(
      * @property udpTuning timeouts of the relay (tests shorten them).
      * @property guardFakeIps refuse IP destinations in hev's fake-IP network and DNS range (see [FrontGuard]).
      * @property allowOnion pass *.onion names to the upstream unresolved (Tor chain only); otherwise refused.
+     * @property backoff see [RefusalBackoff].
      */
     class Options(
         val resolver: FrontResolver? = null,
@@ -66,7 +67,9 @@ class RouteFront(
         val udpOn: Boolean = true,
         val udpTuning: UdpRelay.Tuning = UdpRelay.Tuning(),
         val guardFakeIps: Boolean = false,
-        val allowOnion: Boolean = false
+        val allowOnion: Boolean = false,
+        /** Answers repeated refusals of the same host late, so an app retrying a blocked name stops costing battery. */
+        val backoff: RefusalBackoff = RefusalBackoff()
     )
 
     private companion object {
@@ -97,6 +100,7 @@ class RouteFront(
     private val nRefusedFake = AtomicLong()
     private val nRefusedOther = AtomicLong()
     private val nResolveFailed = AtomicLong()
+    private val nHeld = AtomicLong()
 
     /** Live connections and per-route byte totals, read by the Connections and Usage pages (see [ConnTracker]). */
     private val tracker = ConnTracker()
@@ -183,7 +187,8 @@ class RouteFront(
             } else ", ${nUdpRefused.get()} udp refused")
         if (options.resolver != null || options.guardFakeIps) {
             log("[route] ${options.resolver?.summary() ?: "doh off"}; ${nResolveFailed.get()} refused after a failed lookup, " +
-                "${nRefusedFake.get()} stale fake addresses refused, ${nRefusedOther.get()} reserved addresses refused")
+                "${nRefusedFake.get()} stale fake addresses refused, ${nRefusedOther.get()} reserved addresses refused, " +
+                "${nHeld.get()} repeated refusals answered late")
         }
         // Answers learned through this tunnel may not hold for the next one, and the DoH connection must not outlive it.
         options.resolver?.clear()
@@ -263,7 +268,7 @@ class RouteFront(
                 RouteAction.BLOCK -> {
                     nBlock.incrementAndGet()
                     tracker.blocked(labelOf(domain, addr), domain != null, port)
-                    reply(cout, 0x02)
+                    refuse(cout, domain, 0x02, byRule = true)
                     return
                 }
                 RouteAction.DIRECT -> {
@@ -332,12 +337,17 @@ class RouteFront(
                     .resolve(domain).take(MAX_ADDRESSES_TRIED).map { InetSocketAddress(it, port) }
                 else -> listOf(InetSocketAddress(domain, port)) // system DNS, as in update10
             }
-        } catch (_: ResolveFailure) {
-            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        } catch (e: ResolveFailure) {
+            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet()
+            if (e.answered) refuse(cout, domain, 0x04, byRule = false) else reply(cout, 0x04)
+            return null
         } catch (_: Exception) {
             nFailed.incrementAndGet(); reply(cout, 0x04); return null
         }
         if (targets.isEmpty() || targets.any { it.isUnresolved }) { nFailed.incrementAndGet(); reply(cout, 0x04); return null }
+        if (domain != null && targets.all { it.address?.isAnyLocalAddress == true }) {
+            nFailed.incrementAndGet(); refuse(cout, domain, 0x04, byRule = false); return null // 0.0.0.0 / :: = a DNS block
+        }
 
         var code = 0x04
         for (t in targets) {
@@ -345,6 +355,7 @@ class RouteFront(
             live.add(r)
             try {
                 r.connect(t, if (targets.size > 1) MULTI_TRY_CONNECT_MS else CONNECT_MS)
+                if (domain != null) options.backoff.succeeded(domain.lowercase())
                 return r
             } catch (_: ConnectException) {
                 code = 0x05
@@ -366,10 +377,16 @@ class RouteFront(
     private fun connectResolved(cout: OutputStream, resolver: FrontResolver, domain: String, port: Int): Socket? {
         val addrs = try {
             resolver.resolve(domain).take(MAX_ADDRESSES_TRIED)
-        } catch (_: ResolveFailure) {
-            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        } catch (e: ResolveFailure) {
+            nResolveFailed.incrementAndGet(); nFailed.incrementAndGet()
+            if (e.answered) refuse(cout, domain, 0x04, byRule = false) else reply(cout, 0x04)
+            return null
         } catch (_: Exception) {
             nResolveFailed.incrementAndGet(); nFailed.incrementAndGet(); reply(cout, 0x04); return null
+        }
+        if (addrs.isNotEmpty() && addrs.all { it.isAnyLocalAddress }) {
+            // The resolver "answered" 0.0.0.0 / :: : that is how a DNS block says no. Nothing to connect to.
+            nFailed.incrementAndGet(); refuse(cout, domain, 0x04, byRule = false); return null
         }
         var lastCode = 0x04
         for (a in addrs) {
@@ -384,6 +401,7 @@ class RouteFront(
             try {
                 val rep = upstreamExchange(r, req, if (addrs.size > 1) MULTI_TRY_CONNECT_MS else CONNECT_MS)
                 if (rep[1].toInt() == 0) {
+                    options.backoff.succeeded(domain.lowercase())
                     cout.write(rep); cout.flush()
                     return r
                 }
@@ -493,6 +511,27 @@ class RouteFront(
     /** What the Connections page shows for a request: the name the app asked for, else its IP address. */
     private fun labelOf(domain: String?, addr: ByteArray): String =
         domain ?: try { InetAddress.getByAddress(addr).hostAddress ?: "?" } catch (_: Exception) { "?" }
+
+    /**
+     * A refusal that may be answered late (see [RefusalBackoff]). The wait happens on this connection's own thread,
+     * and only for a host that keeps being refused; everything else is answered at once.
+     */
+    private fun refuse(out: OutputStream, domain: String?, code: Int, byRule: Boolean) {
+        if (domain != null) {
+            val hold = options.backoff.refused(domain.lowercase(), byRule)
+            if (hold > 0 && options.backoff.tryHold()) {
+                try {
+                    nHeld.incrementAndGet()
+                    Thread.sleep(hold)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                } finally {
+                    options.backoff.release()
+                }
+            }
+        }
+        reply(out, code)
+    }
 
     private fun reply(out: OutputStream, code: Int) {
         try {

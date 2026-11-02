@@ -597,6 +597,7 @@ fun dohTests() {
         !r.summary().contains("secret") })
 
     routeFrontTests()
+    refusalBackoffTests()
     udpRelayTests()
     insightTests()
 }
@@ -1881,3 +1882,76 @@ private fun insightPart6() {
     }
 }
 
+
+
+// ---------------------------------------------------------------------------------------------------
+// RefusalBackoff: an app that keeps asking for a refused host gets its refusals answered late.
+// ---------------------------------------------------------------------------------------------------
+fun refusalBackoffTests() {
+    // --- the counting rules, with a fake clock
+    run {
+        var now = 0L
+        val b = RefusalBackoff({ now }, windowMs = 60_000, nameThreshold = 3, ruleThreshold = 5, holdMs = 8_000, maxHolds = 2)
+        val r = (1..4).map { now += 1_000; b.refused("a.example", false) }
+        check("backoff: the first two refusals of a name are answered at once, the third is held", r == listOf(0L, 0L, 8_000L, 8_000L))
+        check("backoff: another host has its own streak", b.refused("b.example", false) == 0L)
+        b.succeeded("a.example")
+        check("backoff: one success forgets the streak", b.refused("a.example", false) == 0L)
+        now += 61_000
+        repeat(2) { b.refused("c.example", false) }
+        now += 61_000
+        check("backoff: a streak ends by itself when the host is not asked for a minute", b.refused("c.example", false) == 0L)
+        val rule = (1..5).map { b.refused("ad.example", true) }
+        check("backoff: a block rule needs more refusals before it is held", rule == listOf(0L, 0L, 0L, 0L, 8_000L))
+        check("backoff: at most maxHolds answers are held at once", b.tryHold() && b.tryHold() && !b.tryHold() && b.heldNow == 2)
+        b.release(); check("backoff: a released hold frees a slot", b.tryHold())
+    }
+    // --- the capacity is bounded
+    run {
+        var now = 0L
+        val b = RefusalBackoff({ now }, nameThreshold = 2, capacity = 4)
+        for (i in 0 until 50) { now += 10; b.refused("h$i.example", false) }
+        check("backoff: only the newest hosts are remembered (the oldest one starts again)", b.refused("h0.example", false) == 0L && b.refused("h49.example", false) > 0L)
+    }
+    // --- end to end: a real front, a name the DNS refuses
+    run {
+        val rules = RouteMatcher.parse("[block]\nblocked.example\n")
+        val up = FakeUpstream()
+        val nx = FakeTransport { q -> mkResp(qnameOf(q), qtypeOf(q), rcode = 3) }
+        val port = freePort()
+        val backoff = RefusalBackoff(nameThreshold = 2, ruleThreshold = 2, holdMs = 700)
+        val f = RouteFront(port, up.port, rules, RouteFront.Options(resolver = FrontResolver(nx), guardFakeIps = true, backoff = backoff)) { }
+        f.start()
+        fun timed(name: String): Pair<Int, Long> {
+            val t0 = System.nanoTime(); val (c, s) = socks(port, reqName(name, 443)); s.close()
+            return c to (System.nanoTime() - t0) / 1_000_000
+        }
+        val a = timed("gone.example"); val b = timed("gone.example"); val c = timed("gone.example")
+        check("backoff e2e: the first refusal is fast", a.first == 4 && a.second < 500)
+        check("backoff e2e: the repeated refusal of the same name is answered late, with the same code", b.first == 4 && b.second >= 600 && c.first == 4 && c.second >= 600)
+        val other = timed("else.example")
+        check("backoff e2e: another name is not held", other.first == 4 && other.second < 500)
+        timed("blocked.example"); val rb = timed("blocked.example")
+        check("backoff e2e: a block rule is held too once it keeps being asked, still 0x02", rb.first == 2 && rb.second >= 600)
+        check("backoff e2e: the upstream was never contacted", up.requests.isEmpty())
+        f.stop(); up.close()
+    }
+    // --- a DNS block that answers 0.0.0.0, and a resolver that is down (must NOT count as a refusal)
+    run {
+        val up = FakeUpstream()
+        val sink = FakeTransport { q -> mkResp(qnameOf(q), qtypeOf(q), answers = if (qtypeOf(q) == 1) listOf(rr(12, 1, 120, a4(0, 0, 0, 0))) else emptyList()) }
+        val port = freePort()
+        val f = RouteFront(port, up.port, RouteMatcher.parse(""), RouteFront.Options(resolver = FrontResolver(sink), guardFakeIps = true, backoff = RefusalBackoff(nameThreshold = 2, holdMs = 700))) { }
+        f.start()
+        val (c1, s1) = socks(port, reqName("tracker.example", 443)); s1.close()
+        check("backoff e2e: a name answered 0.0.0.0 is refused (0x04) and never sent to the upstream", c1 == 4 && up.requests.isEmpty())
+        f.stop(); up.close()
+        val up2 = FakeUpstream(); val down = FakeTransport { error("x") }.also { it.fail = true }
+        val port2 = freePort()
+        val f2 = RouteFront(port2, up2.port, RouteMatcher.parse(""), RouteFront.Options(resolver = FrontResolver(down), guardFakeIps = true, backoff = RefusalBackoff(nameThreshold = 2, holdMs = 700))) { }
+        f2.start()
+        val times = (1..3).map { val t0 = System.nanoTime(); val (_, s) = socks(port2, reqName("x.example", 443)); s.close(); (System.nanoTime() - t0) / 1_000_000 }
+        check("backoff e2e: a resolver that cannot be reached is never held (the network may just be down)", times.all { it < 500 })
+        f2.stop(); up2.close()
+    }
+}
