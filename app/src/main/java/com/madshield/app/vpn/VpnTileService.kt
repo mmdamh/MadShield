@@ -11,6 +11,7 @@ import android.service.quicksettings.TileService
 import com.madshield.app.MainActivity
 import com.madshield.app.R
 import com.madshield.app.core.*
+import com.madshield.app.util.RingLogBuffer
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
@@ -27,11 +28,13 @@ class VpnTileService : TileService() {
 
     override fun onTileAdded() {
         super.onTileAdded()
+        RingLogBuffer.append("[tile] added")
         runCatching { render(AetherController.state.value) }
     }
 
     override fun onStartListening() {
         super.onStartListening()
+        RingLogBuffer.append("[tile] listening, state=${AetherController.state.value::class.simpleName}")
         // Draw the current state first, so the tile is right even if the collector below never gets to run.
         runCatching { render(AetherController.state.value) }
         val s = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
@@ -67,19 +70,20 @@ class VpnTileService : TileService() {
     override fun onClick() {
         super.onClick()
         val state = AetherController.state.value
+        RingLogBuffer.append("[tile] tapped, state=${state::class.simpleName}")
         // Its own scope: closing the shade right after the tap (onStopListening) must not cancel the tap's work half way.
         CoroutineScope(Dispatchers.Main.immediate + SupervisorJob()).launch {
             // A failed settings read must never end in a silent no-op (or a crash): tell the user by opening the app.
             val config = runCatching { withContext(Dispatchers.IO) { SettingsStore(applicationContext).configFlow.first() } }
                 .getOrNull()
-            if (config == null) { runCatching { openApp() }; return@launch }
+            if (config == null) { RingLogBuffer.append("[tile] could not read the settings"); runCatching { openApp() }; return@launch }
             runCatching {
                 when (state) {
                     ConnectionState.Idle -> connect(config)
                     // A second tap while it is shutting down sends the stop again instead of being ignored.
                     else -> disconnect(config)
                 }
-            }.onFailure { runCatching { openApp() } }
+            }.onFailure { RingLogBuffer.append("[tile] action failed: ${it.javaClass.simpleName}"); runCatching { openApp() } }
         }
     }
 
