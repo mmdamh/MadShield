@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.madshield.app.MainActivity
@@ -23,11 +25,18 @@ import kotlinx.coroutines.flow.first
 class VpnTileService : TileService() {
     private var scope: CoroutineScope? = null
 
+    override fun onTileAdded() {
+        super.onTileAdded()
+        runCatching { render(AetherController.state.value) }
+    }
+
     override fun onStartListening() {
         super.onStartListening()
+        // Draw the current state first, so the tile is right even if the collector below never gets to run.
+        runCatching { render(AetherController.state.value) }
         val s = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
         scope = s
-        s.launch { AetherController.state.collect { render(it) } }
+        s.launch { AetherController.state.collect { runCatching { render(it) } } }
     }
 
     override fun onStopListening() {
@@ -42,7 +51,9 @@ class VpnTileService : TileService() {
             is ConnectionState.Connected -> { tile.state = Tile.STATE_ACTIVE; sub(tile, getString(R.string.tile_on)) }
             ConnectionState.Connecting -> { tile.state = Tile.STATE_ACTIVE; sub(tile, getString(R.string.notif_connecting)) }
             is ConnectionState.Error -> { tile.state = Tile.STATE_ACTIVE; sub(tile, getString(R.string.state_error)) }
-            ConnectionState.Disconnecting -> { tile.state = Tile.STATE_UNAVAILABLE; sub(tile, null) }
+            // Never STATE_UNAVAILABLE: Android does not deliver taps to such a tile, so a tile left in that state (shade closed
+            // before the final "Off" was drawn) looked dimmed and did nothing. INACTIVE stays tappable.
+            ConnectionState.Disconnecting -> { tile.state = Tile.STATE_INACTIVE; sub(tile, getString(R.string.status_disconnecting)) }
             ConnectionState.Idle -> { tile.state = Tile.STATE_INACTIVE; sub(tile, getString(R.string.tile_off)) }
         }
         tile.label = getString(R.string.app_name)
@@ -56,14 +67,19 @@ class VpnTileService : TileService() {
     override fun onClick() {
         super.onClick()
         val state = AetherController.state.value
-        val s = scope ?: CoroutineScope(Dispatchers.Main.immediate + SupervisorJob()).also { scope = it }
-        s.launch {
-            val config = withContext(Dispatchers.IO) { SettingsStore(applicationContext).configFlow.first() }
-            when (state) {
-                ConnectionState.Idle -> connect(config)
-                ConnectionState.Disconnecting -> Unit
-                else -> disconnect(config)
-            }
+        // Its own scope: closing the shade right after the tap (onStopListening) must not cancel the tap's work half way.
+        CoroutineScope(Dispatchers.Main.immediate + SupervisorJob()).launch {
+            // A failed settings read must never end in a silent no-op (or a crash): tell the user by opening the app.
+            val config = runCatching { withContext(Dispatchers.IO) { SettingsStore(applicationContext).configFlow.first() } }
+                .getOrNull()
+            if (config == null) { runCatching { openApp() }; return@launch }
+            runCatching {
+                when (state) {
+                    ConnectionState.Idle -> connect(config)
+                    // A second tap while it is shutting down sends the stop again instead of being ignored.
+                    else -> disconnect(config)
+                }
+            }.onFailure { runCatching { openApp() } }
         }
     }
 
@@ -89,7 +105,16 @@ class VpnTileService : TileService() {
             runCatching { stopService(Intent(this, AetherVpnService::class.java)) }
             runCatching { stopService(Intent(this, ProxyOnlyService::class.java)) }
             AetherController.setState(ConnectionState.Idle)
+            return
         }
+        // Same safety net as the app's own Disconnect button: if the service never reports back, do not stay stuck.
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (AetherController.state.value == ConnectionState.Disconnecting) AetherController.setState(ConnectionState.Idle)
+        }, DISCONNECT_FALLBACK_MS)
+    }
+
+    private companion object {
+        const val DISCONNECT_FALLBACK_MS = 6_000L
     }
 
     private fun openApp() {
