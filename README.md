@@ -1,266 +1,124 @@
-# MadShield
+<p align="center">
+  <img src="branding/madshield-logo.png" width="150" alt="MadShield logo">
+</p>
 
-A from-scratch Android client (VPN mode + proxy-only mode) around
-[CluvexStudio/Aether](https://github.com/CluvexStudio/Aether), a user-space
-client for Cloudflare's WARP protocol. Built for full code ownership: no
-prebuilt engine binaries are trusted, no analytics, no logs written to disk.
+<h1 align="center">MadShield</h1>
 
-## What this is not
+<p align="center">
+  <b>A fast, private and beautiful VPN for Android, with you in control.</b><br>
+  <b>یک وی‌پی‌ان سریع، خصوصی و زیبا برای اندروید؛ کنترلش دست خودتان است.</b>
+</p>
 
-This is a scaffold, not a finished, tested, store-ready app. It was written
-without a live Android build environment (no SDK, no device, no network to
-actually run `./gradlew assembleDebug`), so treat it as architecture you can
-trust and code you should still compile-check yourself before relying on it.
-Every place that's a genuine guess rather than a confirmed fact is marked
-inline with a comment saying so -- search for "VERIFY" across the repo to
-find all of them at once.
+<p align="center">
+  <a href="https://github.com/mmdamh/MadShield/releases/latest"><b>⬇️ Download / دانلود</b></a>
+  &nbsp;·&nbsp;
+  <a href="#english">English</a>
+  &nbsp;·&nbsp;
+  <a href="#فارسی">فارسی</a>
+</p>
 
-## Phone check (scripts/phone-check.py)
+---
 
-Run it in Termux on the phone while connected (`pkg install python`, then `python phone-check.py [port]`). It lists the
-app's local SOCKS ports and whether they ask for a password, prints the exit address of the TCP path, and sends a DNS
-question over SOCKS5 UDP ASSOCIATE to tell apart "the app refuses UDP" (reply 0x07), "the chain or server drops UDP"
-(no answer) and "UDP works". It ends with the manual Kill Switch steps. It changes nothing and uses only the standard library.
+<a id="english"></a>
 
-## UDP Support and per-packet rules (update20)
+## ✨ Meet MadShield
 
-Settings > Protection > **UDP Support** (on by default, kept across restarts).
+MadShield puts a secure connection one tap away. Open the app, press the glowing button,
+and your whole phone, or only the apps you choose, travels through a private tunnel.
 
-- **On**: UDP (calls, games, QUIC) is carried. When the app's routing front runs (local DoH, rules with a chain, or UDP off),
-  UDP goes through `UdpRelay`: every datagram is checked by the same rules as TCP (Block = dropped, Direct = sent from the
-  app's own socket outside the VPN, Proxy = through the upstream). Names come from hev's mapped DNS, so domain rules work.
-  A proxy that fails never turns into Direct: the datagram is dropped and counted. Without a front (default setup) hev talks
-  UDP to the upstream itself and the core applies the rules, as before.
-- **Off**: every SOCKS5 UDP ASSOCIATE is refused (0x07), no UDP socket or thread exists and nothing UDP leaves the phone.
-  TCP, the VPN and the Kill Switch are unchanged. DNS is answered by hev's mapped DNS (IPv4 only) and the name travels over TCP.
-  Applied at once while the front runs, otherwise at the next connect (Diagnostics says which).
-- **Psiphon / Tor** carry TCP only: UDP is refused there, with either setting. A custom (sing-box) chain carries UDP if the
-  server does (a VLESS server on Cloudflare Workers usually cannot carry call traffic).
-- Diagnostics > UDP shows Enabled/Disabled, what is in effect, active associations and dropped packets with the reason.
+No sign-ups. No ads. No tracking. Just a clean, friendly app that quietly does its job
+and treats your battery with respect.
 
-## TLS look and MASQUE server name (update19)
+## 💜 Why you'll like it
 
-Settings has a folded card "TLS look and server name". Both choices are off by default, and with the defaults no new
-variable reaches the core.
+- **One tap and you're in.** A lively connect button, a live speed readout and an uptime clock.
+  It reconnects by itself when your network changes.
+- **Private by design.** No ads, no analytics, no accounts. Nothing is written to disk:
+  the activity log lives only in memory and disappears when you disconnect.
+- **Kill Switch.** If the connection drops, your traffic is held back instead of slipping out
+  unprotected. (For airtight protection, also switch on Android's "Block connections without VPN".)
+- **You decide what goes through.** Pick the apps that use the VPN, send local sites straight
+  through, and block what you don't want, using simple rules.
+- **Extra layers when you want them.** Add Psiphon or Tor on top, or bring your own server link.
+- **Private DNS built in.** Your name lookups stay as private as the rest of your traffic.
+- **See what's happening.** Watch live connections and close any of them with a tap. Check your
+  daily data use, split between Wi-Fi and mobile. It all stays on your phone.
+- **Gentle on battery.** MadShield rests when your screen is off, runs nothing it doesn't need,
+  and tidies up leftover files on its own.
+- **Made to look good.** Modern design, light, dark and AMOLED modes, nine colour themes plus a
+  colour of your own. Available in English and فارسی, with full right-to-left support.
+- **Built-in diagnostics.** If something is off, MadShield explains what and why in plain words.
 
-- **MASQUE server name (`AETHER_MASQUE_SNI`)**: Default (the core's `www.cloudflare.com`), the name the WARP client sends
-  (`consumer-masque.cloudflareclient.com`) or your own domain. The app validates it first (the core stops at start on
-  an IP address or anything that is not a domain name). Used only by the MASQUE protocols.
-- **TLS look**: Default, Chrome+ (the four extras Chrome sends) or Firefox-like. The presets are the exact values the
-  core's own tests use for its October 2026 Chrome and Firefox captures (`core/TlsOptions.kt`).
-- Worth trying only when MASQUE over HTTP/2 is blocked while WireGuard or HTTP/3 still work. Only the first handshake
-  packet changes; there is no battery cost.
+## 🚀 Get started
 
-## Core v2.4.0 (update18)
+1. Download the latest APK from the [Releases page](https://github.com/mmdamh/MadShield/releases/latest).
+2. Open it and allow the install if Android asks.
+3. Launch MadShield, tap the big button and accept the VPN prompt. That's it.
 
-The pinned core is now Aether **v2.4.0** (`native/aether-core.pin`). The app's contract with it (the `AETHER_*`
-variables, the "is ready" log lines, the SOCKS greeting used for readiness) is unchanged; CI still refuses a build
-whose source no longer mentions a variable the app sets. What changes by itself: the default MASQUE SNI is
-`www.cloudflare.com`, a gateway whose tunnel ends twice in under five minutes is set aside for five minutes, and the
-Zero Trust certificate is checked. Upstream raised its Android API level to 29; this build still targets API 24
-(`cargo ndk --platform 24`), which CI exercises on every build.
+*Works on Android 8.0 or newer, on 64-bit (arm64) phones.*
 
-## Updated to Aether core v2.3.0
+---
 
-- The app now configures the core **only through `AETHER_*` environment
-  variables** (no command-line flags), the same contract the AetherGUI
-  reference uses with this core version. `core/EngineProcessManager.kt`
-  builds that environment in one pure function.
-- **Hang trap avoided:** on v2.3.0, leaving `AETHER_MASQUE_HTTP2` unset makes
-  the core stop at an *interactive* "which carrier?" prompt. A background
-  service has no stdin, so it would sit at "Connecting" forever. The app
-  always sets it for MASQUE/Gool and closes the child's stdin so no prompt
-  can ever block.
-- **Protocols:** Smart (core picks), MASQUE h3, MASQUE h2, WireGuard,
-  **Gool over MASQUE** (v2.3.0's default gool: WireGuard carried inside
-  MASQUE, so the exit address is foreign) and Gool classic
-  (WireGuard-in-WireGuard).
-- **Exit country guard** (`AETHER_EXIT_LOC=!IR`): the core refuses a tunnel
-  whose exit lands in Iran, checks through the finished tunnel before the
-  proxy opens and again every minute, and replaces a tunnel that moves.
-- **UI:** animated connection orb, uptime counter, live up/down speed
-  (VPN mode), cancel-while-connecting. Ideas from AetherGUI, re-implemented
-  from scratch in Compose; no code copied.
-- **DoH:** the optional patch in `native/aether-core-patches/` targets
-  v1.5.0 and is **not** part of this build (see its APPLY.md banner).
+<div dir="rtl" align="right">
 
-### What was and was not taken from the AetherGUI zip
+<a id="فارسی"></a>
 
-Reviewed before borrowing anything: no analytics/telemetry SDK; dependencies
-are AndroidX/Material/WorkManager only; the only third-party hosts are
-GitHub (update checks and release downloads), `ipwho.is` / `ipapi.co` /
-`api.country.is` (exit-IP lookups) and a Telegram link. Its release
-downloads are verified against pinned SHA-256 values.
-**Deliberately not taken:** its in-app self-updater (`REQUEST_INSTALL_PACKAGES`
-plus downloading and installing APKs is an attack surface you asked to avoid)
-and its third-party exit-IP lookups (they would tell a third party your exit
-address); the core's own `AETHER_EXIT_LOC` check is used instead.
-Also not taken for now: LAN sharing, Quick Settings tile.
+## ✨ با مدشیلد آشنا شوید
 
-## Source review (2026-08-03, against the actual v1.5.0 source)
+مدشیلد یک اتصال امن را فقط یک لمس از شما دور می‌کند. برنامه را باز کنید، دکمهٔ درخشان را بزنید
+و کل گوشی، یا فقط برنامه‌هایی که خودتان انتخاب کرده‌اید، از یک تونل خصوصی عبور می‌کنند.
 
-You asked for a real security review before building on top of this, so
-here's what was actually checked -- not a generic "looks fine" -- against
-`aether/src/*.rs` (~12,700 lines) and the prebuilt `aether-android-arm64`
-binary you provided:
+بدون ثبت‌نام. بدون تبلیغ. بدون ردیابی. فقط یک برنامهٔ تمیز و دوستانه که بی‌سروصدا کارش را
+انجام می‌دهد و مراقب باتری شماست.
 
-- **Every hardcoded network endpoint in the codebase** (`grep -rn
-  "https\?://"` across all 25 source files) resolves to either
-  `cloudflareclient.com` or `cloudflareaccess.com` — both genuine
-  Cloudflare-owned domains, matching the real WARP/Zero Trust API. No
-  telemetry, analytics, or third-party server anywhere in the source.
-- The shipped `aether-android-arm64` binary's embedded strings were
-  cross-checked against the source: same `aether 1.5.0` version string, same
-  `api.cloudflareclient.com` endpoint, and no other network host embedded
-  besides two benign, expected ones (`android.googlesource.com`,
-  `docs.rs` — both from crate metadata/panic messages, not runtime calls).
-  The binary matches the public source.
-- Cloudflare's MASQUE edge certs are **pinned** by SHA-256 SPKI hash
-  (`consts.rs::MASQUE_PINS`), with a clear comment explaining why
-  `SslVerifyMode::NONE` is used at the library level for those specific pins
-  (Cloudflare's edge serves self-signed/SNI-dependent certs for this
-  protocol) — a real anti-MITM measure, not a red flag.
-- DNS responses used for ECH bootstrapping are validated against
-  transaction ID, question name, and record type before being trusted
-  (`dns.rs`, with tests for spoofed/mismatched replies) — basic but real
-  anti-spoofing.
-- **SOCKS5 has no authentication whatsoever** — confirmed in
-  `socks.rs::handshake()`, which reads the client's offered auth methods and
-  always replies "no auth required" regardless. This is fine as long as
-  `--bind` stays on `127.0.0.1` (the default); it stops being fine the
-  moment anyone binds it to `0.0.0.0` or a LAN address for "share my VPN"
-  style features. If you ever add that, put your own auth layer in front of
-  it rather than exposing the engine's SOCKS5 directly.
-- **DNS resolver support is plain IP/`ip:port` only, in the stock engine** —
-  confirmed in `socks.rs::resolver_addresses()`. DoH, DoH3, and
-  DNS-over-QUIC are **not** supported out of the box; anything that isn't a
-  bare address is silently dropped. This directly answers what you
-  originally asked for — it was a real gap in the upstream engine, not
-  something fixable from the Android app layer alone. **Update:** DoH is now
-  addressed by `native/aether-core-patches/doh-support/` — real new Rust
-  code (a DoH client that runs over the same tunneled netstack SOCKS5
-  already uses, so queries don't leak outside the tunnel), not a workaround.
-  It hasn't been compiled (no Rust toolchain in the sandbox this was written
-  in) — see that folder's APPLY.md for exactly what to check before trusting
-  it. DoH3/DNS-over-QUIC is a bigger job (would want to reuse the crate's
-  existing QUIC/H3 stack rather than a second implementation) and wasn't
-  attempted.
-- Routing rules (`--routes`, used for your "Iranian sites" bypass list) are
-  parsed in `routing.rs`, with real unit tests covering suffix/full/keyword/
-  regex/CIDR/port matching and the block-wins-over-direct precedence rule.
-  This app writes to that exact `[block]`/`[direct]` file format — see
-  `core/RuleFileWriter.kt`.
+## 💜 چرا دوستش خواهید داشت
 
-Caveat, stated plainly: this was a real read of the actual source, not a
-rubber stamp, but it is still one read by one reviewer (me), not a
-professional security audit. For something you're trusting with real
-circumvention risk, an independent second look is worth it before you rely
-on this for anything where getting caught has serious consequences.
+- **با یک لمس وصل می‌شوید.** دکمهٔ اتصال زنده، نمایش لحظه‌ای سرعت و ساعت مدت اتصال.
+  وقتی شبکه‌تان عوض شود، خودش دوباره وصل می‌شود.
+- **خصوصی از پایه.** بدون تبلیغ، بدون آمارگیری و بدون حساب کاربری. هیچ چیز روی حافظه نوشته
+  نمی‌شود؛ گزارش فعالیت فقط در حافظهٔ موقت می‌ماند و با قطع اتصال پاک می‌شود.
+- **کلید قطع اضطراری (Kill Switch).** اگر اتصال قطع شود، ترافیک شما نگه داشته می‌شود و بی‌محافظ
+  بیرون نمی‌رود. (برای محافظت کامل‌تر، گزینهٔ «Block connections without VPN» اندروید را هم روشن کنید.)
+- **شما تصمیم می‌گیرید چه چیزی عبور کند.** برنامه‌هایی را که از وی‌پی‌ان استفاده می‌کنند انتخاب
+  کنید، سایت‌های داخلی را مستقیم ردشان کنید و آنچه نمی‌خواهید را با قانون‌های ساده ببندید.
+- **لایه‌های اضافه، هر وقت خواستید.** Psiphon یا Tor را روی اتصال اضافه کنید، یا لینک سرور
+  خودتان را بیاورید.
+- **DNS خصوصی داخل برنامه.** جست‌وجوی نام سایت‌ها هم به اندازهٔ بقیهٔ ترافیک شما خصوصی می‌ماند.
+- **ببینید چه خبر است.** اتصال‌های زنده را تماشا کنید و هر کدام را با یک لمس ببندید. مصرف روزانهٔ
+  اینترنت را به تفکیک وای‌فای و موبایل ببینید. همه‌چیز فقط روی گوشی شما می‌ماند.
+- **مهربان با باتری.** وقتی صفحه خاموش است مدشیلد استراحت می‌کند، کار اضافه نمی‌کند و خودش
+  فایل‌های باقی‌مانده را مرتب می‌کند.
+- **ساخته شده تا زیبا باشد.** طراحی مدرن، حالت روشن، تیره و AMOLED، نُه تم رنگی و یک رنگ
+  دلخواه. به دو زبان فارسی و English، با پشتیبانی کامل از راست‌به‌چپ.
+- **عیب‌یاب داخلی.** اگر چیزی درست کار نکند، مدشیلد با زبان ساده می‌گوید چه شده و چرا.
 
-## Architecture
+## 🚀 شروع کنید
 
-```
-apps -> [VPN mode] Android TUN (AetherVpnService)
-              -> TProxyService (our own JNI bridge, libaethertun.so)
-              -> hev-socks5-tunnel (libhev-socks5-tunnel.so, native pthread)
-              -> 127.0.0.1:1819 (aether core's SOCKS5, --bind)
-              -> internet, via Cloudflare WARP (MASQUE/WireGuard)
+۱. آخرین APK را از [صفحهٔ Releases](https://github.com/mmdamh/MadShield/releases/latest) دانلود کنید.
+۲. بازش کنید و اگر اندروید پرسید، اجازهٔ نصب بدهید.
+۳. مدشیلد را باز کنید، دکمهٔ بزرگ را بزنید و پیام وی‌پی‌ان را تأیید کنید. تمام!
 
-apps -> [Proxy-only mode] point directly at 127.0.0.1:1819 yourself
-              -> aether core -> internet
-```
+*روی اندروید ۸ به بالا و گوشی‌های ۶۴ بیتی (arm64) کار می‌کند.*
 
-**Why our own JNI bridge (`scripts/aethertun-jni.c`) instead of hev's bundled
-one:** hev-socks5-tunnel ships its own JNI glue, but its exact method
-signatures have drifted across upstream versions in the past (e.g.
-`TProxyStartService` changing from returning `void` to returning `boolean`).
-A mismatch throws `UnsatisfiedLinkError` -- an `Error`, not an `Exception` --
-which used to escape unguarded and crash the whole app the moment full
-VPN mode tried to start, while proxy-only mode (which never touches hev)
-kept working. This project's own build strips hev's bundled JNI layer out
-entirely and ships a small bridge that binds only hev's *stable* public C
-API (`hev_socks5_tunnel_main`/`quit`/`stats`), exports symbols this app
-controls, and is verified at CI build time (`llvm-nm`) rather than assumed.
-The tunnel event loop also runs on hev's own native pthread, never an
-ART-attached Java thread -- doing otherwise corrupts hev-task-system's
-stack-swapping coroutines and crashes with a native SIGSEGV.
+</div>
 
-- **Per-app split tunneling** happens at the Android `VpnService` layer
-  (`addAllowedApplication`/`addDisallowedApplication`), never inside the
-  engine — confirmed as the intended design from the v1.5.0 release notes
-  themselves: "Per-application rules deliberately stay out of the core... It
-  belongs in the Android client's VpnService."
-- **Kill switch**: the TUN interface is established before the engine is
-  confirmed healthy, so traffic is captured (and held/dropped) rather than
-  ever silently falling back to the raw network. See `AetherVpnService.kt`
-  for the exact sequencing.
-- **Zero-log**: `util/RingLogBuffer.kt` is in-memory only, capped, and wiped
-  on every disconnect. The one exception: after an unexpected engine stop a
-  short tail (IPs and keys removed) stays in memory for the Diagnostics page
-  until you clear it or the process ends. `android.util.Log` calls are stripped from release
-  builds by ProGuard as a second, independent layer. No analytics or crash
-  reporting SDK is in the dependency list at all — check
-  `app/build.gradle.kts`, it's short enough to read end to end.
-- **Binary integrity**: CI stamps the SHA-256 of every shipped native file
-  (`libaether.so`, `libpsiphon.so`, `libhev-socks5-tunnel.so`, `libaethertun.so`, and `libsingbox.so` when present)
-  into `assets/native_hashes.properties`, and a CI step proves the finished APK
-  carries exactly those bytes. At the first engine start of each run,
-  `core/BinaryIntegrity.kt` hashes the installed files and refuses to start the
-  engine on a mismatch. This catches corruption and a native file swapped after
-  the build; it does not stop someone who can re-sign a modified APK, so the
-  real trust anchors are the pinned upstream commits and your signing key.
-- **CI hardening**: every Action is pinned to a full commit SHA, Rust (1.98.1),
-  cargo-ndk (4.1.2), CMake (4.4.4), NDK (r26d) and Gradle (8.9) are fixed
-  versions, the workflow is read-only by default, and publishing the Release is
-  a separate job that has write access but never sees the signing key.
+---
 
-- **Diagnostics**: Settings > Diagnostics explains probable causes with a
-  confidence level and the evidence (DNS, TCP, handshake, stalled tunnel,
-  repeated drops, CPU during real transfer versus CPU while idle). Live CPU
-  sampling is a switch that is off by default; the connection tests run only
-  when you press the button; the shareable report has no log lines, IPs or
-  tokens unless you opt in to a redacted log tail.
-- **Reconnect policy**: after the engine dies, retries wait 1, 2, 4, 8, 16, 30 s,
-  then a slow waiting phase (2 min screen on, 5 min off) that never spins.
-  A network change (Wi-Fi to mobile, link back) ends the wait at once.
-- **Logs and polling**: appending a log line costs nothing and publishes
-  nothing; the log page polls twice a second only while it is visible, and the
-  traffic tiles poll every 2.5 s only while the app is in the foreground.
-- **Per-app routing**: each app is labelled as going through the VPN,
-  connecting directly, or not confirmable right now (disconnected, proxy mode,
-  rule changed since connecting). The leak-protection card explains what the
-  kill switch cannot cover and links to Android's Always-on VPN lockdown.
+## 📄 License
 
-## Setup
+MadShield is free software, released under the [GNU General Public License v3.0](LICENSE).
+It is an independent project and is not affiliated with or endorsed by Cloudflare.
 
-Build with GitHub Actions only (no Android Studio needed):
+<div dir="rtl" align="right">
 
-1. Create a GitHub repository and push this folder to it (step-by-step for
-   Termux on a phone is in the chat guide that came with this project).
-2. The push starts the **Build MadShield APK** workflow. It fetches the two
-   engines at pinned commits (see `native/README.md`), builds them with the
-   NDK, builds the app and attaches the APK to a GitHub Release.
-3. Signing is optional for the first build: without the secrets below the APK
-   is signed with the debug key so you always get an installable file.
-   For a stable signature later, add the repo secrets `SIGNING_KEY_BASE64`
-   (a keystore, base64), `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`.
-   Changing the signing key later needs one uninstall of the old build.
+مدشیلد نرم‌افزار آزاد است و تحت [مجوز عمومی همگانی گنو نسخهٔ ۳ (GPL-3.0)](LICENSE) منتشر می‌شود.
+این یک پروژهٔ مستقل است و هیچ وابستگی یا تأییدی از طرف Cloudflare ندارد.
 
-## Interface
+</div>
 
-The UI follows the look of ZedSecure (cookie-blob connect button, floating
-pill navigation, rounded cards, nine colour themes, Inter + Estedad fonts,
-English and Persian with RTL). It is re-implemented from scratch with
-Material 3, not copied (ZedSecure is AGPL-3.0). Fonts are OFL, see
-`THIRD_PARTY_FONTS.md`.
+---
 
-## Known gaps / next steps
-
-- Launcher icon is a placeholder vector (`res/drawable/ic_launcher_*.xml`) —
-  swap for real art whenever.
-- Zero Trust settings UI only wires up `team` name + service-token secret;
-  `--access-email` and `--access-id` exist in the engine but aren't exposed
-  in `SettingsScreen.kt` yet — same pattern, just not built out.
-- No automated tests written for the Kotlin/Compose side. The Rust engine's
-  own test suite (`cargo test` inside `native/aether-core/aether`) is
-  extensive and worth running on its own, independent of anything in this app.
+<p align="center">
+  Built around the <b>Aether</b> core · ساخته‌شده بر پایهٔ هستهٔ <b>Aether</b><br>
+  <a href="https://github.com/CluvexStudio/Aether">https://github.com/CluvexStudio/Aether</a>
+</p>
