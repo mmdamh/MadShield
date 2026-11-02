@@ -493,6 +493,7 @@
     <string name="usage_today">امروز</string>
     <string name="usage_wifi">Wi-Fi</string>
     <string name="usage_mobile">موبایل</string>
+    <string name="usage_tap_hint">روی یک ستون بزنید تا مصرف همان روز را ببینید.</string>
     <string name="usage_history">تاریخچه</string>
     <string name="usage_7d">۷ روز</string>
     <string name="usage_30d">۳۰ روز</string>

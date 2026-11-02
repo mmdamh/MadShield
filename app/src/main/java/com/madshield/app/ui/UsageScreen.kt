@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +17,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -39,6 +41,7 @@ fun UsageScreen(onBack: () -> Unit) {
     var ledger by remember { mutableStateOf<UsageLedger?>(null) }
     var range by remember { mutableStateOf(7) }
     var confirmReset by remember { mutableStateOf(false) }
+    var picked by remember { mutableStateOf<String?>(null) } // the day whose bar was tapped
     var reload by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(reload) {
@@ -79,9 +82,32 @@ fun UsageScreen(onBack: () -> Unit) {
             SectionCard(stringResource(R.string.usage_history)) {
                 ChoiceChips(
                     listOf(stringResource(R.string.usage_7d) to 7, stringResource(R.string.usage_30d) to 30), range
-                ) { range = it }
+                ) { range = it; picked = null }
                 Spacer(Modifier.height(12.dp))
-                BarChart(data, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)
+                val sel = data.indexOfFirst { it.day == picked }.takeIf { it >= 0 }
+                BarChart(data, sel, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary) { i ->
+                    picked = if (data[i].day == picked) null else data[i].day
+                }
+                Spacer(Modifier.height(8.dp))
+                val d = sel?.let { data[it] }
+                if (d == null) {
+                    Text(
+                        stringResource(R.string.usage_tap_hint),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Text(d.day + "   " + formatBytes(d.total), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Legend(MaterialTheme.colorScheme.primary, "↓ " + formatBytes(d.down))
+                        Legend(MaterialTheme.colorScheme.tertiary, "↑ " + formatBytes(d.up))
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Legend(MaterialTheme.colorScheme.primary, stringResource(R.string.usage_wifi) + "  " + formatBytes(d.wifi))
+                        Legend(MaterialTheme.colorScheme.secondary, stringResource(R.string.usage_mobile) + "  " + formatBytes(d.mobile))
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 val sum = data.fold(0L) { a, d -> a + d.total }
                 Text(
@@ -158,22 +184,32 @@ private fun SplitBar(a: Long, b: Long, ca: Color, cb: Color) {
     }
 }
 
-/** Per-day stacked bars: download below, upload on top. Drawn once; no animation. */
+/** Per-day stacked bars: download below, upload on top. A tap on a bar (or the space above it) selects that day. */
 @Composable
-private fun BarChart(days: List<DayUsage>, down: Color, up: Color) {
+private fun BarChart(days: List<DayUsage>, selected: Int?, down: Color, up: Color, onTap: (Int) -> Unit) {
     val max = (days.maxOfOrNull { it.total } ?: 0L).coerceAtLeast(1L).toFloat()
     val baseline = MaterialTheme.colorScheme.outlineVariant
-    Canvas(Modifier.fillMaxWidth().height(120.dp)) {
-        val n = days.size
+    val n = days.size
+    val tap by rememberUpdatedState(onTap) // the gesture block below is not restarted, so it must not keep an old lambda
+    Canvas(
+        Modifier.fillMaxWidth().height(120.dp).pointerInput(n) {
+            detectTapGestures { pos ->
+                if (n > 0) tap((pos.x / size.width * n).toInt().coerceIn(0, n - 1))
+            }
+        }
+    ) {
         val gap = if (n > 14) 2.dp.toPx() else 6.dp.toPx()
         val w = (size.width - gap * (n - 1)) / n
         drawLine(baseline, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 1.dp.toPx())
         days.forEachIndexed { i, d ->
             val x = i * (w + gap)
+            val dim = if (selected == null || selected == i) 1f else 0.35f
             val hd = size.height * (d.down / max)
             val hu = size.height * (d.up / max)
-            if (hd > 0f) drawRect(down, Offset(x, size.height - hd), Size(w, hd))
-            if (hu > 0f) drawRect(up, Offset(x, size.height - hd - hu), Size(w, hu))
+            if (hd > 0f) drawRect(down.copy(alpha = dim), Offset(x, size.height - hd), Size(w, hd))
+            if (hu > 0f) drawRect(up.copy(alpha = dim), Offset(x, size.height - hd - hu), Size(w, hu))
+            // A day with no data still gets a thin tick, so it can be tapped and read as "0".
+            if (hd <= 0f && hu <= 0f) drawRect(baseline, Offset(x, size.height - 2.dp.toPx()), Size(w, 2.dp.toPx()))
         }
     }
 }

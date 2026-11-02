@@ -495,6 +495,7 @@
     <string name="usage_today">Today</string>
     <string name="usage_wifi">Wi-Fi</string>
     <string name="usage_mobile">Mobile</string>
+    <string name="usage_tap_hint">Tap a bar to see that day.</string>
     <string name="usage_history">History</string>
     <string name="usage_7d">7 days</string>
     <string name="usage_30d">30 days</string>
