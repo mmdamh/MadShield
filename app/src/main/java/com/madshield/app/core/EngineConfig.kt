@@ -210,8 +210,21 @@ data class EngineConfig(
      * update24 EXPERIMENTAL "Tunnel engine": which program reads the TUN device. hev (default) behaves exactly as before.
      * Read once per connection: a change applies at the next connect. See [TunEngineId].
      */
-    val tunEngine: TunEngineId = TunEngineId.HEV
+    val tunEngine: TunEngineId = TunEngineId.HEV,
+
+    /**
+     * update28 EXPERIMENTAL "Connection engine" (test branch). WARP (default) is everything above, unchanged. FIREFOX runs
+     * Mozilla's VPN through the user's own Firefox Account instead of the WARP core: separate from it, never a chain on
+     * it. Read once per connection. See [FxVpn]; the WARP settings above (protocol, chain, scan, noize...) are not used then.
+     */
+    val engineKind: EngineKind = EngineKind.WARP
 ) {
+    /** The engine is "up" only after something beyond the listening port answered: a chain's announcement, or Mozilla's connection test. */
+    val needsReadyWait: Boolean get() = effectiveChain != PrivacyChain.NONE || engineKind == EngineKind.FIREFOX
+
+    /** The Firefox VPN engine carries TCP only, so UDP is off for such a connection whatever the setting says. */
+    val udpEffective: Boolean get() = udpEnabled && engineKind == EngineKind.WARP
+
     /** DoH switched on AND at least one resolver written. */
     val dohEnabled: Boolean get() = dohOn && dohResolvers.isNotEmpty()
 
@@ -227,11 +240,11 @@ data class EngineConfig(
      * off, because without UDP the phone's DNS (plain UDP 53) could not reach any resolver. See [FrontPlan.mappedDns].
      */
     val mappedDnsActive: Boolean
-        get() = dohActive || effectiveChain != PrivacyChain.NONE || !udpEnabled
+        get() = dohActive || effectiveChain != PrivacyChain.NONE || !udpEffective
 
     /** The chain that will really run (none for SMART). */
     val effectiveChain: PrivacyChain
-        get() = if (protocol == Protocol.SMART) PrivacyChain.NONE else privacyChain
+        get() = if (protocol == Protocol.SMART || engineKind == EngineKind.FIREFOX) PrivacyChain.NONE else privacyChain
 
     /**
      * Tunnel MTU after clamping to what the chosen transport can carry
@@ -308,7 +321,7 @@ object ConnectPolicy {
     /** sing-box starts in about a second; the time is for the WARP tunnel to come up and the first end-to-end check. */
     const val SINGBOX_ALLOWANCE_MS = 45_000L
 
-    fun chainAllowanceMs(c: EngineConfig): Long = when (c.effectiveChain) {
+    fun chainAllowanceMs(c: EngineConfig): Long = if (c.engineKind == EngineKind.FIREFOX) FxVpn.CONNECT_ALLOWANCE_MS else when (c.effectiveChain) {
         PrivacyChain.PSIPHON -> PSIPHON_ALLOWANCE_MS
         PrivacyChain.TOR -> TOR_ALLOWANCE_MS
         PrivacyChain.SINGBOX -> SINGBOX_ALLOWANCE_MS
@@ -316,21 +329,27 @@ object ConnectPolicy {
     }
 
     fun firstPassTimeoutMs(c: EngineConfig): Long =
-        (if (c.protocol == Protocol.WIREGUARD) SIMPLE_PASS_MS else SCANNED_PASS_MS) + chainAllowanceMs(c)
+        if (c.engineKind == EngineKind.FIREFOX) FxVpn.START_ALLOWANCE_MS + chainAllowanceMs(c)
+        else (if (c.protocol == Protocol.WIREGUARD) SIMPLE_PASS_MS else SCANNED_PASS_MS) + chainAllowanceMs(c)
 
     fun isScanFailure(reason: String?): Boolean =
         reason != null && reason.contains("gateway scan failed", ignoreCase = true)
 
-    /** The failure came from the chain helper (psiphon/tor), not from the WARP transport. */
+    /**
+     * The failure came from the chain helper (psiphon/tor), not from the WARP transport. A Firefox VPN failure counts too:
+     * it is never a WARP transport problem, and the slow retry schedule (with the engine stopped in between) is what a
+     * missing account or a used-up quota needs, not a retry every few seconds.
+     */
     fun isChainFailure(reason: String?): Boolean =
-        reason != null && Regex("\\b(psiphon|tor|sing-box)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason)
+        reason != null && (Regex("\\b(psiphon|tor|sing-box)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason) ||
+            reason.contains("Firefox VPN", ignoreCase = true) || reason.contains("Firefox Account", ignoreCase = true))
 
     /**
      * Gool over MASQUE failed in the way the classic topology can avoid. With a chain on, a plain
      * timeout may just be a slow Psiphon/Tor start, so only an explicit scan failure counts.
      */
     fun shouldTryClassicGool(c: EngineConfig, reason: String?): Boolean =
-        c.protocol == Protocol.GOOL && reason != null &&
+        c.engineKind == EngineKind.WARP && c.protocol == Protocol.GOOL && reason != null &&
             (isScanFailure(reason) ||
                 (c.effectiveChain == PrivacyChain.NONE && reason.startsWith("no answer from the engine")))
 
@@ -340,11 +359,11 @@ object ConnectPolicy {
      * the classic fallback (which gives a plain WARP exit, i.e. the Iranian one).
      */
     fun shouldTryGoolH2(c: EngineConfig, reason: String?): Boolean =
-        c.protocol == Protocol.GOOL && !c.masqueHttp2 && reason != null &&
+        c.engineKind == EngineKind.WARP && c.protocol == Protocol.GOOL && !c.masqueHttp2 && reason != null &&
             (isScanFailure(reason) ||
                 (c.effectiveChain == PrivacyChain.NONE && reason.startsWith("no answer from the engine")))
 
     /** The anti-DPI retry changes the WARP transport; it cannot fix a failing chain helper. */
     fun shouldTryHardened(c: EngineConfig, reason: String?): Boolean =
-        !(c.effectiveChain != PrivacyChain.NONE && isChainFailure(reason))
+        c.engineKind == EngineKind.WARP && !(c.effectiveChain != PrivacyChain.NONE && isChainFailure(reason))
 }

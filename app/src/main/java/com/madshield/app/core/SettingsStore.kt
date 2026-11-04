@@ -32,6 +32,7 @@ class SettingsStore(private val context: Context) {
     private object Keys {
         val MODE = stringPreferencesKey("mode")
         val TUN_ENGINE = stringPreferencesKey("tun_engine")
+        val ENGINE_KIND = stringPreferencesKey("engine_kind")
         val PROTOCOL = stringPreferencesKey("protocol")
         val DNS = stringSetPreferencesKey("dns_resolvers")
         val DIRECT_RULES = stringSetPreferencesKey("direct_rules")
@@ -135,7 +136,8 @@ class SettingsStore(private val context: Context) {
             masqueSni = MasqueSni.normalize(p[Keys.MASQUE_SNI]) ?: "",
             tlsPreset = TlsPreset.fromStored(p[Keys.TLS_PRESET]),
             udpEnabled = p[Keys.UDP_ENABLED] ?: true,
-            tunEngine = TunEngineId.fromStored(p[Keys.TUN_ENGINE])
+            tunEngine = TunEngineId.fromStored(p[Keys.TUN_ENGINE]),
+            engineKind = EngineKind.fromStored(p[Keys.ENGINE_KIND])
         )
 
     val configFlow: Flow<EngineConfig> = context.dataStore.data.map { readConfig(it) }
@@ -216,6 +218,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.POWER_SAVER] = current.powerSaver
             p[Keys.UDP_ENABLED] = current.udpEnabled
             p[Keys.TUN_ENGINE] = current.tunEngine.stored
+            p[Keys.ENGINE_KIND] = current.engineKind.stored
             p[Keys.DOH_ON] = current.dohOn
             if (current.dohResolvers.isEmpty()) p.remove(Keys.DOH_RESOLVERS) else p[Keys.DOH_RESOLVERS] = current.dohResolvers.joinToString("\n")
             p[Keys.DOH_VIA_TOR] = current.dohViaTor

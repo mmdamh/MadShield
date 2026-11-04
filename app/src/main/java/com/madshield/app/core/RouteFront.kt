@@ -294,10 +294,8 @@ class RouteFront(
                             r.soTimeout = HANDSHAKE_MS
                             val rout = r.getOutputStream()
                             val rin = r.getInputStream()
-                            rout.write(byteArrayOf(5, 1, 0)); rout.flush()
-                            val hello = ByteArray(2)
-                            readFully(rin, hello)
-                            if (hello[0].toInt() != 5 || hello[1].toInt() != 0) { nFailed.incrementAndGet(); reply(cout, 0x01); return }
+                            // a refused greeting (or login) throws and is answered below like any upstream failure
+                            Socks5Handshake.greet(rin, rout, UpstreamLogin.forPort(upstreamPort))
                             rout.write(raw.toByteArray()); rout.flush()
                         } catch (_: IOException) {
                             nFailed.incrementAndGet(); reply(cout, 0x01); return
@@ -454,10 +452,7 @@ class RouteFront(
         r.soTimeout = connectMs
         val rout = r.getOutputStream()
         val rin = r.getInputStream()
-        rout.write(byteArrayOf(5, 1, 0)); rout.flush()
-        val hello = ByteArray(2)
-        readFully(rin, hello)
-        if (hello[0].toInt() != 5 || hello[1].toInt() != 0) throw IOException("upstream refused the greeting")
+        Socks5Handshake.greet(rin, rout, UpstreamLogin.forPort(upstreamPort))
         rout.write(request); rout.flush()
         return readReply(rin)
     }

@@ -140,7 +140,7 @@ class AetherVpnService : VpnService() {
         // Screen on/off are the natural moments to add up usage (off: about to sleep, so write the file now).
         scope.launch { screen.screenOn.collect { on -> sampleUsage(!on) } }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
-        scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
+        scope.launch { settingsStore.configFlow.map { it.udpEffective }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the tunnel stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
@@ -226,7 +226,7 @@ class AetherVpnService : VpnService() {
         //  3. with anti-DPI hardening (see EngineConfig.hardened()).
         var active = baseConfig
         var attempt = attemptConnect(active, ConnectPolicy.firstPassTimeoutMs(active))
-        if (attempt is Attempt.Failed && active.ech && EchFallback.isEchFailure(attempt.reason)) {
+        if (attempt is Attempt.Failed && active.ech && active.engineKind == EngineKind.WARP && EchFallback.isEchFailure(attempt.reason)) {
             RingLogBuffer.append("[vpn] ECH key lookup failed; retrying without ECH")
             engine.stop()
             active = active.copy(ech = false)
@@ -307,12 +307,13 @@ class AetherVpnService : VpnService() {
                 port = engine.probePort,
                 timeoutMs = timeoutMs,
                 engineAlive = { engine.isRunning },
-                cancelled = { job?.isActive == false }
+                cancelled = { job?.isActive == false },
+                auth = engine.probeAuth // only the Firefox VPN core has a login
             )) {
                 SocksProbe.Wait.READY -> {
                     // With a chain on, the port answers before Psiphon/Tor are connected: wait for the
                     // core's own "is ready" announcement before the tunnel bridge is attached.
-                    if (config.effectiveChain == PrivacyChain.NONE) Attempt.Ready
+                    if (!config.needsReadyWait) Attempt.Ready
                     else {
                         val left = (deadlineMs - System.currentTimeMillis()).coerceAtLeast(10_000L)
                         engine.awaitChainReady(left) { job?.isActive == false }
@@ -323,7 +324,7 @@ class AetherVpnService : VpnService() {
                 SocksProbe.Wait.ENGINE_DIED ->
                     Attempt.Failed(engine.failureReason() ?: "the engine process exited")
                 SocksProbe.Wait.TIMEOUT ->
-                    Attempt.Failed("no answer from the engine after ${timeoutMs / 1000}s")
+                    Attempt.Failed(engine.firefoxNote() ?: "no answer from the engine after ${timeoutMs / 1000}s")
                 SocksProbe.Wait.CANCELLED -> throw CancellationException("connect cancelled")
             }
         }
@@ -505,7 +506,7 @@ class AetherVpnService : VpnService() {
                     val ok = engine.isRunning && !stalled &&
                         SocksProbe.handshakeOk(
                             TunnelConfig.SOCKS_HOST, engine.probePort,
-                            PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
+                            PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS, engine.probeAuth
                         ) &&
                         engine.chainStillWorks(screenNow) // custom chain only: a rare end-to-end check, screen on
                     if (!ok && engine.swapping) continue // a switch started while this probe was running

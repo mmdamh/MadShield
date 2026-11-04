@@ -15,6 +15,8 @@ object EngineEnv {
     const val SINGBOX_BIN = "libsingbox.so"
     /** The experimental sing-box TUN tunnel engine (update24), started by vpn/SingBoxTunEngine, not by EngineProcessManager. */
     const val SINGTUN_BIN = "libsingtun.so"
+    /** The Firefox VPN engine (update28), run by [FxCoreProcess]. */
+    const val FXVPN_BIN = FxVpn.BIN
 }
 
 /** Thrown BEFORE the engine is launched when the shipped binary cannot possibly start. */
@@ -81,6 +83,17 @@ class EngineProcessManager(private val context: Context) {
 
     @Volatile private var front: RouteFront? = null
 
+    // ---- Firefox VPN engine (update28). Null unless the connection uses it; then the WARP fields above stay unused.
+    @Volatile private var fx: FxCoreProcess? = null
+    /** Login of the upstream listener for health probes (null for every other engine). */
+    @Volatile var probeAuth: SocksAuth? = null
+        private set
+    /** Why the Firefox core could not be brought up (power-on failed or its API never answered); null when nothing is known. */
+    @Volatile private var fxNote: String? = null
+
+    /** This connection runs the Firefox VPN engine. */
+    val isFirefox: Boolean get() = fx != null
+
     // ---- custom chain (sing-box), see SingBoxConfig. All null/false unless the chain is SINGBOX.
     @Volatile private var singbox: Process? = null
     @Volatile private var singboxExit: EngineExit? = null
@@ -129,7 +142,8 @@ class EngineProcessManager(private val context: Context) {
         private set
 
     /** The core is alive and, with a custom chain, so is sing-box (a dead chain process means a dead chain). */
-    val isRunning: Boolean get() = process?.isAlive == true && (singbox?.isAlive != false)
+    val isRunning: Boolean
+        get() = fx?.isAlive ?: (process?.isAlive == true && (singbox?.isAlive != false))
 
     /** [chainLink] is the share link of the custom chain; only read when the chain is [PrivacyChain.SINGBOX]. */
     fun start(config: EngineConfig, ruleWriter: RuleFileWriter, secretEnv: Map<String, String>, chainLink: String? = null) {
@@ -137,6 +151,10 @@ class EngineProcessManager(private val context: Context) {
         waitForPreviousToDie()
         chainReady = false
         synchronized(chainLock) { generation++ }
+        if (config.engineKind == EngineKind.FIREFOX) {
+            startFirefox(config, ruleWriter)
+            return
+        }
 
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
         nativeDirPath = nativeDir.absolutePath
@@ -195,14 +213,14 @@ class EngineProcessManager(private val context: Context) {
         // DoH this is exactly update10: the front only exists when routing rules need it.
         val dohActive = config.dohActive
         val ruleMatcher = if (routesFile != null) RouteMatcher.fromFile(routesFile) else null
-        val plan = FrontPlan.of(chain, dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort, config.udpEnabled)
+        val plan = FrontPlan.of(chain, dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort, config.udpEffective)
         probePort = plan.upstreamPort
 
         // DoH resolvers are built BEFORE the engine is launched, so a bad setting can never leave a process behind.
         // UDP: the front carries it when the chain can (none / sing-box); with UDP off it only refuses ASSOCIATE.
         val udpCapable = chain == PrivacyChain.NONE || chain == PrivacyChain.SINGBOX
         val frontOptions: RouteFront.Options? = if (!plan.frontOn) null else if (!plan.localDoh) {
-            RouteFront.Options(udpCapable = udpCapable, udpOn = config.udpEnabled,
+            RouteFront.Options(udpCapable = udpCapable, udpOn = config.udpEffective,
                 // hev's fake addresses only exist in VPN mode (proxy-only has no hev)
                 guardFakeIps = config.mode == ConnectionMode.VPN && config.mappedDnsActive)
         } else {
@@ -216,7 +234,7 @@ class EngineProcessManager(private val context: Context) {
                     FrontResolver(DohTransports.create(specs, null), config.ipMode, config.dohServeStale)
                 } else null,
                 udpCapable = udpCapable,
-                udpOn = config.udpEnabled,
+                udpOn = config.udpEffective,
                 guardFakeIps = true,
                 allowOnion = chain == PrivacyChain.TOR
             )
@@ -315,6 +333,130 @@ class EngineProcessManager(private val context: Context) {
         }
     }
 
+    // ------------------------------------------------------------------------------------ Firefox VPN engine
+
+    /**
+     * Starts the Firefox VPN core and the routing front in front of it. The front is ALWAYS on here (the core's listener
+     * needs a login, which only [RouteFront] and the DoH client carry; hev and the sing-box TUN engine send to the front
+     * without one). The core carries TCP only, so UDP is refused by the front and DNS is hev's mapped DNS ([EngineConfig.udpEffective]).
+     */
+    private fun startFirefox(config: EngineConfig, ruleWriter: RuleFileWriter) {
+        fxNote = null
+        FxSession.stopForConnection() // the Firefox VPN page's own core makes room: a connection needs its own login and ports
+        val routesFile = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)
+        val ruleMatcher = if (routesFile != null) RouteMatcher.fromFile(routesFile) else null
+        val plan = FrontPlan.of(PrivacyChain.NONE, config.dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort, config.udpEffective)
+        check(plan.frontOn) { "the Firefox VPN engine always runs behind the routing front" }
+        if (!SocksProbe.awaitPortFree(config.socksPort, 1_500)) {
+            throw IllegalStateException(
+                "Port ${config.socksPort} is still in use by another process. " +
+                    "Close the app that holds it, or change the SOCKS port in Settings."
+            )
+        }
+        // DoH resolvers are built BEFORE anything is launched, so a bad setting can never leave a process behind.
+        val options: RouteFront.Options = if (!plan.localDoh) {
+            RouteFront.Options(udpCapable = false, udpOn = false, guardFakeIps = config.mode == ConnectionMode.VPN)
+        } else {
+            val specs = DohSpec.parseList(config.dohResolvers.joinToString("\n")).valid
+            if (specs.isEmpty()) {
+                throw IllegalStateException("Local DoH is on but none of the resolvers is valid. Fix them in the DNS tab.")
+            }
+            RouteFront.Options(
+                resolver = FrontResolver(DohTransports.create(specs, plan.upstreamPort), config.ipMode, config.dohServeStale),
+                directResolver = if (config.dohForDirect) FrontResolver(DohTransports.create(specs, null), config.ipMode, config.dohServeStale) else null,
+                udpCapable = false, udpOn = false, guardFakeIps = true
+            )
+        }
+
+        val proc = FxCoreProcess(context)
+        val ep = proc.start(plan.corePort, FxVpn.DEFAULT_DNS) // throws EnginePreflightException before anything runs
+        fx = proc
+        FxRuntime.endpoint = ep
+        UpstreamLogin.set(plan.corePort, ep.auth) // set before the front and the DoH client can dial the core
+        probePort = plan.upstreamPort
+        probeAuth = ep.auth
+        nativeDirPath = File(context.applicationInfo.nativeLibraryDir).absolutePath
+
+        val f = RouteFront(config.socksPort, plan.upstreamPort, ruleMatcher ?: RouteMatcher.parse(""), options) { RingLogBuffer.append(it) }
+        try {
+            f.start()
+            front = f
+        } catch (e: IOException) {
+            options.resolver?.clear(); options.directResolver?.clear()
+            stopFirefox()
+            throw IllegalStateException("Could not start the routing front on port ${config.socksPort}: ${e.message}")
+        }
+
+        // The core starts with its proxy OFF: wait for its API, then switch the proxy on (its own "connect" button). The SOCKS
+        // listener appears only now, which is what the caller waits for next. A failure here is not thrown: the caller's
+        // wait then ends with [fxNote] as the reason (or with the core's own exit reason).
+        try {
+            val deadline = System.currentTimeMillis() + FxVpn.START_ALLOWANCE_MS
+            var last: IOException? = null
+            var up = false
+            while (System.currentTimeMillis() < deadline && proc.isAlive) {
+                try { ep.client().status(); up = true; break } catch (e: IOException) { last = e }
+                try { Thread.sleep(250) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
+            }
+            if (up) ep.client().power(true)
+            else fxNote = "the Firefox VPN core did not answer" + (last?.message?.let { ": $it" } ?: "")
+        } catch (e: IOException) {
+            fxNote = "the Firefox VPN core refused to start its proxy: ${e.message}"
+        }
+        fxNote?.let { RingLogBuffer.append("[fxvpn] $it") }
+    }
+
+    /** Stops the Firefox core and forgets everything that pointed at it. Safe when none runs. */
+    private fun stopFirefox() {
+        val p = fx ?: return
+        fx = null
+        probeAuth = null
+        UpstreamLogin.clear()
+        if (FxRuntime.endpoint === p.endpoint) FxRuntime.endpoint = null
+        p.stop()
+    }
+
+    /** Why the Firefox core did not come up while its process is alive (power-on failed, API silent); null when unknown. */
+    fun firefoxNote(): String? = fxNote
+
+    /**
+     * After the proxy listens: asks the core to connect to Mozilla (its first use wakes it: server list, pass, session) and
+     * runs its connection test through the new session. Blocking, up to [timeoutMs].
+     * @return null when the Firefox VPN carries traffic, otherwise the reason (or "cancelled").
+     */
+    fun awaitFirefoxReady(timeoutMs: Long, cancelled: () -> Boolean): String? {
+        val ep = fx?.endpoint ?: return "the Firefox VPN core is not running"
+        val client = ep.client()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        // Hard stops the core reports by itself (no account, quota, sign-in expired) end the wait at once.
+        while (System.currentTimeMillis() < deadline) {
+            if (cancelled()) return "cancelled"
+            if (!isRunning) return failureReason() ?: "the Firefox VPN core exited"
+            val st = try { client.status() } catch (_: IOException) { null }
+            if (st != null) {
+                (FxProgress.fromStatus(st) as? FxVerdict.Failed)?.let { return FxErrors.english(it.code, it.detail) }
+                if (st.proxyUp) break
+            }
+            try { Thread.sleep(300) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
+        }
+        if (cancelled()) return "cancelled"
+        return try {
+            val t = client.test()
+            when (val v = FxProgress.fromTest(t)) {
+                FxVerdict.Ready -> {
+                    RingLogBuffer.append("[fxvpn] connected through Mozilla (${t.exitCountry.ifEmpty { "?" }}, ${t.totalMs} ms)")
+                    chainReady = true
+                    null
+                }
+                is FxVerdict.Failed -> FxErrors.english(v.code, v.detail)
+            }
+        } catch (e: FxClient.ApiException) {
+            FxErrors.english("", e.message ?: "")
+        } catch (e: IOException) {
+            if (!isRunning) failureReason() ?: "the Firefox VPN core exited" else "the Firefox VPN core did not answer the connection test (${e.message})"
+        }
+    }
+
     /**
      * With a chain on, the SOCKS port answers as soon as Psiphon/Tor's own local proxy is up, which is
      * BEFORE the chain is connected. Waits (up to [timeoutMs]) for the core's "is ready" announcement, so
@@ -322,6 +464,7 @@ class EngineProcessManager(private val context: Context) {
      * @return null when ready, or a reason when the engine died / the time ran out / the user cancelled.
      */
     fun awaitChainReady(timeoutMs: Long, cancelled: () -> Boolean): String? {
+        if (fx != null) return awaitFirefoxReady(timeoutMs, cancelled) // the Firefox engine's "ready" is Mozilla's connection test
         val startedAt = System.currentTimeMillis()
         val deadline = startedAt + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -539,7 +682,8 @@ class EngineProcessManager(private val context: Context) {
         val pids = CoreProcessGuard.findOwnPids(
             setOf(
                 File(dir, EngineEnv.ENGINE_BIN).absolutePath, File(dir, EngineEnv.PSIPHON_BIN).absolutePath,
-                File(dir, EngineEnv.SINGBOX_BIN).absolutePath, File(dir, EngineEnv.SINGTUN_BIN).absolutePath
+                File(dir, EngineEnv.SINGBOX_BIN).absolutePath, File(dir, EngineEnv.SINGTUN_BIN).absolutePath,
+                File(dir, EngineEnv.FXVPN_BIN).absolutePath
             ),
             android.os.Process.myPid(), android.os.Process.myUid()
         )
@@ -554,6 +698,7 @@ class EngineProcessManager(private val context: Context) {
 
     /** A one-line, human-readable reason the engine is not running, or null if there is none. */
     fun failureReason(): String? {
+        fx?.let { f -> return f.failureReason() ?: fxNote }
         // The output pump records the exit a moment AFTER the process dies; give it a short
         // moment so the real reason is not missed. Call from a background thread only.
         if (lastExit == null && process?.isAlive == false) {
@@ -649,6 +794,7 @@ class EngineProcessManager(private val context: Context) {
         }
         front?.stop()
         front = null
+        stopFirefox()
         val p = process ?: return
         process = null
         RingLogBuffer.append("[engine] stopping")

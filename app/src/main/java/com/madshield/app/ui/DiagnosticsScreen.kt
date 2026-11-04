@@ -146,7 +146,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
     // update20: UDP. Only meaningful while connected; the numbers come from the running front, if there is one.
     val udpState: UdpState? = if (kind == StateKind.CONNECTED) {
         val running = active ?: config
-        UdpStatus.of(config.udpEnabled, running.effectiveChain, udpView?.carried != null, udpView?.carried == true, running.udpEnabled)
+        UdpStatus.of(config.udpEffective, running.effectiveChain, udpView?.carried != null, udpView?.carried == true, running.udpEffective)
     } else null
 
     fun reportText(): String = DiagnosticsReport.render(
@@ -158,7 +158,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
         rates = rates,
         includeLogTail = if (withTail) RingLogBuffer.tail(60) else null,
         redact = LogRedactor::redact,
-        udp = UdpReport(config.udpEnabled, udpState ?: if (config.udpEnabled) UdpState.RELAY else UdpState.OFF, udpView?.stats)
+        udp = UdpReport(config.udpEffective, udpState ?: if (config.udpEffective) UdpState.RELAY else UdpState.OFF, udpView?.stats)
     )
 
     val copiedText = stringResource(R.string.copied)
@@ -227,7 +227,7 @@ fun DiagnosticsScreen(config: EngineConfig, connectionState: ConnectionState, on
             SectionCard(stringResource(R.string.diag_sec_udp)) {
                 StatLine(
                     stringResource(R.string.diag_udp_setting),
-                    stringResource(if (config.udpEnabled) R.string.diag_udp_enabled else R.string.diag_udp_disabled)
+                    stringResource(if (config.udpEffective) R.string.diag_udp_enabled else R.string.diag_udp_disabled)
                 )
                 if (udpState == null) {
                     HelperText(stringResource(R.string.diag_udp_not_connected))

@@ -401,6 +401,93 @@ jobs:
           path: staged/${{ matrix.abi }}/libsingtun.so
           retention-days: 1
 
+  # EXPERIMENTAL (update28, test branch): the "Firefox VPN" engine. Mozilla's VPN service, driven by the open-source client
+  # armanlife/firefox-vpn-client (GPL-3, unofficial) at the exact commit in native/fxvpn.pin. Only its Go core is built
+  # (no Flutter app), together with our own small entry point native/fxvpn/host/main.go (loopback API that needs a token,
+  # SOCKS5 login, only-Mozilla settings). The build is allowed to fail WITHOUT blocking the APK: the app then says the
+  # Firefox VPN engine is not in this build.
+  build-native-fxvpn:
+    name: Build Firefox VPN core (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch firefox-vpn-client at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/fxvpn.pin)"
+          rm -rf native/firefox-vpn-client
+          mkdir -p native/firefox-vpn-client
+          git -C native/firefox-vpn-client init -q
+          git -C native/firefox-vpn-client fetch -q --depth 1 https://github.com/armanlife/firefox-vpn-client "$pin"
+          git -C native/firefox-vpn-client checkout -q FETCH_HEAD
+          test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
+          echo "firefox-vpn-client @ $pin"
+
+      # Our entry point lives inside the module (it uses internal packages), next to the CA file it embeds.
+      - name: Add the MadShield entry point to the core
+        run: |
+          set -e
+          dst=native/firefox-vpn-client/core/cmd/madshield-fx
+          mkdir -p "$dst"
+          cp native/fxvpn/host/main.go "$dst/main.go"
+          cp native/firefox-vpn-client/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
+
+      - name: Install Go (the version the core's go.mod asks for)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: native/firefox-vpn-client/core/go.mod
+          cache: false
+
+      - name: Show the Go version
+        run: go version
+
+      # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon and sing-box builds).
+      - name: Build madshield-fx
+        working-directory: native/firefox-vpn-client/core
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -e
+          go vet ./cmd/madshield-fx
+          go build -v -trimpath -o "$GITHUB_WORKSPACE/fxvpn-out" -ldflags "-s -w -buildid=" ./cmd/madshield-fx
+          ls -l "$GITHUB_WORKSPACE/fxvpn-out"
+
+      - name: Check it is a static ELF for this ABI
+        run: |
+          set -e
+          f=fxvpn-out
+          test -s "$f" || { echo "ERROR: Firefox VPN core missing"; exit 1; }
+          READELF="$(command -v llvm-readelf || command -v readelf)"
+          "$READELF" -h "$f" | grep -E 'Class|Machine'
+          if "$READELF" -d "$f" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "ERROR: Firefox VPN core is dynamically linked; it would not start on Android"; exit 1
+          fi
+          echo "OK: Firefox VPN core is a static ELF"
+
+      - name: Rename to lib*.so (required for Android to extract+exec it) and stage
+        run: |
+          mkdir -p "staged/${{ matrix.abi }}"
+          cp fxvpn-out "staged/${{ matrix.abi }}/libfxvpn.so"
+
+      - name: Upload Firefox VPN core for this ABI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxvpn-${{ matrix.abi }}
+          path: staged/${{ matrix.abi }}/libfxvpn.so
+          retention-days: 1
+
   # Hands the golden configurations (tests/pure/golden, written by the app's own builder and compared
   # byte-for-byte by the pure tests) to the REAL `sing-box check`. Never blocks the APK: a red job here means
   # "sing-box does not accept what the app generates", which you want to know about before a user finds out.
@@ -669,7 +756,7 @@ jobs:
 
   build-apk:
     # build-native-singbox and build-native-singtun are listed so their artifacts are ready; if one failed (continue-on-error) the APK is built without it.
-    needs: [build-native-aether, build-native-tun2socks, build-native-singbox, build-native-singtun]
+    needs: [build-native-aether, build-native-tun2socks, build-native-singbox, build-native-singtun, build-native-fxvpn]
     if: ${{ !cancelled() && needs.build-native-aether.result == 'success' && needs.build-native-tun2socks.result == 'success' }}
     runs-on: ubuntu-24.04
     # Read-only. This job holds the signing key, so it must not be able to publish or write anything.
@@ -703,6 +790,12 @@ jobs:
               cp "dist-native/singbox-$abi/libsingbox.so" "app/src/main/jniLibs/$abi/"
             else
               echo "NOTE: no sing-box for $abi in this build (the custom chain will report it is not included)"
+            fi
+            # optional: only the experimental "Firefox VPN" engine needs it
+            if [ -f "dist-native/fxvpn-$abi/libfxvpn.so" ]; then
+              cp "dist-native/fxvpn-$abi/libfxvpn.so" "app/src/main/jniLibs/$abi/"
+            else
+              echo "NOTE: no Firefox VPN core for $abi in this build (the Firefox VPN engine will say so)"
             fi
             # optional: only the experimental "sing-box TUN" tunnel engine needs it
             if [ -f "dist-native/singtun-$abi/libsingtun.so" ]; then
@@ -741,8 +834,8 @@ jobs:
           out=app/src/main/assets/native_hashes.properties
           echo "# generated by CI, do not edit" > "$out"
           for abi in arm64-v8a; do
-            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so libsingbox.so libsingtun.so; do
-              [ -f "app/src/main/jniLibs/$abi/$f" ] || continue   # libsingbox.so and libsingtun.so are optional
+            for f in libaether.so libpsiphon.so libhev-socks5-tunnel.so libaethertun.so libsingbox.so libsingtun.so libfxvpn.so; do
+              [ -f "app/src/main/jniLibs/$abi/$f" ] || continue   # libsingbox.so, libsingtun.so and libfxvpn.so are optional
               echo "$abi/$f=$(sha256sum "app/src/main/jniLibs/$abi/$f" | cut -d' ' -f1)" >> "$out"
             done
           done
