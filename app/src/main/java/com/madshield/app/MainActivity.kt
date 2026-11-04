@@ -181,6 +181,7 @@ class MainActivity : ComponentActivity() {
                                         onOpenConnections = { nav.navigate("connections") },
                                         onOpenUsage = { nav.navigate("usage") },
                                         onOpenAdvanced = { nav.navigate("advanced") },
+                                        onOpenFirefox = { nav.navigate("fxvpn") },
                                         connectStyle = uiPrefs.connectStyle,
                                         contentPadding = padding
                                     )
@@ -233,6 +234,7 @@ class MainActivity : ComponentActivity() {
                     composable("log") { LogScreen(onBack = { nav.popBackStack() }) }
                     composable("connections") { ConnectionsScreen(config, onBack = { nav.popBackStack() }) }
                     composable("usage") { UsageScreen(onBack = { nav.popBackStack() }) }
+                    composable("fxvpn") { FirefoxVpnScreen(onBack = { nav.popBackStack() }) }
                     composable("storage") {
                         val prefs by settingsStore.storagePrefsFlow.collectAsState(initial = StoragePrefs())
                         StorageScreen(

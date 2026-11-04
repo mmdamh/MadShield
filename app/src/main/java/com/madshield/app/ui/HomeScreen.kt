@@ -72,6 +72,7 @@ fun HomeScreen(
     onOpenConnections: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenAdvanced: () -> Unit,
+    onOpenFirefox: () -> Unit,
     contentPadding: PaddingValues,
     connectStyle: ConnectStyle = ConnectStyle.BLOB
 ) {
@@ -105,6 +106,22 @@ fun HomeScreen(
                 onSelect = onSetMode
             )
         }
+        // update28: the connection engine. Only offered when this build carries the Firefox VPN core.
+        val homeCtx = LocalContext.current
+        if (remember { FxRuntime.isInBuild(homeCtx) }) {
+            Spacer(Modifier.height(8.dp))
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                PillToggle(
+                    options = listOf(
+                        stringResource(R.string.fx_engine_warp) to EngineKind.WARP,
+                        stringResource(R.string.fx_engine_firefox) to EngineKind.FIREFOX
+                    ),
+                    selected = config.engineKind,
+                    enabled = connectionState is ConnectionState.Idle || connectionState is ConnectionState.Error,
+                    onSelect = { k -> onUpdate { it.copy(engineKind = k) } }
+                )
+            }
+        }
         Spacer(Modifier.height(12.dp))
 
         if (connectionState is ConnectionState.Error) {
@@ -129,9 +146,25 @@ fun HomeScreen(
             ProxyAddressPill(config.socksPort, visible = connectionState is ConnectionState.Connected)
         }
         Spacer(Modifier.height(10.dp))
+        if (config.engineKind == EngineKind.FIREFOX) {
+            FirefoxTile(onOpenFirefox)
+            Spacer(Modifier.height(10.dp))
+        }
         ShortcutTiles(onOpenConnections, onOpenUsage, onOpenAdvanced)
         // Bottom padding so the floating navigation bar never covers the last card.
         Spacer(Modifier.height(NavClearance))
+    }
+}
+
+/** Opens the Firefox VPN page (sign in, data left, location). Only shown while the Firefox VPN engine is selected. */
+@Composable
+private fun FirefoxTile(onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Surface(onClick = onClick, shape = RoundedCornerShape(28.dp), color = cs.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
+            Text(stringResource(R.string.fx_tile_title), style = MaterialTheme.typography.titleSmall, color = cs.onTertiaryContainer)
+            Text(stringResource(R.string.fx_tile_sub), style = MaterialTheme.typography.bodySmall, color = cs.onTertiaryContainer.copy(alpha = 0.75f))
+        }
     }
 }
 
@@ -452,12 +485,16 @@ private fun FactChips(config: EngineConfig, running: EngineConfig?) {
         // The protocol that is REALLY running: after a fallback (Gool -> HTTP/2 carrier -> classic Gool)
         // it differs from the setting, and a classic Gool exit is a plain WARP (Iranian) address.
         val shown = running ?: config
-        Chip(protocolShort(shown.protocol))
-        if (running != null && shown.protocol == Protocol.GOOL && shown.masqueHttp2) Chip("HTTP/2")
-        if (running != null && running.protocol != config.protocol) Chip(stringResource(R.string.chip_fallback))
+        if (config.engineKind == EngineKind.FIREFOX) {
+            Chip(stringResource(R.string.fx_chip))
+        } else {
+            Chip(protocolShort(shown.protocol))
+            if (running != null && shown.protocol == Protocol.GOOL && shown.masqueHttp2) Chip("HTTP/2")
+            if (running != null && running.protocol != config.protocol) Chip(stringResource(R.string.chip_fallback))
+        }
         Chip("DNS · $dnsName")
         if (config.mode == ConnectionMode.VPN) Chip("MTU ${config.effectiveMtu}")
-        if (config.exitLoc != null) Chip(stringResource(R.string.chip_exit_guard))
+        if (config.exitLoc != null && config.engineKind == EngineKind.WARP) Chip(stringResource(R.string.chip_exit_guard))
         when (config.effectiveChain) {
             PrivacyChain.PSIPHON -> Chip(
                 "Psiphon" + (Chain.normalizeRegion(config.psiphonRegion)?.let { " · $it" } ?: "")
