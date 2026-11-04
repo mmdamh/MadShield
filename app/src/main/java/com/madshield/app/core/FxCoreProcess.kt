@@ -42,6 +42,8 @@ class FxCoreProcess(private val context: Context) {
 
     /** Starts the core with its SOCKS5 listener on [socksPort]. Blocking, short; throws [EnginePreflightException] before anything runs. */
     fun start(socksPort: Int, dns: List<String>): FxEndpoint {
+        // Read before anything starts: the phone's own DNS (the core cannot find it on Android).
+        val systemDns = PhoneDns.servers(context)
         stop()
         waitForPrevious()
         val nativeDir = File(context.applicationInfo.nativeLibraryDir)
@@ -60,7 +62,7 @@ class FxCoreProcess(private val context: Context) {
         val dataDir = FxRuntime.dataDir(context).also { it.mkdirs() }
         val apiPort = FxRuntime.freePort(except = socksPort)
         val creds = FxCredentials.generate(SecureRandom())
-        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath)
+        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns)
 
         val pb = ProcessBuilder(bin.absolutePath, "-data-dir", dataDir.absolutePath)
             .directory(dataDir)
@@ -71,7 +73,8 @@ class FxCoreProcess(private val context: Context) {
         }
         // The non-secret part only: the login is never written anywhere.
         RingLogBuffer.append(
-            "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"}"
+            "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"} " +
+                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0}"
         )
         synchronized(tail) { tail.clear() }
         lastExit = null
@@ -168,6 +171,30 @@ class FxCoreProcess(private val context: Context) {
         if (!result.ok) {
             throw EnginePreflightException("The Firefox VPN core does not match what the build produced. Reinstall the app from your own build.")
         }
+    }
+}
+
+/** The DNS servers of the phone's real network (not the VPN's), for the core's system lookups. */
+object PhoneDns {
+    @Suppress("DEPRECATION")
+    fun servers(context: Context): List<String> = try {
+        val cm = context.getSystemService(android.net.ConnectivityManager::class.java)
+        val found = ArrayList<String>()
+        if (cm != null) {
+            // Our own VPN network is skipped: its DNS is the tunnel's, which the core (outside the tunnel) cannot reach.
+            val nets = cm.allNetworks.filter { n ->
+                val c = cm.getNetworkCapabilities(n)
+                c != null && c.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    !c.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN)
+            }
+            val active = cm.activeNetwork
+            for (n in nets.sortedByDescending { it == active }) {
+                cm.getLinkProperties(n)?.dnsServers?.forEach { found.add(it.hostAddress ?: "") }
+            }
+        }
+        FxVpn.cleanSystemDns(found)
+    } catch (_: Exception) {
+        emptyList()
     }
 }
 

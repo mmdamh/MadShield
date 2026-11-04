@@ -17,20 +17,27 @@
 //	MFX_SOCKS_PORT, MFX_API_PORT   loopback ports
 //	MFX_SOCKS_USER, MFX_SOCKS_PASS SOCKS5 login of the proxy
 //	MFX_DNS                        optional, comma-separated resolvers for the core's own lookups (see config dns.servers)
+//	MFX_SYSTEM_DNS                 optional, comma-separated IPs of the phone's own DNS servers (plain DNS, port 53): the
+//	                               "system" lookups of the core (its fallback when the encrypted resolvers are blocked)
+//	                               ask these, because a static Go binary on Android finds no /etc/resolv.conf
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/config"
@@ -72,6 +79,7 @@ func run(dataDir string) error {
 	if err := useAndroidRoots(paths.Dir); err != nil {
 		return err
 	}
+	useSystemDNS()
 	if err := applyEnv(paths.Config); err != nil {
 		return err
 	}
@@ -155,6 +163,32 @@ func applyEnv(path string) error {
 		return nil
 	}
 	return config.Save(path, cfg)
+}
+
+// useSystemDNS makes the system resolver (net.DefaultResolver, used by the core for its "system" lookups) ask the
+// phone's DNS servers named in MFX_SYSTEM_DNS. Without it Go reads a missing /etc/resolv.conf and asks 127.0.0.1:53, so on
+// a network that blocks DNS over HTTPS (Cloudflare, Google, Quad9 reset or time out) nothing could be resolved.
+func useSystemDNS() {
+	var servers []string
+	for _, s := range strings.Split(os.Getenv("MFX_SYSTEM_DNS"), ",") {
+		s = strings.TrimSpace(s)
+		if ip, err := netip.ParseAddr(s); err == nil {
+			servers = append(servers, net.JoinHostPort(ip.String(), "53"))
+		}
+	}
+	if len(servers) == 0 {
+		return
+	}
+	var turn atomic.Uint32
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			// Go's resolver retries and falls back to TCP itself; every attempt takes the next server.
+			server := servers[int(turn.Add(1)-1)%len(servers)]
+			var d net.Dialer
+			return d.DialContext(ctx, network, server)
+		},
+	}
 }
 
 func port(name string) (int, error) {

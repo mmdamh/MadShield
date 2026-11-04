@@ -2079,6 +2079,10 @@ private fun fxModelTests() {
         env["MFX_SOCKS_PASS"] == r1.password && env["GOMAXPROCS"] == "2" && env["TMPDIR"] == "/cache")
     check("fx env: dns cleaned (trimmed, deduplicated, bad entries dropped)", env["MFX_DNS"] == "https://1.1.1.1/dns-query,8.8.8.8")
     check("fx env: no dns given means the variable is absent", "MFX_DNS" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c"))
+    check("fx env: phone dns is handed over, cleaned (loopback, link-local, junk, duplicates dropped)",
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", listOf("185.51.200.2", "127.0.0.53", "fe80::1%wlan0", " 10.202.10.10 ", "junk", "185.51.200.2", "2001:4860:4860::8888"))["MFX_SYSTEM_DNS"] == "185.51.200.2,10.202.10.10,2001:4860:4860::8888")
+    check("fx env: no usable phone dns means the variable is absent", "MFX_SYSTEM_DNS" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", listOf("127.0.0.1", "::1", "0.0.0.0")))
+    check("fx env: at most four phone dns servers", FxVpn.cleanSystemDns((1..9).map { "8.8.8.$it" }).size == FxVpn.MAX_SYSTEM_DNS)
     check("fx env: same port twice or a low port is refused", listOf({ FxEnvironment.build(1823, 1823, r1, emptyList(), "/c") }, { FxEnvironment.build(80, 40000, r1, emptyList(), "/c") }).all { runCatching(it).isFailure })
     check("fx env: login keys are secret for the log", FxEnvironment.isSecret("MFX_SOCKS_PASS") && FxEnvironment.isSecret("MFX_SOCKS_USER") && !FxEnvironment.isSecret("MFX_API_PORT"))
     check("fx env: shell metacharacters never pass the dns filter", FxVpn.cleanDns(listOf("1.1.1.1;rm -rf /", "a b", "\$(x)", "udp://9.9.9.9:53")) == listOf("udp://9.9.9.9:53"))

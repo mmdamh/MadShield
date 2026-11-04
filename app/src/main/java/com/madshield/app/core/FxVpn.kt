@@ -63,6 +63,23 @@ object FxVpn {
     /** Entries that the core's config would accept, in order, without duplicates. */
     fun cleanDns(entries: List<String>): List<String> =
         entries.map { it.trim() }.filter { it.isNotEmpty() && DNS_ENTRY.matches(it) && !it.contains(',') }.distinct()
+
+    /**
+     * The phone's own DNS servers (plain DNS, port 53) as bare IP literals, at most [MAX_SYSTEM_DNS]. The core cannot find
+     * them itself on Android (no /etc/resolv.conf), so its "system fallback" would ask 127.0.0.1 and fail; MadShield
+     * hands them over (MFX_SYSTEM_DNS). Loopback, wildcard and link-local entries are dropped; the order is kept.
+     */
+    fun cleanSystemDns(entries: List<String>): List<String> =
+        entries.map { it.trim().substringBefore('%') }
+            .filter { e ->
+                e.isNotEmpty() && (IPV4.matches(e) || (e.contains(':') && IPV6.matches(e))) &&
+                    !e.startsWith("127.") && e != "0.0.0.0" && e != "::" && e != "::1" && !e.lowercase().startsWith("fe80")
+            }
+            .distinct().take(MAX_SYSTEM_DNS)
+
+    const val MAX_SYSTEM_DNS = 4
+    private val IPV4 = Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""")
+    private val IPV6 = Regex("""[0-9a-fA-F:]{2,39}""")
 }
 
 /** A made-up login for the core's SOCKS5 listener: different at every start, never stored, never logged. */
@@ -86,7 +103,10 @@ data class FxCredentials(val user: String, val password: String) {
 
 /** The environment of the core's process. Built here (pure) so a test sees exactly what is handed over. */
 object FxEnvironment {
-    fun build(socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String): Map<String, String> {
+    fun build(
+        socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String,
+        systemDns: List<String> = emptyList()
+    ): Map<String, String> {
         require(socksPort in 1024..65535 && apiPort in 1024..65535 && socksPort != apiPort) { "bad ports" }
         val env = linkedMapOf(
             "MFX_SOCKS_PORT" to socksPort.toString(),
@@ -101,6 +121,8 @@ object FxEnvironment {
         )
         val servers = FxVpn.cleanDns(dns)
         if (servers.isNotEmpty()) env["MFX_DNS"] = servers.joinToString(",")
+        val system = FxVpn.cleanSystemDns(systemDns)
+        if (system.isNotEmpty()) env["MFX_SYSTEM_DNS"] = system.joinToString(",")
         return env
     }
 
