@@ -52,6 +52,7 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
     var confirmRemove by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     val inBuild = remember { FxRuntime.isInBuild(ctx) }
+    var split by remember { mutableStateOf(FxTricks.helloSplit(ctx)) }
 
     /** One pass of reading: status and accounts, and the locations once an account exists. */
     suspend fun refresh(withLocations: Boolean) {
@@ -127,6 +128,17 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
         ) {
             InfoHint(stringResource(R.string.fx_intro))
             InfoHint(stringResource(R.string.fx_privacy))
+            if (inBuild) {
+                HelloSplitCard(split, running = FxRuntime.endpoint != null && !FxSession.ownsCore) { v ->
+                    split = v
+                    FxTricks.setHelloSplit(ctx, v)
+                    if (FxSession.ownsCore) {
+                        // this page's own core restarts with the new choice; a sign-in under way starts again
+                        signIn = null; signInError = null
+                        scope.launch { withContext(Dispatchers.IO) { FxSession.release() }; reload++ }
+                    }
+                }
+            }
 
             when {
                 !inBuild -> HelperText(stringResource(R.string.fx_engine_missing), error = true)
@@ -416,4 +428,23 @@ private fun fmtBytes(b: Long): String = when {
     b >= 1L shl 30 -> String.format(java.util.Locale.US, "%.1f GB", b / (1024.0 * 1024.0 * 1024.0))
     b >= 1L shl 20 -> String.format(java.util.Locale.US, "%.0f MB", b / (1024.0 * 1024.0))
     else -> String.format(java.util.Locale.US, "%d KB", b / 1024)
+}
+
+/** How the TLS hello of the core's connections to Mozilla goes out (see [FxHelloSplit]). Read when a core starts. */
+@Composable
+private fun HelloSplitCard(selected: FxHelloSplit, running: Boolean, onPick: (FxHelloSplit) -> Unit) {
+    SectionCard(stringResource(R.string.fx_split_title)) {
+        SegmentedChoice(
+            options = listOf(
+                stringResource(R.string.fx_split_sni) to FxHelloSplit.SNI,
+                stringResource(R.string.fx_split_first) to FxHelloSplit.FIRST_BYTE,
+                stringResource(R.string.fx_split_record) to FxHelloSplit.RECORD,
+                stringResource(R.string.fx_split_off) to FxHelloSplit.OFF
+            ),
+            selected = selected,
+            onSelect = onPick
+        )
+        HelperText(stringResource(R.string.fx_split_sub))
+        if (running) HelperText(stringResource(R.string.fx_split_running))
+    }
 }

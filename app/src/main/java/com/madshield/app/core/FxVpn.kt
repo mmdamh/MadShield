@@ -127,11 +127,26 @@ data class FxCredentials(val user: String, val password: String) {
     }
 }
 
+/**
+ * How the core sends the TLS hello of its own connections to Mozilla (sign-in, Guardian, the proxy servers). A network that
+ * filters by server name often stalls the handshake ("TLS handshake timeout"); cutting the first packet gets past many such
+ * filters, and the server receives the same bytes. SNI (the default) cuts it inside the name as TCP segments; FIRST_BYTE
+ * after its first byte; RECORD makes two TLS records. Costs one extra packet per new connection, nothing while connected.
+ */
+enum class FxHelloSplit(val stored: String) {
+    OFF("off"), SNI("sni"), FIRST_BYTE("first-byte"), RECORD("record");
+
+    companion object {
+        val DEFAULT = SNI
+        fun fromStored(s: String?): FxHelloSplit = entries.firstOrNull { it.stored == s } ?: DEFAULT
+    }
+}
+
 /** The environment of the core's process. Built here (pure) so a test sees exactly what is handed over. */
 object FxEnvironment {
     fun build(
         socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String,
-        systemDns: List<String> = emptyList()
+        systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT
     ): Map<String, String> {
         require(socksPort in 1024..65535 && apiPort in 1024..65535 && socksPort != apiPort) { "bad ports" }
         val env = linkedMapOf(
@@ -149,6 +164,7 @@ object FxEnvironment {
         if (servers.isNotEmpty()) env["MFX_DNS"] = servers.joinToString(",")
         val system = FxVpn.cleanSystemDns(systemDns)
         if (system.isNotEmpty()) env["MFX_SYSTEM_DNS"] = system.joinToString(",")
+        env["MFX_HELLO_SPLIT"] = helloSplit.stored // always sent: the core keeps its setting in a file, so "off" must be said too
         return env
     }
 
