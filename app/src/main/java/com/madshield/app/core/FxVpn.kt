@@ -91,6 +91,26 @@ object FxVpn {
         entries.map { it.trim() }.filter { it.isNotEmpty() && DNS_ENTRY.matches(it) && !it.contains(',') }.distinct()
 
     /**
+     * A SOCKS5 proxy ON THIS PHONE that the Foxy page may use for the sign-in: `127.x.x.x:port`, `localhost:port` or
+     * `[::1]:port`, with a port 1..65535. Anything else (another host, no port, a name that only starts with 127) is null:
+     * the account's password never goes to a proxy somewhere else.
+     */
+    fun cleanLoopbackProxy(raw: String?): String? {
+        val s = raw?.trim().orEmpty()
+        val cut = s.lastIndexOf(':')
+        if (cut <= 0) return null
+        val host = s.substring(0, cut).lowercase()
+        val portText = s.substring(cut + 1)
+        if (portText.isEmpty() || portText.length > 5 || !portText.all { it in '0'..'9' }) return null
+        val port = portText.toInt()
+        if (port !in 1..65535) return null
+        val octets = host.split('.')
+        val ok = host == "localhost" || host == "[::1]" ||
+            (octets.size == 4 && octets[0] == "127" && octets.all { o -> o.isNotEmpty() && o.length <= 3 && o.all { it in '0'..'9' } && o.toInt() <= 255 })
+        return if (ok) "$host:$port" else null
+    }
+
+    /**
      * The phone's own DNS servers (plain DNS, port 53) as bare IP literals, at most [MAX_SYSTEM_DNS]. The core cannot find
      * them itself on Android (no /etc/resolv.conf), so its "system fallback" would ask 127.0.0.1 and fail; MadShield
      * hands them over (MFX_SYSTEM_DNS). Loopback, wildcard and link-local entries are dropped; the order is kept.
@@ -146,7 +166,8 @@ enum class FxHelloSplit(val stored: String) {
 object FxEnvironment {
     fun build(
         socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String,
-        systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT
+        systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT,
+        signInProxy: String? = null
     ): Map<String, String> {
         require(socksPort in 1024..65535 && apiPort in 1024..65535 && socksPort != apiPort) { "bad ports" }
         val env = linkedMapOf(
@@ -164,6 +185,7 @@ object FxEnvironment {
         if (servers.isNotEmpty()) env["MFX_DNS"] = servers.joinToString(",")
         val system = FxVpn.cleanSystemDns(systemDns)
         if (system.isNotEmpty()) env["MFX_SYSTEM_DNS"] = system.joinToString(",")
+        FxVpn.cleanLoopbackProxy(signInProxy)?.let { env["MFX_UPSTREAM_PROXY"] = it } // the sign-in page's core only
         env["MFX_HELLO_SPLIT"] = helloSplit.stored // always sent: the core keeps its setting in a file, so "off" must be said too
         return env
     }

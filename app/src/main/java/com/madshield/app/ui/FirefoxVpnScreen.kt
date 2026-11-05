@@ -129,13 +129,24 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
             InfoHint(stringResource(R.string.fx_intro))
             InfoHint(stringResource(R.string.fx_privacy))
             if (inBuild) {
-                HelloSplitCard(split, running = FxRuntime.endpoint != null && !FxSession.ownsCore) { v ->
-                    split = v
-                    FxTricks.setHelloSplit(ctx, v)
+                val connectionRuns = FxRuntime.endpoint != null && !FxSession.ownsCore
+                /** This page's own core restarts with the new choice; a sign-in under way starts again. */
+                fun restartPageCore() {
                     if (FxSession.ownsCore) {
-                        // this page's own core restarts with the new choice; a sign-in under way starts again
                         signIn = null; signInError = null
                         scope.launch { withContext(Dispatchers.IO) { FxSession.release() }; reload++ }
+                    }
+                }
+                HelloSplitCard(split, running = connectionRuns) { v ->
+                    split = v
+                    FxTricks.setHelloSplit(ctx, v)
+                    restartPageCore()
+                }
+                if (accounts.isEmpty()) {
+                    // only while no account is signed in: the proxy is for the sign-in, a connection never uses it
+                    SignInProxyCard(saved = remember(reload) { FxTricks.signInProxy(ctx).orEmpty() }, running = connectionRuns) { v ->
+                        FxTricks.setSignInProxy(ctx, v)
+                        restartPageCore()
                     }
                 }
             }
@@ -445,6 +456,32 @@ private fun HelloSplitCard(selected: FxHelloSplit, running: Boolean, onPick: (Fx
             onSelect = onPick
         )
         HelperText(stringResource(R.string.fx_split_sub))
+        if (running) HelperText(stringResource(R.string.fx_split_running))
+    }
+}
+
+/**
+ * A SOCKS5 proxy on this phone for the sign-in only (see [FxCoreProcess]): for when Mozilla's edge refuses the network's own
+ * address ("Fastly anti-bot challenge ... HTTP 406"). Only 127.x / localhost addresses are taken, so the password never
+ * leaves for a proxy somewhere else. Empty means none.
+ */
+@Composable
+private fun SignInProxyCard(saved: String, running: Boolean, onApply: (String) -> Unit) {
+    var text by remember(saved) { mutableStateOf(saved) }
+    val parsed = FxVpn.cleanLoopbackProxy(text)
+    val bad = text.isNotBlank() && parsed == null
+    SectionCard(stringResource(R.string.fx_proxy_title)) {
+        HelperText(stringResource(R.string.fx_proxy_sub))
+        OutlinedTextField(
+            value = text, onValueChange = { text = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("127.0.0.1:1819") }, isError = bad,
+            supportingText = if (bad) ({ Text(stringResource(R.string.fx_proxy_bad)) }) else null
+        )
+        Spacer(Modifier.height(8.dp))
+        FilledTonalButton(
+            onClick = { onApply(parsed.orEmpty()) },
+            enabled = !bad && (parsed.orEmpty() != saved)
+        ) { Text(stringResource(if (text.isBlank()) R.string.fx_proxy_clear else R.string.fx_proxy_apply)) }
         if (running) HelperText(stringResource(R.string.fx_split_running))
     }
 }

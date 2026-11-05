@@ -600,6 +600,11 @@
     <string name="fx_split_record">دو رکورد TLS</string>
     <string name="fx_split_off">خاموش</string>
     <string name="fx_split_running">اتصالی در حال اجراست: انتخاب از اتصال بعدی اعمال می‌شود.</string>
+    <string name="fx_proxy_title">ورود از راه پروکسی روی همین گوشی</string>
+    <string name="fx_proxy_sub">اگر ورود با «Fastly anti-bot challenge … HTTP 406» شکست می‌خورد، لبه‌ی Mozilla آدرس شبکه‌ی شما را رد می‌کند. یک پروکسی SOCKS5 روی همین گوشی روشن کنید که از جای دیگری خارج می‌شود (برنامه‌ی VPN دیگر در حالت پروکسی، یا WARP خود MadShield در حالت Proxy Only، معمولاً 127.0.0.1:1819) و آدرسش را بنویسید. فقط همین صفحه و فقط برای ورود از آن استفاده می‌کند؛ اتصال‌ها هرگز.</string>
+    <string name="fx_proxy_bad">به شکل 127.0.0.1:پورت بنویسید (پروکسی روی همین گوشی).</string>
+    <string name="fx_proxy_apply">استفاده از این پروکسی</string>
+    <string name="fx_proxy_clear">بدون پروکسی</string>
     <string name="fx_ports_title">پورت‌هایی که Mozilla رد می‌کند</string>
     <string name="fx_ports_block">بلاک</string>
     <string name="fx_ports_direct">مستقیم</string>
