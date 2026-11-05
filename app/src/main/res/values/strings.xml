@@ -601,4 +601,7 @@
     <string name="fx_ports_direct">Direct</string>
     <string name="fx_ports_hint_block">Blocked: nothing leaves outside the VPN. An app that keeps retrying is slowed down, to save battery.</string>
     <string name="fx_ports_hint_direct">Direct: these connections skip the VPN and the server sees your real address. A game works if its server is reachable without a VPN.</string>
+    <string name="fx_location_change">Change</string>
+    <string name="fx_location_choose">Choose location</string>
+    <string name="fx_location_search">Search country or city</string>
 </resources>

@@ -599,4 +599,7 @@
     <string name="fx_ports_direct">مستقیم</string>
     <string name="fx_ports_hint_block">بلاک: چیزی بیرون از VPN نمی‌رود. برنامه‌ای که مدام تلاش مجدد می‌کند کند می‌شود تا باتری مصرف نشود.</string>
     <string name="fx_ports_hint_direct">مستقیم: این اتصال‌ها VPN را دور می‌زنند و سرور آدرس واقعی شما را می‌بیند. بازی اگر سرورش بدون VPN در دسترس باشد کار می‌کند.</string>
+    <string name="fx_location_change">تغییر</string>
+    <string name="fx_location_choose">انتخاب کشور</string>
+    <string name="fx_location_search">جستجوی کشور یا شهر</string>
 </resources>

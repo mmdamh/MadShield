@@ -333,30 +333,79 @@ private fun AccountCard(account: FxAccount, status: FxStatus?, onRemove: () -> U
     }
 }
 
+/** Shows the chosen location; a tap opens the list of every location with a search box. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LocationCard(locations: List<FxLocation>?, selected: String, busy: Boolean, onPick: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
     SectionCard(stringResource(R.string.fx_location)) {
         when {
             locations == null -> HelperText(stringResource(R.string.fx_location_loading))
             locations.isEmpty() -> HelperText(stringResource(R.string.fx_location_none))
             else -> {
-                locations.forEach { l ->
-                    // "" (or the recommended entry) is the core's own choice
-                    val isSel = if (selected.isEmpty()) l.recommended else selected.equals(l.code, ignoreCase = true)
-                    Row(
-                        Modifier.fillMaxWidth().clickable(enabled = !busy) { onPick(if (l.recommended) "" else l.code) }.padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = isSel, onClick = null)
-                        Spacer(Modifier.width(10.dp))
+                // "" (or the recommended entry) is the core's own choice
+                val current = locations.firstOrNull { l -> if (selected.isEmpty()) l.recommended else selected.equals(l.code, ignoreCase = true) }
+                Surface(
+                    onClick = { open = true }, enabled = !busy, shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(current?.let { flagEmoji(it.code) }.orEmpty().ifEmpty { "🌐" }, style = MaterialTheme.typography.headlineSmall)
+                        Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(l.name + if (l.city.isNotEmpty()) " · ${l.city}" else "", style = MaterialTheme.typography.bodyLarge)
-                            if (l.recommended) Text(stringResource(R.string.fx_location_recommended), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                current?.let { it.name + if (it.city.isNotEmpty()) " · ${it.city}" else "" } ?: stringResource(R.string.fx_location_recommended),
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            if (current?.recommended == true) Text(stringResource(R.string.fx_location_recommended), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                         }
-                        if (l.pingMs > 0) Text("${l.pingMs} ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.fx_location_change), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     }
                 }
                 HelperText(stringResource(R.string.fx_location_note))
+                if (open) {
+                    ModalBottomSheet(onDismissRequest = { open = false }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+                        LocationSheet(locations, selected, onPick = { code -> open = false; onPick(code) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Every location as a list: flag, name, city, ping, and a radio; the search box filters by name, city or code. */
+@Composable
+private fun LocationSheet(locations: List<FxLocation>, selected: String, onPick: (String) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val shown = remember(locations, query) { filterLocations(locations, query) }
+    Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
+        Text(stringResource(R.string.fx_location_choose), style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text(stringResource(R.string.fx_location_search)) }
+        )
+        Spacer(Modifier.height(8.dp))
+        androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 520.dp)) {
+            androidx.compose.foundation.lazy.items(shown, key = { it.code + "/" + it.city }) { l ->
+                val isSel = if (selected.isEmpty()) l.recommended else selected.equals(l.code, ignoreCase = true)
+                Row(
+                    Modifier.fillMaxWidth().clickable { onPick(if (l.recommended) "" else l.code) }.padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(flagEmoji(l.code).ifEmpty { "🌐" }, style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(l.name, style = MaterialTheme.typography.bodyLarge)
+                        val sub = listOf(l.city, if (l.recommended) stringResource(R.string.fx_location_recommended) else "").filter { it.isNotEmpty() }.joinToString(" · ")
+                        if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (l.pingMs > 0) {
+                        Text("${l.pingMs} ms", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    RadioButton(selected = isSel, onClick = null)
+                }
             }
         }
     }

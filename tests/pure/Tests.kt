@@ -1968,6 +1968,21 @@ fun fxTests() {
     fxPolicyTests()
     fxHardeningTests()
     fxPortTests()
+    fxLocationTests()
+}
+
+private fun fxLocationTests() {
+    check("fx flag: a country code becomes the two symbols", flagEmoji("de") == "\uD83C\uDDE9\uD83C\uDDEA" && flagEmoji(" CA ") == "\uD83C\uDDE8\uD83C\uDDE6")
+    check("fx flag: anything else is empty", listOf("", "D", "DEU", "1A", "é", "\u00DF\u00DF").all { flagEmoji(it) == "" })
+    val all = listOf(
+        FxLocation("CA", "Canada", "Vancouver", false, 90), FxLocation("DE", "Germany", "Berlin", false, 40),
+        FxLocation("FR", "France", "Paris", true, 55), FxLocation("US", "United States", "New York", false, 120)
+    )
+    check("fx locations: blank search shows all", filterLocations(all, "  ").size == 4)
+    check("fx locations: search by name, city, code", filterLocations(all, "ger").map { it.code } == listOf("DE") &&
+        filterLocations(all, "VANC").map { it.code } == listOf("CA") && filterLocations(all, "fr").map { it.code } == listOf("FR"))
+    check("fx locations: a code matches only whole, so \"u\" is not every country with a u", filterLocations(all, "us").map { it.code } == listOf("US"))
+    check("fx locations: nothing found is empty", filterLocations(all, "zzz").isEmpty())
 }
 
 /** Ports Mozilla's proxy refuses: the gate, the setting, and a real front that blocks, slows retries down, or sends direct. */

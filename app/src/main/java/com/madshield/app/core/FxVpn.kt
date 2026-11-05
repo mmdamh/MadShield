@@ -244,6 +244,23 @@ data class FxLocation(
     val pingMs: Long
 )
 
+/**
+ * The flag of a two-letter country code as the pair of regional-indicator symbols every phone draws as a flag (no image
+ * files needed). "" for anything that is not two ASCII letters.
+ */
+fun flagEmoji(code: String): String {
+    val c = code.trim().uppercase(java.util.Locale.ROOT)
+    if (c.length != 2 || c.any { it !in 'A'..'Z' }) return ""
+    return c.map { String(Character.toChars(0x1F1E6 + (it - 'A'))) }.joinToString("")
+}
+
+/** The locations whose name, city or code contains [query] (case-insensitive); everything for a blank query. */
+fun filterLocations(all: List<FxLocation>, query: String): List<FxLocation> {
+    val q = query.trim().lowercase(java.util.Locale.ROOT)
+    if (q.isEmpty()) return all
+    return all.filter { it.name.lowercase(java.util.Locale.ROOT).contains(q) || it.city.lowercase(java.util.Locale.ROOT).contains(q) || it.code.lowercase(java.util.Locale.ROOT) == q }
+}
+
 data class FxTestResult(val ok: Boolean, val errorCode: String, val error: String, val exitCountry: String, val exitIp: String, val totalMs: Long)
 
 /** Reading the core's JSON. Every field is optional on purpose: a missing one means "unknown", never a crash. */
