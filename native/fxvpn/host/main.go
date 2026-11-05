@@ -17,6 +17,7 @@
 //	MFX_SOCKS_PORT, MFX_API_PORT   loopback ports
 //	MFX_SOCKS_USER, MFX_SOCKS_PASS SOCKS5 login of the proxy
 //	MFX_DNS                        optional, comma-separated resolvers for the core's own lookups (see config dns.servers)
+//	MFX_HELLO_SPLIT                optional: off, sni, first-byte or record (network.hello_split)
 //	MFX_SYSTEM_DNS                 optional, comma-separated IPs of the phone's own DNS servers (plain DNS, port 53): the
 //	                               "system" lookups of the core (its fallback when the encrypted resolvers are blocked)
 //	                               ask these, because a static Go binary on Android finds no /etc/resolv.conf
@@ -42,6 +43,7 @@ import (
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/config"
 	"github.com/armanlife/firefox-vpn-client/core/internal/guardian"
+	"github.com/armanlife/firefox-vpn-client/core/internal/hellosplit"
 	"github.com/armanlife/firefox-vpn-client/core/internal/netcheck"
 	"github.com/armanlife/firefox-vpn-client/core/internal/resolver"
 	"github.com/armanlife/firefox-vpn-client/core/internal/service"
@@ -179,6 +181,15 @@ func applyEnv(path string) error {
 			}
 		}
 		cfg.DNS.Servers = servers
+	}
+	// How the TLS hello of the connections to Mozilla goes out (a network that filters by server name stalls the
+	// handshake; splitting the first packet gets past many). Only the core's own choices are accepted.
+	if v := strings.TrimSpace(os.Getenv("MFX_HELLO_SPLIT")); v != "" {
+		if hellosplit.Valid(v) {
+			cfg.Network.HelloSplit = v
+		} else {
+			fmt.Fprintf(os.Stderr, "[madshield-fx] ignoring MFX_HELLO_SPLIT=%q\n", v)
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {

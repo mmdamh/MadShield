@@ -15,6 +15,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -24,6 +25,9 @@ import com.madshield.app.core.Protocol
 import com.madshield.app.ui.components.SegmentedChoice
 import com.madshield.app.core.ConnectionMode
 import com.madshield.app.core.EngineConfig
+import com.madshield.app.core.EngineKind
+import com.madshield.app.core.FxPortPolicy
+import com.madshield.app.ui.components.PillToggle
 import com.madshield.app.core.RuleLists
 import com.madshield.app.core.RuleTarget
 import com.madshield.app.ui.components.HelperText
@@ -72,6 +76,22 @@ fun RoutingScreen(
         }
 
         ProfileCard(config, connectionState, onUpdate)
+        // Foxy only: what to do with the TCP ports Mozilla's servers refuse (no description here; the title says it).
+        if (config.engineKind == EngineKind.FIREFOX) {
+            SectionCard(stringResource(R.string.fx_ports_title)) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    PillToggle(
+                        options = listOf(
+                            stringResource(R.string.fx_ports_block) to FxPortPolicy.BLOCK,
+                            stringResource(R.string.fx_ports_direct) to FxPortPolicy.DIRECT
+                        ),
+                        selected = config.fxPortPolicy,
+                        enabled = true,
+                        onSelect = { p -> onUpdate { it.copy(fxPortPolicy = p) } }
+                    )
+                }
+            }
+        }
         Text(
             stringResource(R.string.sec_traffic_control), style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, start = 4.dp)

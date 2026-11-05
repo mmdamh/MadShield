@@ -62,7 +62,8 @@ class FxCoreProcess(private val context: Context) {
         val dataDir = FxRuntime.dataDir(context).also { it.mkdirs() }
         val apiPort = FxRuntime.freePort(except = socksPort)
         val creds = FxCredentials.generate(SecureRandom())
-        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns)
+        val helloSplit = FxTricks.helloSplit(context)
+        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit)
 
         val pb = ProcessBuilder(bin.absolutePath, "-data-dir", dataDir.absolutePath)
             .directory(dataDir)
@@ -74,7 +75,7 @@ class FxCoreProcess(private val context: Context) {
         // The non-secret part only: the login is never written anywhere.
         RingLogBuffer.append(
             "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"} " +
-                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0}"
+                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored}"
         )
         synchronized(tail) { tail.clear() }
         lastExit = null
@@ -270,4 +271,19 @@ object FxSession {
     fun stopForConnection() = release()
 
     val ownsCore: Boolean get() = synchronized(lock) { own != null }
+}
+
+/** The choice of [FxHelloSplit], kept in a small private preferences file: the Foxy page and every connection read it. */
+object FxTricks {
+    private const val FILE = "fx_tricks"
+    private const val KEY = "hello_split"
+
+    fun helloSplit(context: Context): FxHelloSplit = try {
+        FxHelloSplit.fromStored(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null))
+    } catch (_: Exception) { FxHelloSplit.DEFAULT }
+
+    fun setHelloSplit(context: Context, v: FxHelloSplit) {
+        try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString(KEY, v.stored).apply() }
+        catch (_: Exception) { /* not saved: the default applies */ }
+    }
 }

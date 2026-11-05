@@ -149,8 +149,6 @@ fun HomeScreen(
         if (config.engineKind == EngineKind.FIREFOX) {
             FirefoxTile(onOpenFirefox)
             Spacer(Modifier.height(10.dp))
-            FxPortsCard(config.fxPortPolicy) { p -> onUpdate { it.copy(fxPortPolicy = p) } }
-            Spacer(Modifier.height(10.dp))
         }
         ShortcutTiles(onOpenConnections, onOpenUsage, onOpenAdvanced)
         // Bottom padding so the floating navigation bar never covers the last card.
@@ -166,38 +164,6 @@ private fun FirefoxTile(onClick: () -> Unit) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
             Text(stringResource(R.string.fx_tile_title), style = MaterialTheme.typography.titleSmall, color = cs.onTertiaryContainer)
             Text(stringResource(R.string.fx_tile_sub), style = MaterialTheme.typography.bodySmall, color = cs.onTertiaryContainer.copy(alpha = 0.75f))
-        }
-    }
-}
-
-/**
- * What to do with the TCP ports Mozilla's servers refuse (everything but 80, 443, 8080, 8443: games, mail, SSH...). Read at
- * the next connection. Block leaves nothing outside the VPN; Direct lets those connections bypass it.
- */
-@Composable
-private fun FxPortsCard(policy: FxPortPolicy, onSelect: (FxPortPolicy) -> Unit) {
-    val cs = MaterialTheme.colorScheme
-    Surface(shape = RoundedCornerShape(28.dp), color = cs.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
-            Text(stringResource(R.string.fx_ports_title), style = MaterialTheme.typography.titleSmall, color = cs.onSurface)
-            Text(stringResource(R.string.fx_ports_sub), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-            Spacer(Modifier.height(10.dp))
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                PillToggle(
-                    options = listOf(
-                        stringResource(R.string.fx_ports_block) to FxPortPolicy.BLOCK,
-                        stringResource(R.string.fx_ports_direct) to FxPortPolicy.DIRECT
-                    ),
-                    selected = policy,
-                    enabled = true,
-                    onSelect = onSelect
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(if (policy == FxPortPolicy.BLOCK) R.string.fx_ports_hint_block else R.string.fx_ports_hint_direct),
-                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
-            )
         }
     }
 }

@@ -1969,6 +1969,23 @@ fun fxTests() {
     fxHardeningTests()
     fxPortTests()
     fxLocationTests()
+    fxSplitTests()
+}
+
+private fun fxSplitTests() {
+    val r1 = FxCredentials("mfxabc", "0123456789abcdef0123456789abcdef")
+    check("fx split: the default is splitting inside the name", FxHelloSplit.DEFAULT == FxHelloSplit.SNI && FxHelloSplit.fromStored(null) == FxHelloSplit.SNI)
+    check("fx split: stored names round-trip, junk falls back to the default",
+        FxHelloSplit.entries.all { FxHelloSplit.fromStored(it.stored) == it } && FxHelloSplit.fromStored("zzz") == FxHelloSplit.SNI)
+    check("fx split: the four names are exactly the core's own choices", FxHelloSplit.entries.map { it.stored } == listOf("off", "sni", "first-byte", "record"))
+    check("fx split: the environment carries it, \"off\" included (the core keeps its setting in a file)",
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c")["MFX_HELLO_SPLIT"] == "sni" &&
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", helloSplit = FxHelloSplit.OFF)["MFX_HELLO_SPLIT"] == "off" &&
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", helloSplit = FxHelloSplit.RECORD)["MFX_HELLO_SPLIT"] == "record")
+    val main = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
+    check("fx split: the core's entry point reads MFX_HELLO_SPLIT and accepts only the core's own names",
+        main.contains("MFX_HELLO_SPLIT") && main.contains("hellosplit.Valid(v)") && main.contains("cfg.Network.HelloSplit = v"))
+    check("fx split: the relay and the upstream proxy stay forced off", main.contains("cfg.Network.APIRelay = \"\"") && main.contains("cfg.Network.UpstreamProxyEnabled = false"))
 }
 
 private fun fxLocationTests() {
