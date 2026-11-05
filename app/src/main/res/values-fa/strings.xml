@@ -486,6 +486,7 @@
     <string name="path_psiphon">Psiphon</string>
     <string name="path_tor">Tor</string>
     <string name="path_singbox">سرور شما (sing-box)</string>
+    <string name="path_firefox">Firefox VPN (موزیلا)</string>
     <string name="path_warp">WARP</string>
     <string name="path_internet">اینترنت</string>
     <string name="usage_title">مصرف</string>

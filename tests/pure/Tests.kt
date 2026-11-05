@@ -1989,6 +1989,15 @@ private fun fxHardeningTests() {
         domains.sorted() == listOf("firefox.com", "fastly-masque.net", "mozilla.com", "mozilla.net", "mozilla.org").sorted())
     check("fx hardening: the patch guards both lookup and dial and gates the password",
         patch.contains("guardHost(host)") && patch.contains("guardHost(h)") && patch.contains("RememberPassword"))
+    check("fx hardening: old stored passwords are scrubbed at start and the scrub is tested",
+        main.contains("scrubStoredPasswords(paths.Dir)") && read("native/fxvpn/host/scrub.go")?.contains("\"password\"") == true &&
+            read("native/fxvpn/host/scrub_test.go")?.contains("TestScrubRemovesOldPasswordsAndKeepsTokens") == true)
+    check("fx hardening: fixed versions of the two libraries are enforced in CI",
+        ci.contains("klauspost/compress@v1.20.2") && ci.contains("quic-go/quic-go@v0.59.1"))
+    val nsc = read("app/src/main/res/xml/network_security_config.xml")
+    check("fx hardening: cleartext is denied except for loopback (the core's API)",
+        nsc != null && nsc.contains("<base-config cleartextTrafficPermitted=\"false\"") &&
+            Regex("""<domain-config cleartextTrafficPermitted="true">\s*<domain includeSubdomains="false">127\.0\.0\.1</domain>\s*<domain includeSubdomains="false">localhost</domain>\s*</domain-config>""").containsMatchIn(nsc))
     check("fx hardening: CI applies the patches and tests the allowlist", ci.contains("native/fxvpn/patches") && ci.contains("go test ./cmd/madshield-fx") && ci.contains("cp native/fxvpn/host/*.go"))
 }
 

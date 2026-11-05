@@ -23,6 +23,7 @@ import com.madshield.app.R
 import com.madshield.app.core.ConnSnapshot
 import com.madshield.app.core.ConnView
 import com.madshield.app.core.EngineConfig
+import com.madshield.app.core.EngineKind
 import com.madshield.app.core.InsightHub
 import com.madshield.app.core.PrivacyChain
 import com.madshield.app.core.RouteAction
@@ -245,13 +246,18 @@ private fun DetailSheet(c: ConnView, config: EngineConfig, onClose: () -> Unit) 
                 RouteAction.BLOCK -> add(stringResource(R.string.path_blocked))
                 RouteAction.DIRECT -> add(stringResource(R.string.path_direct))
                 RouteAction.PROXY -> {
-                    when (config.privacyChain) {
-                        PrivacyChain.PSIPHON -> add(stringResource(R.string.path_psiphon))
-                        PrivacyChain.TOR -> add(stringResource(R.string.path_tor))
-                        PrivacyChain.SINGBOX -> add(stringResource(R.string.path_singbox))
-                        PrivacyChain.NONE -> {}
+                    if (config.engineKind == EngineKind.FIREFOX) {
+                        // The Firefox VPN engine is its own path: no WARP and no chain behind it.
+                        add(stringResource(R.string.path_firefox))
+                    } else {
+                        when (config.privacyChain) {
+                            PrivacyChain.PSIPHON -> add(stringResource(R.string.path_psiphon))
+                            PrivacyChain.TOR -> add(stringResource(R.string.path_tor))
+                            PrivacyChain.SINGBOX -> add(stringResource(R.string.path_singbox))
+                            PrivacyChain.NONE -> {}
+                        }
+                        add(stringResource(R.string.path_warp))
                     }
-                    add(stringResource(R.string.path_warp))
                     add(stringResource(R.string.path_internet))
                 }
             }

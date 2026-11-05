@@ -433,6 +433,15 @@ jobs:
           test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
           echo "firefox-vpn-client @ $pin"
 
+      - name: Install Go (the version the core's go.mod asks for)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: native/firefox-vpn-client/core/go.mod
+          cache: false
+
+      - name: Show the Go version
+        run: go version
+
       # Three small hooks in the core itself (native/fxvpn/patches): a guard on the names it may reach, and the switch that
       # keeps the account password off the disk. `git apply` is exact: it fails the job if the pinned source ever differs.
       - name: Apply the MadShield patches to the core
@@ -444,6 +453,21 @@ jobs:
             echo "applied $p"
           done
 
+      # Two libraries the core pins have published fixes for denial-of-service flaws that a hostile peer can trigger:
+      # klauspost/compress < 1.20.2 (zstd decoder panic, CVE-2026-116591) and quic-go <= 0.59.0 (HTTP/3 trailer memory,
+      # GHSA-vvgj-x9jq-8cj9, fixed in 0.59.1). They are raised here, checked against the module checksum database, and
+      # the build fails if the result is lower than the fix.
+      - name: Raise two dependencies to their fixed versions
+        working-directory: native/firefox-vpn-client/core
+        run: |
+          set -e
+          go get github.com/klauspost/compress@v1.20.2 github.com/quic-go/quic-go@v0.59.1
+          go mod verify
+          v() { go list -m -f '{{.Version}}' "$1"; }
+          echo "klauspost/compress $(v github.com/klauspost/compress)  quic-go $(v github.com/quic-go/quic-go)"
+          test "$(printf '%s\nv1.20.2\n' "$(v github.com/klauspost/compress)" | sort -V | head -1)" = "v1.20.2"
+          test "$(printf '%s\nv0.59.1\n' "$(v github.com/quic-go/quic-go)" | sort -V | head -1)" = "v0.59.1"
+
       # Our entry point lives inside the module (it uses internal packages), next to the CA file it embeds.
       - name: Add the MadShield entry point to the core
         run: |
@@ -452,15 +476,6 @@ jobs:
           mkdir -p "$dst"
           cp native/fxvpn/host/*.go "$dst/"
           cp native/firefox-vpn-client/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
-
-      - name: Install Go (the version the core's go.mod asks for)
-        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: native/firefox-vpn-client/core/go.mod
-          cache: false
-
-      - name: Show the Go version
-        run: go version
 
       # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon and sing-box builds).
       - name: Build madshield-fx

@@ -1,8 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Blanket deny on cleartext for every domain. The app itself makes no
-         direct HTTP calls at all; all traffic goes through the local engine
-         process, not through Android's own HTTP stack. This is a defense-in-depth
-         rule in case any future dependency ever tries. -->
+    <!-- Cleartext is denied for every domain. The ONE exception is this phone's own loopback address: the Firefox VPN
+         core's control API (FxClient) is plain HTTP on 127.0.0.1 and answers only a client that holds its token. Without
+         this exception Android 9 to 16 refuse that request ("Cleartext HTTP traffic not permitted"); Android 17 already
+         treats loopback as local. Nothing here lets any other host be reached without TLS. -->
     <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
 </network-security-config>

@@ -83,6 +83,12 @@ func run(dataDir string) error {
 		return err
 	}
 	useSystemDNS()
+	// Passwords an earlier build let the core keep go now (the new core keeps none).
+	if n, err := scrubStoredPasswords(paths.Dir); err != nil {
+		fmt.Fprintln(os.Stderr, "madshield-fx: removing stored passwords failed: "+err.Error())
+	} else if n > 0 {
+		fmt.Fprintf(os.Stderr, "madshield-fx: removed %d stored account password(s)\n", n)
+	}
 	if err := applyEnv(paths.Config); err != nil {
 		return err
 	}

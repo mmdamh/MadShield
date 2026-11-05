@@ -488,6 +488,7 @@
     <string name="path_psiphon">Psiphon</string>
     <string name="path_tor">Tor</string>
     <string name="path_singbox">Your server (sing-box)</string>
+    <string name="path_firefox">Firefox VPN (Mozilla)</string>
     <string name="path_warp">WARP</string>
     <string name="path_internet">Internet</string>
     <string name="usage_title">Usage</string>
