@@ -50,6 +50,19 @@ none). Patches applied by CI, each fails the build unless its target matches exa
   receives it, makes it non-blocking and passes it as `tun.Options.FileDescriptor` (sing-tun then skips opening
   `/dev/net/tun` and all netlink work). Without the variable behaviour is upstream's.
 
+## Firefox VPN core (`libfxvpn.so`)
+
+| File | Pin | What |
+|---|---|---|
+| `libfxvpn.so` | `native/fxvpn.pin` | Go core of [armanlife/firefox-vpn-client](https://github.com/armanlife/firefox-vpn-client) (GPL-3, unofficial), built by CI as a static ELF with our own entry point `native/fxvpn/host/` and the patches in `native/fxvpn/patches/` (applied with `git apply`, which fails the job if the pinned source differs). Optional: without it the APK has no "Firefox VPN" engine. |
+
+What CI does to it, and why (see `claude/MadShield_fx_audit.md` in the project): only Mozilla's names can be reached
+(`allow.go`, tested in CI with `go test`), the connectivity checks outside the tunnel are off, no account password is kept
+on disk (and one stored by an older build is removed at start, `scrub.go`), only the system CA store is trusted, and
+`klauspost/compress` and `quic-go` are raised to their fixed versions (checked against the module checksum database).
+Mozilla's proxies carry TCP ports 80, 443, 8080 and 8443 only; the app blocks or sends direct the rest (Home card).
+
+
 ## Updating a pin
 
 Change the commit in `build.yml` (both the `fetch` step and its `test`), then
