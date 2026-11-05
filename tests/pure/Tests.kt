@@ -1985,6 +1985,19 @@ private fun fxSplitTests() {
     val main = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
     check("fx split: the core's entry point reads MFX_HELLO_SPLIT and accepts only the core's own names",
         main.contains("MFX_HELLO_SPLIT") && main.contains("hellosplit.Valid(v)") && main.contains("cfg.Network.HelloSplit = v"))
+    check("fx proxy: only an address on this phone is taken",
+        listOf("127.0.0.1:1819", " localhost:10808 ", "LOCALHOST:1080", "[::1]:1080", "127.5.5.5:65535").map { FxVpn.cleanLoopbackProxy(it) } ==
+            listOf("127.0.0.1:1819", "localhost:10808", "localhost:1080", "[::1]:1080", "127.5.5.5:65535"))
+    check("fx proxy: anything else is refused",
+        listOf(null, "", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:x", "8.8.8.8:1080", "192.168.1.2:1080", "example.com:1080",
+            "0.0.0.0:1080", "socks5://127.0.0.1:1080", "127.0.0.1.evil.com:1080", ":1080", "127.0.0.256:1080", "127.0.0:1080").all { FxVpn.cleanLoopbackProxy(it) == null })
+    check("fx proxy: the environment carries it only when valid",
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", signInProxy = "127.0.0.1:1819")["MFX_UPSTREAM_PROXY"] == "127.0.0.1:1819" &&
+        "MFX_UPSTREAM_PROXY" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c") &&
+        "MFX_UPSTREAM_PROXY" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", signInProxy = "8.8.8.8:1080"))
+    check("fx proxy: the Go side takes only loopback too, and a connection's core is started without it",
+        main.contains("loopbackProxy(os.Getenv(\"MFX_UPSTREAM_PROXY\"))") &&
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/EngineProcessManager.kt").readText().contains("proc.start(plan.corePort, FxVpn.DEFAULT_DNS)"))
     check("fx split: the relay and the upstream proxy stay forced off", main.contains("cfg.Network.APIRelay = \"\"") && main.contains("cfg.Network.UpstreamProxyEnabled = false"))
 }
 

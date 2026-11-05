@@ -602,6 +602,11 @@
     <string name="fx_split_record">Two TLS records</string>
     <string name="fx_split_off">Off</string>
     <string name="fx_split_running">A connection is running: the choice applies at the next connection.</string>
+    <string name="fx_proxy_title">Sign in through a proxy on this phone</string>
+    <string name="fx_proxy_sub">If sign-in fails with “Fastly anti-bot challenge … HTTP 406”, Mozilla\'s edge is refusing your network\'s address. Start a SOCKS5 proxy on this phone that exits somewhere else (another VPN app in proxy mode, or MadShield\'s WARP in Proxy Only mode, usually 127.0.0.1:1819) and enter its address. Only this page uses it, only for the sign-in; connections never do.</string>
+    <string name="fx_proxy_bad">Use 127.0.0.1:port (a proxy app on this phone).</string>
+    <string name="fx_proxy_apply">Use this proxy</string>
+    <string name="fx_proxy_clear">No proxy</string>
     <string name="fx_ports_title">Ports Mozilla refuses</string>
     <string name="fx_ports_block">Block</string>
     <string name="fx_ports_direct">Direct</string>

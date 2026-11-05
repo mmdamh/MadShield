@@ -41,7 +41,7 @@ class FxCoreProcess(private val context: Context) {
     val isAlive: Boolean get() = process?.isAlive == true
 
     /** Starts the core with its SOCKS5 listener on [socksPort]. Blocking, short; throws [EnginePreflightException] before anything runs. */
-    fun start(socksPort: Int, dns: List<String>): FxEndpoint {
+    fun start(socksPort: Int, dns: List<String>, signInProxy: String? = null): FxEndpoint {
         // Read before anything starts: the phone's own DNS (the core cannot find it on Android).
         val systemDns = PhoneDns.servers(context)
         stop()
@@ -63,7 +63,7 @@ class FxCoreProcess(private val context: Context) {
         val apiPort = FxRuntime.freePort(except = socksPort)
         val creds = FxCredentials.generate(SecureRandom())
         val helloSplit = FxTricks.helloSplit(context)
-        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit)
+        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit, signInProxy)
 
         val pb = ProcessBuilder(bin.absolutePath, "-data-dir", dataDir.absolutePath)
             .directory(dataDir)
@@ -75,7 +75,7 @@ class FxCoreProcess(private val context: Context) {
         // The non-secret part only: the login is never written anywhere.
         RingLogBuffer.append(
             "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"} " +
-                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored}"
+                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored} sign-in-proxy=${if (env.containsKey("MFX_UPSTREAM_PROXY")) "on" else "off"}"
         )
         synchronized(tail) { tail.clear() }
         lastExit = null
@@ -239,7 +239,7 @@ object FxSession {
             FxRuntime.endpoint?.let { ep -> if (own == null || own?.isAlive == true) return ep }
             own?.stop(); own = null
             val proc = FxCoreProcess(context.applicationContext)
-            val ep = proc.start(Chain.UNDERLAY_PORT, FxVpn.DEFAULT_DNS)
+            val ep = proc.start(Chain.UNDERLAY_PORT, FxVpn.DEFAULT_DNS, FxTricks.signInProxy(context))
             own = proc
             FxRuntime.endpoint = ep
             return ep
@@ -281,6 +281,16 @@ object FxTricks {
     fun helloSplit(context: Context): FxHelloSplit = try {
         FxHelloSplit.fromStored(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null))
     } catch (_: Exception) { FxHelloSplit.DEFAULT }
+
+    /** The proxy on this phone for the sign-in page's core (null: none). Never given to a connection's core. */
+    fun signInProxy(context: Context): String? = try {
+        FxVpn.cleanLoopbackProxy(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString("sign_in_proxy", null))
+    } catch (_: Exception) { null }
+
+    fun setSignInProxy(context: Context, v: String?) {
+        try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString("sign_in_proxy", FxVpn.cleanLoopbackProxy(v) ?: "").apply() }
+        catch (_: Exception) { /* not saved */ }
+    }
 
     fun setHelloSplit(context: Context, v: FxHelloSplit) {
         try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString(KEY, v.stored).apply() }

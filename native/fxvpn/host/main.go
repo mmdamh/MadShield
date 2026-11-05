@@ -17,6 +17,7 @@
 //	MFX_SOCKS_PORT, MFX_API_PORT   loopback ports
 //	MFX_SOCKS_USER, MFX_SOCKS_PASS SOCKS5 login of the proxy
 //	MFX_DNS                        optional, comma-separated resolvers for the core's own lookups (see config dns.servers)
+//	MFX_UPSTREAM_PROXY             optional: a SOCKS5 proxy on this phone (127.0.0.1:port) for the sign-in page only
 //	MFX_HELLO_SPLIT                optional: off, sni, first-byte or record (network.hello_split)
 //	MFX_SYSTEM_DNS                 optional, comma-separated IPs of the phone's own DNS servers (plain DNS, port 53): the
 //	                               "system" lookups of the core (its fallback when the encrypted resolvers are blocked)
@@ -171,6 +172,12 @@ func applyEnv(path string) error {
 	cfg.Network.UpstreamProxyEnabled = false
 	cfg.Network.UpstreamProxy = ""
 	cfg.Network.UpstreamProxyUsername, cfg.Network.UpstreamProxyPassword = "", ""
+	// The one exception: the Foxy page may hand over a SOCKS5 proxy ON THIS PHONE for the sign-in (when Mozilla's edge
+	// refuses the network's own address). Only a loopback address is taken; a connection's core is started without it.
+	if v := loopbackProxy(os.Getenv("MFX_UPSTREAM_PROXY")); v != "" {
+		cfg.Network.UpstreamProxy = v
+		cfg.Network.UpstreamProxyEnabled = true
+	}
 	cfg.SystemProxy.Mode = config.SystemProxyClear
 	cfg.Tun.Programs = []config.TunProgram{}
 	if v := strings.TrimSpace(os.Getenv("MFX_DNS")); v != "" {
