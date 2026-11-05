@@ -41,6 +41,9 @@ import (
 	"syscall"
 
 	"github.com/armanlife/firefox-vpn-client/core/internal/config"
+	"github.com/armanlife/firefox-vpn-client/core/internal/guardian"
+	"github.com/armanlife/firefox-vpn-client/core/internal/netcheck"
+	"github.com/armanlife/firefox-vpn-client/core/internal/resolver"
 	"github.com/armanlife/firefox-vpn-client/core/internal/service"
 )
 
@@ -53,7 +56,6 @@ var extraRoots []byte
 const (
 	apexCerts   = "/apex/com.android.conscrypt/cacerts"
 	systemCerts = "/system/etc/security/cacerts"
-	userCerts   = "/data/misc/keychain/certs-added"
 )
 
 func main() {
@@ -70,6 +72,7 @@ func main() {
 }
 
 func run(dataDir string) error {
+	limitEgress()
 	paths, err := service.ResolveDataPaths(dataDir)
 	if err != nil {
 		return err
@@ -109,6 +112,20 @@ func run(dataDir string) error {
 	return d.Run()
 }
 
+// limitEgress closes every way out of the core that is not Mozilla's (see the patch in native/fxvpn/patches):
+//
+//   - resolver.HostGuard: only Mozilla's names (allow.go) are looked up or connected to, whatever a setting, the server
+//     list or a request to the dashboard asks for;
+//   - the connectivity checks the core makes when Mozilla cannot be reached (Google, Microsoft, Apple, Baidu, ip.sb,
+//     outside the tunnel, with this phone's real address) are switched off: MadShield does its own network checks;
+//   - the account password is not kept on disk: it is used for the sign-in and forgotten.
+func limitEgress() {
+	resolver.HostGuard = hostGuard
+	netcheck.Check = func(context.Context) netcheck.Result { return netcheck.Unknown }
+	netcheck.InsideVPN = func(context.Context) bool { return false }
+	service.RememberPassword = false
+}
+
 // applyEnv writes the settings MadShield owns into config.json (created with the project's defaults when missing),
 // only when something changed.
 func applyEnv(path string) error {
@@ -141,6 +158,8 @@ func applyEnv(path string) error {
 	// would see the tokens, no second proxy in front, no system proxy, no TUN of the core's own.
 	cfg.Routing.Enabled = false
 	cfg.Network.APIRelay = ""
+	cfg.Network.GuardianEndpoint = guardian.DefaultEndpoint // the account's token goes to Mozilla's service only
+	cfg.Proxy.Server = ""                                   // the server is chosen from Mozilla's list by country
 	cfg.Network.UpstreamProxyEnabled = false
 	cfg.Network.UpstreamProxy = ""
 	cfg.Network.UpstreamProxyUsername, cfg.Network.UpstreamProxyPassword = "", ""
@@ -210,7 +229,9 @@ func useAndroidRoots(dataDir string) error {
 	if _, err := os.Stat(apexCerts); err == nil {
 		store = apexCerts
 	}
-	if err := os.Setenv("SSL_CERT_DIR", store+":"+userCerts); err != nil {
+	// The system's roots only: a certificate the user (or an app) installed is NOT trusted by this core, so no one holding
+	// such a certificate can read the account's traffic to Mozilla.
+	if err := os.Setenv("SSL_CERT_DIR", store); err != nil {
 		return err
 	}
 	return os.Setenv("SSL_CERT_FILE", file)

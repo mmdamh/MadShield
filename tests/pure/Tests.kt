@@ -1966,6 +1966,30 @@ fun fxTests() {
     fxSocksTests()
     fxModelTests()
     fxPolicyTests()
+    fxHardeningTests()
+}
+
+/** The guards that keep the Firefox VPN core to Mozilla (native/fxvpn): they live in Go, so the tests read the files. */
+private fun fxHardeningTests() {
+    val root = System.getenv("MADSHIELD_ROOT") ?: "."
+    fun read(path: String): String? = java.io.File(root, path).takeIf { it.isFile }?.readText()
+    val main = read("native/fxvpn/host/main.go")
+    val allow = read("native/fxvpn/host/allow.go")
+    val patch = read("native/fxvpn/patches/0001-madshield-hooks.patch")
+    val ci = read(".github/workflows/build.yml")
+    if (main == null || allow == null || patch == null || ci == null) { check("fx hardening: files present", false); return }
+    check("fx hardening: the name guard is installed", main.contains("resolver.HostGuard = hostGuard"))
+    check("fx hardening: the connectivity checks outside the tunnel are off", main.contains("netcheck.Check = ") && main.contains("netcheck.InsideVPN = "))
+    check("fx hardening: the account password is not kept", main.contains("service.RememberPassword = false"))
+    check("fx hardening: only the system CA store, never the user's", main.contains("SSL_CERT_DIR\", store)") && !main.contains("certs-added"))
+    check("fx hardening: Guardian endpoint and server are forced", main.contains("cfg.Network.GuardianEndpoint = guardian.DefaultEndpoint") && main.contains("cfg.Proxy.Server = \"\""))
+    val domains = Regex("""allowedDomains = \[]string\{([^}]*)\}""").find(allow)?.groupValues?.get(1)
+        ?.let { Regex("\"([^\"]+)\"").findAll(it).map { m -> m.groupValues[1] }.toList() } ?: emptyList()
+    check("fx hardening: the allowlist is exactly Mozilla's domains and Fastly's masque names",
+        domains.sorted() == listOf("firefox.com", "fastly-masque.net", "mozilla.com", "mozilla.net", "mozilla.org").sorted())
+    check("fx hardening: the patch guards both lookup and dial and gates the password",
+        patch.contains("guardHost(host)") && patch.contains("guardHost(h)") && patch.contains("RememberPassword"))
+    check("fx hardening: CI applies the patches and tests the allowlist", ci.contains("native/fxvpn/patches") && ci.contains("go test ./cmd/madshield-fx") && ci.contains("cp native/fxvpn/host/*.go"))
 }
 
 /** A one-connection SOCKS5 server on loopback that wants a login. [seen] receives what the client sent. */

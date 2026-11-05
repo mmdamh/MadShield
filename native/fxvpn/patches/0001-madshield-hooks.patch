@@ -1,0 +1,71 @@
+diff --git a/core/internal/resolver/madshield.go b/core/internal/resolver/madshield.go
+new file mode 100644
+index 0000000..95a6a8f
+--- /dev/null
++++ b/core/internal/resolver/madshield.go
+@@ -0,0 +1,14 @@
++package resolver
++
++// MadShield hook (see native/fxvpn/patches): HostGuard, when set, is asked about every NAME the program is about to look
++// up or connect to (not about IP addresses). An error stops the lookup or the dial. MadShield sets it to a list of
++// Mozilla's hosts, so nothing else can be reached by name, whatever the settings, the server list or a dashboard
++// request ask for.
++var HostGuard func(host string) error
++
++func guardHost(host string) error {
++	if g := HostGuard; g != nil {
++		return g(host)
++	}
++	return nil
++}
+diff --git a/core/internal/resolver/resolver.go b/core/internal/resolver/resolver.go
+index e0a4c6b..77dbaaa 100644
+--- a/core/internal/resolver/resolver.go
++++ b/core/internal/resolver/resolver.go
+@@ -208,6 +208,9 @@ func (r *Resolver) Lookup(ctx context.Context, host string) (Result, error) {
+ 	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+ 		return Result{Addrs: []netip.Addr{addr}, Source: "literal"}, nil
+ 	}
++	if err := guardHost(host); err != nil {
++		return Result{}, err
++	}
+ 	if r.System() || host == "localhost" {
+ 		return systemLookup(ctx, host)
+ 	}
+@@ -407,6 +410,11 @@ func (r *Resolver) DialWithin(ctx context.Context, wait time.Duration, network,
+ // dial connects within wait after the name is known; 0 means ctx alone limits
+ // it.
+ func (r *Resolver) dial(ctx context.Context, wait time.Duration, network, address string) (net.Conn, error) {
++	if h, _, err := net.SplitHostPort(address); err == nil {
++		if err := guardHost(h); err != nil {
++			return nil, err
++		}
++	}
+ 	d := egress.Dialer(0)
+ 	limit := func() (context.Context, context.CancelFunc) {
+ 		if wait <= 0 {
+diff --git a/core/internal/service/daemon.go b/core/internal/service/daemon.go
+index 035cfc2..b9b135d 100644
+--- a/core/internal/service/daemon.go
++++ b/core/internal/service/daemon.go
+@@ -792,7 +792,7 @@ func (d *Daemon) addSignedInAccount(email, password string, token *fxa.TokenResp
+ 		return accounts.Account{}, err
+ 	}
+ 	d.pool.Forget(acc.ID)
+-	if password != "" {
++	if password != "" && RememberPassword {
+ 		if err := d.store.SetPassword(acc.ID, password); err != nil {
+ 			logx.Warn("saving the account password failed account=%s err=%s", logx.Email(acc.Name()), logx.Err(err))
+ 		}
+diff --git a/core/internal/service/madshield.go b/core/internal/service/madshield.go
+new file mode 100644
+index 0000000..3236315
+--- /dev/null
++++ b/core/internal/service/madshield.go
+@@ -0,0 +1,6 @@
++package service
++
++// MadShield hook (see native/fxvpn/patches): RememberPassword false keeps the Firefox Account password out of the data
++// folder. It is used for the sign-in only and then forgotten; an account whose tokens Mozilla revokes asks for a new
++// sign-in instead of signing in again by itself.
++var RememberPassword = true

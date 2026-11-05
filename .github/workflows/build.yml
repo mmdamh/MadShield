@@ -433,13 +433,24 @@ jobs:
           test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
           echo "firefox-vpn-client @ $pin"
 
+      # Three small hooks in the core itself (native/fxvpn/patches): a guard on the names it may reach, and the switch that
+      # keeps the account password off the disk. `git apply` is exact: it fails the job if the pinned source ever differs.
+      - name: Apply the MadShield patches to the core
+        run: |
+          set -e
+          for p in native/fxvpn/patches/*.patch; do
+            git -C native/firefox-vpn-client apply --check "$GITHUB_WORKSPACE/$p"
+            git -C native/firefox-vpn-client apply "$GITHUB_WORKSPACE/$p"
+            echo "applied $p"
+          done
+
       # Our entry point lives inside the module (it uses internal packages), next to the CA file it embeds.
       - name: Add the MadShield entry point to the core
         run: |
           set -e
           dst=native/firefox-vpn-client/core/cmd/madshield-fx
           mkdir -p "$dst"
-          cp native/fxvpn/host/main.go "$dst/main.go"
+          cp native/fxvpn/host/*.go "$dst/"
           cp native/firefox-vpn-client/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
 
       - name: Install Go (the version the core's go.mod asks for)
@@ -461,6 +472,8 @@ jobs:
         run: |
           set -e
           go vet ./cmd/madshield-fx
+          # the allowlist of names (allow_test.go) runs on the build machine
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test ./cmd/madshield-fx
           go build -v -trimpath -o "$GITHUB_WORKSPACE/fxvpn-out" -ldflags "-s -w -buildid=" ./cmd/madshield-fx
           ls -l "$GITHUB_WORKSPACE/fxvpn-out"
 
