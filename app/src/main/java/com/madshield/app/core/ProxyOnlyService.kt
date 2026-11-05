@@ -63,7 +63,7 @@ class ProxyOnlyService : Service() {
         InsightHub.closeConnection = { id -> engine.closeConnection(id) }
         InsightHub.closeAllConnections = { engine.closeAllConnections() }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
-        scope.launch { settingsStore.configFlow.map { it.udpEnabled }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
+        scope.launch { settingsStore.configFlow.map { it.udpEffective }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the proxy stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }
@@ -112,9 +112,9 @@ class ProxyOnlyService : Service() {
                     val t0 = System.currentTimeMillis()
                     val w = SocksProbe.awaitReady(
                         TunnelConfig.SOCKS_HOST, engine.probePort, timeout,
-                        engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
+                        engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }, auth = engine.probeAuth
                     )
-                    if (w != SocksProbe.Wait.READY || c.effectiveChain == PrivacyChain.NONE) return w
+                    if (w != SocksProbe.Wait.READY || !c.needsReadyWait) return w
                     // Psiphon/Tor's local proxy answers before the chain is connected: wait for "is ready".
                     val left = (timeout - (System.currentTimeMillis() - t0)).coerceAtLeast(10_000L)
                     return when (val r = engine.awaitChainReady(left) { self?.isActive == false }) {
@@ -124,7 +124,7 @@ class ProxyOnlyService : Service() {
                     }
                 }
                 var wait = startAndWait(config)
-                if (wait == SocksProbe.Wait.ENGINE_DIED && config.ech && EchFallback.isEchFailure(engine.failureReason())) {
+                if (wait == SocksProbe.Wait.ENGINE_DIED && config.ech && config.engineKind == EngineKind.WARP && EchFallback.isEchFailure(engine.failureReason())) {
                     RingLogBuffer.append("[proxy] ECH key lookup failed; retrying without ECH")
                     wait = startAndWait(config.copy(ech = false))
                 }
@@ -221,9 +221,9 @@ class ProxyOnlyService : Service() {
             val ok = engine.isRunning && !stalled &&
                 SocksProbe.handshakeOk(
                     TunnelConfig.SOCKS_HOST, engine.probePort,
-                    PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS
+                    PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS, PowerPolicy.HEALTH_READ_TIMEOUT_MS, engine.probeAuth
                 ) &&
-                (config.effectiveChain == PrivacyChain.NONE || engine.chainReady) &&
+                (!config.needsReadyWait || engine.chainReady) &&
                 engine.chainStillWorks(isScreenOn()) // custom chain only: a rare end-to-end check, screen on
             if (!ok && engine.swapping) continue // a switch started while this probe was running
             if (ok) {
@@ -302,10 +302,10 @@ class ProxyOnlyService : Service() {
         val timeout = 30_000L + ConnectPolicy.chainAllowanceMs(c)
         val w = SocksProbe.awaitReady(
             TunnelConfig.SOCKS_HOST, engine.probePort, timeout,
-            engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }
+            engineAlive = { engine.isRunning }, cancelled = { self?.isActive == false }, auth = engine.probeAuth
         )
         if (w != SocksProbe.Wait.READY) { lastFailureWasChain = false; return false }
-        if (c.effectiveChain == PrivacyChain.NONE) { lastFailureWasChain = false; return true }
+        if (!c.needsReadyWait) { lastFailureWasChain = false; return true }
         val reason = engine.awaitChainReady(timeout) { self?.isActive == false }
         if (reason == null) { lastFailureWasChain = false; return true }
         if (reason == "cancelled") throw CancellationException("restart cancelled")

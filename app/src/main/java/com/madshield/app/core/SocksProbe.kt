@@ -18,7 +18,8 @@ import java.net.Socket
 object SocksProbe {
 
     /** Defaults are the short startup limits; the health loops pass [PowerPolicy.HEALTH_CONNECT_TIMEOUT_MS]/[PowerPolicy.HEALTH_READ_TIMEOUT_MS]. */
-    fun handshakeOk(host: String, port: Int, connectTimeoutMs: Int = 250, readTimeoutMs: Int = 400): Boolean =
+    fun handshakeOk(host: String, port: Int, connectTimeoutMs: Int = 250, readTimeoutMs: Int = 400, auth: SocksAuth? = null): Boolean =
+        if (auth != null) loginOk(host, port, connectTimeoutMs, readTimeoutMs, auth) else
         try {
             Socket().use { s ->
                 s.connect(InetSocketAddress(host, port), connectTimeoutMs)
@@ -33,6 +34,19 @@ object SocksProbe {
                     got += n
                 }
                 reply[0].toInt() == 5 && reply[1].toInt() == 0
+            }
+        } catch (_: IOException) {
+            false
+        }
+
+    /** The same check for a listener that wants a username and password (the Foxy core): the login must be accepted. */
+    private fun loginOk(host: String, port: Int, connectTimeoutMs: Int, readTimeoutMs: Int, auth: SocksAuth): Boolean =
+        try {
+            Socket().use { s ->
+                s.connect(InetSocketAddress(host, port), connectTimeoutMs)
+                s.soTimeout = readTimeoutMs
+                Socks5Handshake.greet(s.getInputStream(), s.getOutputStream(), auth)
+                true
             }
         } catch (_: IOException) {
             false
@@ -152,14 +166,15 @@ object SocksProbe {
         timeoutMs: Long,
         engineAlive: () -> Boolean,
         cancelled: () -> Boolean = { false },
-        pollMs: Long = 150
+        pollMs: Long = 150,
+        auth: SocksAuth? = null
     ): Wait {
         val startedAt = System.currentTimeMillis()
         val deadline = startedAt + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (cancelled()) return Wait.CANCELLED
             if (!engineAlive()) return Wait.ENGINE_DIED
-            if (handshakeOk(host, port)) return Wait.READY
+            if (handshakeOk(host, port, auth = auth)) return Wait.READY
             try {
                 Thread.sleep(PowerPolicy.readyPollMs(System.currentTimeMillis() - startedAt, pollMs))
             } catch (_: InterruptedException) {

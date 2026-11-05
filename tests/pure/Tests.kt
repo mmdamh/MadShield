@@ -600,6 +600,7 @@ fun dohTests() {
     refusalBackoffTests()
     udpRelayTests()
     insightTests()
+    fxTests()
 }
 
 
@@ -1954,4 +1955,300 @@ fun refusalBackoffTests() {
         check("backoff e2e: a resolver that cannot be reached is never held (the network may just be down)", times.all { it < 500 })
         f2.stop(); up2.close()
     }
+}
+
+
+// ---------------------------------------------------------------------------------------------------
+// update28: Firefox VPN engine (pure parts: SOCKS5 login, environment, API models, connect policy)
+// ---------------------------------------------------------------------------------------------------
+
+fun fxTests() {
+    fxSocksTests()
+    fxModelTests()
+    fxPolicyTests()
+    fxHardeningTests()
+    fxPortTests()
+    fxLocationTests()
+}
+
+private fun fxLocationTests() {
+    check("fx flag: a country code becomes the two symbols", flagEmoji("de") == "\uD83C\uDDE9\uD83C\uDDEA" && flagEmoji(" CA ") == "\uD83C\uDDE8\uD83C\uDDE6")
+    check("fx flag: anything else is empty", listOf("", "D", "DEU", "1A", "é", "\u00DF\u00DF").all { flagEmoji(it) == "" })
+    val all = listOf(
+        FxLocation("CA", "Canada", "Vancouver", false, 90), FxLocation("DE", "Germany", "Berlin", false, 40),
+        FxLocation("FR", "France", "Paris", true, 55), FxLocation("US", "United States", "New York", false, 120)
+    )
+    check("fx locations: blank search shows all", filterLocations(all, "  ").size == 4)
+    check("fx locations: search by name, city, code", filterLocations(all, "ger").map { it.code } == listOf("DE") &&
+        filterLocations(all, "VANC").map { it.code } == listOf("CA") && filterLocations(all, "fr").map { it.code } == listOf("FR"))
+    check("fx locations: a code matches only whole, so \"u\" is not every country with a u", filterLocations(all, "us").map { it.code } == listOf("US"))
+    check("fx locations: nothing found is empty", filterLocations(all, "zzz").isEmpty())
+}
+
+/** Ports Mozilla's proxy refuses: the gate, the setting, and a real front that blocks, slows retries down, or sends direct. */
+private fun fxPortTests() {
+    val allowed = FxVpn.ALLOWED_TCP_PORTS
+    check("fx ports: only the four web ports go to Mozilla", allowed == setOf(80, 443, 8080, 8443))
+    val block = PortGate(allowed, RouteAction.BLOCK)
+    val direct = PortGate(allowed, RouteAction.DIRECT)
+    check("fx ports: a web port keeps the VPN route", listOf(80, 443, 8080, 8443).all { block.decide(RouteAction.PROXY, it) == RouteAction.PROXY })
+    check("fx ports: another port is blocked or sent direct as chosen",
+        block.decide(RouteAction.PROXY, 9339) == RouteAction.BLOCK && direct.decide(RouteAction.PROXY, 9339) == RouteAction.DIRECT)
+    check("fx ports: a rule's own block or direct answer is never changed",
+        block.decide(RouteAction.DIRECT, 9339) == RouteAction.DIRECT && direct.decide(RouteAction.BLOCK, 9339) == RouteAction.BLOCK)
+    check("fx ports: the setting defaults to block and survives bad values",
+        EngineConfig().fxPortPolicy == FxPortPolicy.BLOCK && FxPortPolicy.fromStored(null) == FxPortPolicy.BLOCK &&
+            FxPortPolicy.fromStored("junk") == FxPortPolicy.BLOCK && FxPortPolicy.fromStored("direct") == FxPortPolicy.DIRECT)
+    run {
+        val up = FakeUpstream()
+        val port = freePort()
+        val f = RouteFront(port, up.port, RouteMatcher.parse(""), RouteFront.Options(portGate = block, backoff = RefusalBackoff(nameThreshold = 2, holdMs = 700))) { }
+        f.start()
+        fun timed(name: String, p: Int): Pair<Int, Long> {
+            val t0 = System.nanoTime(); val (c, sk) = socks(port, reqName(name, p)); sk.close()
+            return c to (System.nanoTime() - t0) / 1_000_000
+        }
+        val a = timed("game.example", 9339); val b = timed("game.example", 9339)
+        check("fx ports e2e: a refused port is answered 0x02 at once the first time", a.first == 2 && a.second < 500)
+        check("fx ports e2e: a retry of the same host and port is answered late", b.first == 2 && b.second >= 600)
+        val other = timed("game.example", 3724)
+        check("fx ports e2e: another port of the same host is not held", other.first == 2 && other.second < 500)
+        check("fx ports e2e: Mozilla's proxy was never asked about those ports", up.requests.none { it.endsWith(":9339") || it.endsWith(":3724") })
+        val web = timed("web.example", 443)
+        check("fx ports e2e: a web port still goes through the VPN", web.first == 0 && up.requests.contains("CONNECT web.example:443"))
+        f.stop(); up.close()
+    }
+    run {
+        val up = FakeUpstream(); val echo = EchoServer()
+        val port = freePort()
+        val f = RouteFront(port, up.port, RouteMatcher.parse(""), RouteFront.Options(portGate = direct)) { }
+        f.start()
+        val (code, sk) = socks(port, reqName("localhost", echo.port))
+        check("fx ports e2e: with Direct the connection leaves outside the VPN and works", code == 0 && echoOk(sk))
+        check("fx ports e2e: and Mozilla's proxy never sees it", up.requests.isEmpty())
+        sk.close(); f.stop(); up.close(); echo.close()
+    }
+}
+
+/** The guards that keep the Firefox VPN core to Mozilla (native/fxvpn): they live in Go, so the tests read the files. */
+private fun fxHardeningTests() {
+    val root = System.getenv("MADSHIELD_ROOT") ?: "."
+    fun read(path: String): String? = java.io.File(root, path).takeIf { it.isFile }?.readText()
+    val main = read("native/fxvpn/host/main.go")
+    val allow = read("native/fxvpn/host/allow.go")
+    val patch = read("native/fxvpn/patches/0001-madshield-hooks.patch")
+    val ci = read(".github/workflows/build.yml")
+    if (main == null || allow == null || patch == null || ci == null) { check("fx hardening: files present", false); return }
+    check("fx hardening: the name guard is installed", main.contains("resolver.HostGuard = hostGuard"))
+    check("fx hardening: the connectivity checks outside the tunnel are off", main.contains("netcheck.Check = ") && main.contains("netcheck.InsideVPN = "))
+    check("fx hardening: the account password is not kept", main.contains("service.RememberPassword = false"))
+    check("fx hardening: only the system CA store, never the user's", main.contains("SSL_CERT_DIR\", store)") && !main.contains("certs-added"))
+    check("fx hardening: Guardian endpoint and server are forced", main.contains("cfg.Network.GuardianEndpoint = guardian.DefaultEndpoint") && main.contains("cfg.Proxy.Server = \"\""))
+    val domains = Regex("""allowedDomains = \[]string\{([^}]*)\}""").find(allow)?.groupValues?.get(1)
+        ?.let { Regex("\"([^\"]+)\"").findAll(it).map { m -> m.groupValues[1] }.toList() } ?: emptyList()
+    check("fx hardening: the allowlist is exactly Mozilla's domains and Fastly's masque names",
+        domains.sorted() == listOf("firefox.com", "fastly-masque.net", "mozilla.com", "mozilla.net", "mozilla.org").sorted())
+    check("fx hardening: the patch guards both lookup and dial and gates the password",
+        patch.contains("guardHost(host)") && patch.contains("guardHost(h)") && patch.contains("RememberPassword"))
+    check("fx hardening: old stored passwords are scrubbed at start and the scrub is tested",
+        main.contains("scrubStoredPasswords(paths.Dir)") && read("native/fxvpn/host/scrub.go")?.contains("\"password\"") == true &&
+            read("native/fxvpn/host/scrub_test.go")?.contains("TestScrubRemovesOldPasswordsAndKeepsTokens") == true)
+    check("fx hardening: fixed versions of the two libraries are enforced in CI",
+        ci.contains("klauspost/compress@v1.20.2") && ci.contains("quic-go/quic-go@v0.59.1"))
+    val nsc = read("app/src/main/res/xml/network_security_config.xml")
+    check("fx hardening: cleartext is denied except for loopback (the core's API)",
+        nsc != null && nsc.contains("<base-config cleartextTrafficPermitted=\"false\"") &&
+            Regex("""<domain-config cleartextTrafficPermitted="true">\s*<domain includeSubdomains="false">127\.0\.0\.1</domain>\s*<domain includeSubdomains="false">localhost</domain>\s*</domain-config>""").containsMatchIn(nsc))
+    check("fx hardening: CI applies the patches and tests the allowlist", ci.contains("native/fxvpn/patches") && ci.contains("go test ./cmd/madshield-fx") && ci.contains("cp native/fxvpn/host/*.go"))
+}
+
+/** A one-connection SOCKS5 server on loopback that wants a login. [seen] receives what the client sent. */
+private class FakeSocksServer(private val user: String, private val pass: String, private val replyCode: Int = 0) : AutoCloseable {
+    val server = java.net.ServerSocket(0, 5, java.net.InetAddress.getByName("127.0.0.1"))
+    val port: Int get() = server.localPort
+    @Volatile var methods: List<Int> = emptyList()
+    @Volatile var loginOk = false
+    @Volatile var target: String = ""
+    private val t = Thread {
+        try {
+            server.accept().use { s ->
+                val i = s.getInputStream(); val o = s.getOutputStream()
+                i.read() // version
+                val n = i.read(); methods = List(n) { i.read() }
+                if (2 !in methods) { o.write(byteArrayOf(5, 0xff.toByte())); return@use }
+                o.write(byteArrayOf(5, 2)); o.flush()
+                i.read() // 1
+                val u = ByteArray(i.read()).also { b -> var g = 0; while (g < b.size) g += i.read(b, g, b.size - g) }
+                val p = ByteArray(i.read()).also { b -> var g = 0; while (g < b.size) g += i.read(b, g, b.size - g) }
+                loginOk = String(u) == user && String(p) == pass
+                o.write(byteArrayOf(1, if (loginOk) 0 else 1)); o.flush()
+                if (!loginOk) return@use
+                // request: 05 01 00 atyp ...
+                val head = ByteArray(4).also { b -> var g = 0; while (g < 4) g += i.read(b, g, 4 - g) }
+                target = when (head[3].toInt()) {
+                    1 -> { val a = ByteArray(4).also { b -> var g = 0; while (g < 4) g += i.read(b, g, 4 - g) }; a.joinToString(".") { (it.toInt() and 0xff).toString() } }
+                    3 -> { val l = i.read(); String(ByteArray(l).also { b -> var g = 0; while (g < l) g += i.read(b, g, l - g) }) }
+                    else -> "?"
+                }
+                val pt = (i.read() shl 8) or i.read()
+                target += ":$pt"
+                o.write(byteArrayOf(5, replyCode.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)); o.flush()
+                i.read()
+            }
+        } catch (_: Exception) {}
+    }.also { it.isDaemon = true; it.start() }
+    override fun close() { runCatching { server.close() } }
+}
+
+private fun fxSocksTests() {
+    // greeting without a login: the old behaviour, byte for byte
+    check("socks: no-login greeting is 05 01 00", run {
+        val out = java.io.ByteArrayOutputStream()
+        Socks5Handshake.greet(java.io.ByteArrayInputStream(byteArrayOf(5, 0)), out, null)
+        out.toByteArray().contentEquals(byteArrayOf(5, 1, 0))
+    })
+    check("socks: no-login greeting refused when the server wants a login", runCatching {
+        Socks5Handshake.greet(java.io.ByteArrayInputStream(byteArrayOf(5, 2)), java.io.ByteArrayOutputStream(), null)
+    }.isFailure)
+    check("socks: login greeting is 05 01 02 then RFC 1929 bytes", run {
+        val out = java.io.ByteArrayOutputStream()
+        Socks5Handshake.greet(java.io.ByteArrayInputStream(byteArrayOf(5, 2, 1, 0)), out, SocksAuth("ab", "xyz"))
+        out.toByteArray().contentEquals(byteArrayOf(5, 1, 2, 1, 2, 'a'.code.toByte(), 'b'.code.toByte(), 3, 'x'.code.toByte(), 'y'.code.toByte(), 'z'.code.toByte()))
+    })
+    check("socks: refused login throws", runCatching {
+        Socks5Handshake.greet(java.io.ByteArrayInputStream(byteArrayOf(5, 2, 1, 1)), java.io.ByteArrayOutputStream(), SocksAuth("a", "b"))
+    }.isFailure)
+    check("socks: server without login support throws when a login is given", runCatching {
+        Socks5Handshake.greet(java.io.ByteArrayInputStream(byteArrayOf(5, 0)), java.io.ByteArrayOutputStream(), SocksAuth("a", "b"))
+    }.isFailure)
+    check("socks: SocksAuth never prints its values", SocksAuth("secretuser", "secretpass").toString().let { !it.contains("secret") })
+    check("socks: empty or over-long login rejected", listOf({ SocksAuth("", "x") }, { SocksAuth("x", "") }, { SocksAuth("a".repeat(256), "x") }).all { runCatching(it).isFailure })
+
+    // UpstreamLogin: only the engine's own port gets a login
+    UpstreamLogin.set(1823, SocksAuth("u", "p"))
+    check("upstream login: right port", UpstreamLogin.forPort(1823) != null)
+    check("upstream login: other ports (WARP core, chain, public) get none", listOf(1819, 1824, 0).all { UpstreamLogin.forPort(it) == null })
+    UpstreamLogin.clear()
+    check("upstream login: cleared", UpstreamLogin.forPort(1823) == null)
+
+    // a real handshake against a loopback server
+    FakeSocksServer("mfxabc", "s3cret").use { srv ->
+        check("probe: right login accepted", SocksProbe.handshakeOk("127.0.0.1", srv.port, 1000, 1000, SocksAuth("mfxabc", "s3cret")))
+        check("probe: server saw the login-only method list", srv.methods == listOf(2))
+    }
+    FakeSocksServer("mfxabc", "s3cret").use { srv ->
+        check("probe: wrong login rejected", !SocksProbe.handshakeOk("127.0.0.1", srv.port, 1000, 1000, SocksAuth("mfxabc", "wrong")))
+    }
+    FakeSocksServer("mfxabc", "s3cret").use { srv ->
+        check("probe: no login against a login server is not healthy", !SocksProbe.handshakeOk("127.0.0.1", srv.port, 1000, 1000))
+    }
+    FakeSocksServer("u", "p").use { srv ->
+        val ok = runCatching {
+            LoginSocksSocket(srv.port, SocksAuth("u", "p")).use { it.connect(java.net.InetSocketAddress(java.net.InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4)), 443), 2000) }
+        }.isSuccess
+        check("LoginSocksSocket: CONNECT to a resolved address through a login server", ok && srv.loginOk && srv.target == "1.2.3.4:443")
+    }
+    FakeSocksServer("u", "p").use { srv ->
+        runCatching {
+            LoginSocksSocket(srv.port, SocksAuth("u", "p")).use { it.connect(java.net.InetSocketAddress.createUnresolved("example.org", 8443), 2000) }
+        }
+        check("LoginSocksSocket: unresolved names travel as names", srv.target == "example.org:8443")
+    }
+    FakeSocksServer("u", "p", replyCode = 5).use { srv ->
+        check("LoginSocksSocket: a refused request throws", runCatching {
+            LoginSocksSocket(srv.port, SocksAuth("u", "p")).use { it.connect(java.net.InetSocketAddress(java.net.InetAddress.getByAddress(byteArrayOf(1, 2, 3, 4)), 443), 2000) }
+        }.isFailure)
+    }
+}
+
+private fun fxModelTests() {
+    // credentials and environment
+    val r1 = FxCredentials.generate(java.util.Random(1)); val r2 = FxCredentials.generate(java.util.Random(2))
+    check("fx creds: user is mfx + 6 hex, password 32 hex", Regex("mfx[0-9a-f]{6}").matches(r1.user) && Regex("[0-9a-f]{32}").matches(r1.password))
+    check("fx creds: differ between starts", r1 != r2 && r1.password != r2.password)
+    check("fx creds: toString hides them", !r1.toString().contains(r1.password) && !r1.toString().contains(r1.user))
+    check("fx creds: login accepted by SocksAuth", runCatching { r1.toAuth() }.isSuccess)
+    val env = FxEnvironment.build(1823, 40123, r1, listOf("https://1.1.1.1/dns-query", " 8.8.8.8 ", "bad,entry", "", "https://1.1.1.1/dns-query"), "/cache")
+    check("fx env: ports, login and caps", env["MFX_SOCKS_PORT"] == "1823" && env["MFX_API_PORT"] == "40123" && env["MFX_SOCKS_USER"] == r1.user &&
+        env["MFX_SOCKS_PASS"] == r1.password && env["GOMAXPROCS"] == "2" && env["TMPDIR"] == "/cache")
+    check("fx env: dns cleaned (trimmed, deduplicated, bad entries dropped)", env["MFX_DNS"] == "https://1.1.1.1/dns-query,8.8.8.8")
+    check("fx env: no dns given means the variable is absent", "MFX_DNS" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c"))
+    check("fx env: phone dns is handed over, cleaned (loopback, link-local, junk, duplicates dropped)",
+        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", listOf("185.51.200.2", "127.0.0.53", "fe80::1%wlan0", " 10.202.10.10 ", "junk", "185.51.200.2", "2001:4860:4860::8888"))["MFX_SYSTEM_DNS"] == "185.51.200.2,10.202.10.10,2001:4860:4860::8888")
+    check("fx env: no usable phone dns means the variable is absent", "MFX_SYSTEM_DNS" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", listOf("127.0.0.1", "::1", "0.0.0.0")))
+    check("fx env: at most four phone dns servers", FxVpn.cleanSystemDns((1..9).map { "8.8.8.$it" }).size == FxVpn.MAX_SYSTEM_DNS)
+    check("fx env: same port twice or a low port is refused", listOf({ FxEnvironment.build(1823, 1823, r1, emptyList(), "/c") }, { FxEnvironment.build(80, 40000, r1, emptyList(), "/c") }).all { runCatching(it).isFailure })
+    check("fx env: login keys are secret for the log", FxEnvironment.isSecret("MFX_SOCKS_PASS") && FxEnvironment.isSecret("MFX_SOCKS_USER") && !FxEnvironment.isSecret("MFX_API_PORT"))
+    check("fx env: shell metacharacters never pass the dns filter", FxVpn.cleanDns(listOf("1.1.1.1;rm -rf /", "a b", "\$(x)", "udp://9.9.9.9:53")) == listOf("udp://9.9.9.9:53"))
+
+    // engine kind
+    check("engine kind: stored values round trip, unknown means WARP", EngineKind.entries.all { EngineKind.fromStored(it.stored) == it } && EngineKind.fromStored("x") == EngineKind.WARP && EngineKind.fromStored(null) == EngineKind.WARP)
+
+    // status
+    val st = FxJson.status("""{"state":{"phase":"running","message":"ok"},"proxy":{"listen":"127.0.0.1:1823","login_required":true},"selection":"DE","selection_name":"Germany",
+        "exit":{"ipv4":"5.6.7.8","country_code":"DE","city":"Frankfurt"},"active_account":{"email":"a@b.c"},"traffic":{"up":10,"down":2000,"up_rate":1,"down_rate":99}}""")!!
+    check("fx status: running, proxy up, awake", st.phase == "running" && st.proxyUp && !st.sleeping && st.connectFailure.isEmpty())
+    check("fx status: exit and traffic", st.exitCountry == "DE" && st.exitIp == "5.6.7.8" && st.exitCity == "Frankfurt" && st.downBytes == 2000L && st.downRate == 99L && st.activeEmail == "a@b.c")
+    val sl = FxJson.status("""{"state":{"phase":"running"},"proxy":{"sleeping_since":"2026-11-03T10:00:00Z"}}""")!!
+    check("fx status: sleeping_since means no session yet", sl.proxyUp && sl.sleeping)
+    check("fx status: proxy off has no proxy object", !FxJson.status("""{"state":{"phase":"off"}}""")!!.proxyUp)
+    check("fx status: garbage is null, never a crash", FxJson.status("not json") == null && FxJson.status("[]") == null)
+
+    // accounts
+    val acc = FxJson.accounts("""{"accounts":[{"id":"a1","email":"x@y.z","enabled":true,"active":true,"status":"ok","used_percent":12.5,
+        "usage":{"limit_bytes":53687091200,"remaining_bytes":47000000000,"reset_at":"2026-12-01T00:00:00Z"},"has_password":true},{"email":"no-id"}]}""")!!
+    check("fx accounts: one valid account (entries without id dropped)", acc.size == 1 && acc[0].id == "a1" && acc[0].email == "x@y.z")
+    check("fx accounts: quota and used bytes", acc[0].limitBytes == 53687091200L && acc[0].usedBytes == 53687091200L - 47000000000L && acc[0].usedPercent == 12.5 && !acc[0].unlimited)
+    check("fx accounts: empty list", FxJson.accounts("""{"accounts":[]}""") == emptyList<FxAccount>())
+    check("fx accounts: unlimited has no used bytes", FxJson.accounts("""{"accounts":[{"id":"u","usage":{"unlimited":true}}]}""")!![0].usedBytes == 0L)
+
+    // sign-in
+    val si = FxJson.signIn("""{"id":"s1","email":"a@b.c","step":"need_email_code","message":"Enter the code","error":"","captcha":"","updated":"x"}""")!!
+    check("fx signin: step needs input", si.step == FxStep.EMAIL_CODE && si.step.needsInput && !si.step.finished)
+    check("fx signin: steps and finish flags", FxStep.fromWire("done").finished && FxStep.fromWire("failed").finished && FxStep.fromWire("cancelled").finished &&
+        !FxStep.fromWire("working").needsInput && !FxStep.fromWire("need_email_link").needsInput && FxStep.fromWire("need_captcha").needsInput)
+    check("fx signin: unknown step is working", FxStep.fromWire("future_step") == FxStep.WORKING)
+    check("fx signin: no id is null", FxJson.signIn("""{"step":"done"}""") == null)
+    check("fx captcha: data url decoded, junk is null", FxJson.dataUrlBytes("data:image/png;base64,AQID")!!.contentEquals(byteArrayOf(1, 2, 3)) &&
+        FxJson.dataUrlBytes("http://x/y.png") == null && FxJson.dataUrlBytes("data:image/png;base64,@@@") == null)
+
+    // locations and test
+    val loc = FxJson.locations("""{"locations":[{"code":"DE","name":"Germany","recommended":true,"ping_ms":41},{"name":"nocode"}],"pinged_at":null}""")!!
+    check("fx locations: parsed, entries without a code dropped", loc.size == 1 && loc[0].code == "DE" && loc[0].recommended && loc[0].pingMs == 41L)
+    val ok = FxJson.test("""{"ok":true,"exit_country":"NL","exit_ipv4":"1.2.3.4","total_ms":321}""")!!
+    check("fx test: ok result", ok.ok && ok.exitCountry == "NL" && ok.exitIp == "1.2.3.4" && ok.totalMs == 321L)
+    check("fx error body", FxJson.errorText("""{"error":"unknown sign-in"}""") == "unknown sign-in" && FxJson.errorText("nope") == null)
+}
+
+private fun fxPolicyTests() {
+    fun status(json: String) = FxJson.status(json)!!
+    check("fx progress: no account is a hard stop", (FxProgress.fromStatus(status("""{"state":{"phase":"waiting","code":"no_accounts","message":"m"}}""")) as? FxVerdict.Failed)?.code == "no_accounts")
+    check("fx progress: a given-up connect is a hard stop", (FxProgress.fromStatus(status("""{"state":{"phase":"off"},"connect_failure":"quota"}""")) as? FxVerdict.Failed)?.code == "quota")
+    check("fx progress: a lasting wake failure is a hard stop", FxProgress.fromStatus(status("""{"state":{"phase":"running"},"proxy":{"sleeping_since":"x","wake_error_code":"sign_in","wake_error":"expired"}}""")) is FxVerdict.Failed)
+    check("fx progress: a transient wake failure keeps waiting", FxProgress.fromStatus(status("""{"state":{"phase":"running"},"proxy":{"sleeping_since":"x","wake_error_code":"unreachable"}}""")) == null)
+    check("fx progress: a starting core keeps waiting", FxProgress.fromStatus(status("""{"state":{"phase":"starting"}}""")) == null)
+    check("fx progress: test ok = ready", FxProgress.fromTest(FxTestResult(true, "", "", "DE", "", 10)) == FxVerdict.Ready)
+    check("fx progress: test failure carries its code", (FxProgress.fromTest(FxTestResult(false, "unreachable", "x", "", "", 0)) as FxVerdict.Failed).code == "unreachable")
+    check("fx progress: test failure without a code is 'other'", (FxProgress.fromTest(FxTestResult(false, "", "", "", "", 0)) as FxVerdict.Failed).code == "other")
+    check("fx errors: lasting ones", listOf("no_accounts", "quota", "sign_in", "not_entitled").all { FxErrors.isLasting(it) } && !FxErrors.isLasting("unreachable") && !FxErrors.isLasting("server"))
+    check("fx errors: english line names Firefox and keeps the detail short", FxErrors.english("quota", "x".repeat(500)).let { it.contains("Firefox Account") && it.length < 400 })
+
+    // engine config: the Firefox engine is TCP-only, chain-free and never takes the WARP fallbacks
+    val fx = EngineConfig(engineKind = EngineKind.FIREFOX, protocol = Protocol.GOOL, privacyChain = PrivacyChain.PSIPHON, udpEnabled = true, ech = true)
+    val warp = fx.copy(engineKind = EngineKind.WARP)
+    check("fx config: UDP is off whatever the setting says", !fx.udpEffective && warp.udpEffective)
+    check("fx config: no chain is ever used", fx.effectiveChain == PrivacyChain.NONE && warp.effectiveChain == PrivacyChain.PSIPHON)
+    check("fx config: DNS is hev's mapped DNS (UDP is off)", fx.mappedDnsActive)
+    check("fx config: needs the ready wait (Mozilla's test), WARP default does not", fx.needsReadyWait && !EngineConfig().needsReadyWait && warp.needsReadyWait /* chain */)
+    check("fx config: the plan always has the front on, core on the underlay port", run {
+        val p = FrontPlan.of(fx.effectiveChain, fx.dohActive, false, 1819, fx.udpEffective)
+        p.frontOn && p.corePort == Chain.UNDERLAY_PORT && p.upstreamPort == Chain.UNDERLAY_PORT && !p.udpRelay && p.mappedDns
+    })
+    check("fx policy: no gool/classic/hardened retries for Firefox", !ConnectPolicy.shouldTryGoolH2(fx, "gateway scan failed") && !ConnectPolicy.shouldTryClassicGool(fx, "gateway scan failed") && !ConnectPolicy.shouldTryHardened(fx, "x"))
+    check("fx policy: the WARP engine keeps them", ConnectPolicy.shouldTryGoolH2(EngineConfig(protocol = Protocol.GOOL), "gateway scan failed") && ConnectPolicy.shouldTryHardened(EngineConfig(), "x"))
+    check("fx policy: time allowance covers start plus connect", ConnectPolicy.firstPassTimeoutMs(fx) == FxVpn.START_ALLOWANCE_MS + FxVpn.CONNECT_ALLOWANCE_MS)
+    check("fx policy: WARP timing unchanged", ConnectPolicy.firstPassTimeoutMs(EngineConfig()) == ConnectPolicy.SCANNED_PASS_MS && ConnectPolicy.firstPassTimeoutMs(EngineConfig(protocol = Protocol.WIREGUARD)) == ConnectPolicy.SIMPLE_PASS_MS)
+    check("fx policy: Firefox failures use the slow retry schedule", ConnectPolicy.isChainFailure(FxErrors.english("quota")) && ConnectPolicy.isChainFailure("the Foxy core stopped"))
+    check("fx policy: WARP transport failures still do not", !ConnectPolicy.isChainFailure("no answer from the engine after 90s"))
+    check("fx config: default config is the WARP engine", EngineConfig().engineKind == EngineKind.WARP)
 }
