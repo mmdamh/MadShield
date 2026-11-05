@@ -44,7 +44,7 @@ class PortGate(val allowed: Set<Int>, val otherwise: RouteAction) {
 }
 
 /**
- * The Firefox VPN engine: the Go core of the open-source client armanlife/firefox-vpn-client (GPL-3, unofficial, built by
+ * The Foxy engine: the Go core of the open-source client armanlife/firefox-vpn-client (GPL-3, unofficial, built by
  * CI from the commit in native/fxvpn.pin) run as a child process, started like the other native engines, through
  * native/fxvpn/host/main.go. MadShield talks to it in two ways:
  *
@@ -374,22 +374,22 @@ object FxErrors {
     /** The code the sign-in / account / failure fields use, as one line for the log and the Error card (English). */
     fun english(code: String, detail: String = ""): String {
         val base = when (code) {
-            "no_accounts" -> "Firefox VPN has no account yet: open Firefox VPN and sign in with your Firefox Account"
-            "no_usable_account" -> "The Firefox Account cannot be used now (quota used up, sign-in expired, or no VPN entitlement): open Firefox VPN to see why"
+            "no_accounts" -> "Foxy has no account yet: open Foxy and sign in with your Firefox Account"
+            "no_usable_account" -> "The Firefox Account cannot be used now (quota used up, sign-in expired, or no VPN entitlement): open Foxy to see why"
             "waiting_for_network" -> "no network"
             "no_network" -> "no network"
-            "proxy_port_in_use" -> "the Firefox VPN port is used by another program"
+            "proxy_port_in_use" -> "the Foxy port is used by another program"
             "unreachable" -> "Mozilla's servers cannot be reached from this network"
-            "inside_vpn" -> "the Firefox VPN core was captured by a VPN; it must stay outside"
+            "inside_vpn" -> "the Foxy core was captured by a VPN; it must stay outside"
             "refused" -> "Mozilla's proxy refused the connection"
             "location_refused" -> "this location refused the connection: choose another one"
             "sign_in" -> "the Firefox Account must sign in again"
             "quota" -> "this month's data of the Firefox Account is used up"
-            "not_entitled" -> "this Firefox Account has no access to Firefox VPN (not available in this country, or not enabled)"
-            "region" -> "Firefox VPN is not offered in this region"
+            "not_entitled" -> "this Firefox Account has no access to Foxy (not available in this country, or not enabled)"
+            "region" -> "Foxy is not offered in this region"
             "server" -> "Mozilla's server answered with an error"
-            "no_account" -> "Firefox VPN has no account yet: open Firefox VPN and sign in"
-            else -> "the Firefox VPN core could not connect"
+            "no_account" -> "Foxy has no account yet: open Foxy and sign in"
+            else -> "the Foxy core could not connect"
         }
         val d = detail.trim().take(160)
         return if (d.isNotEmpty() && !base.contains(d)) "$base [$d]" else base

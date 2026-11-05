@@ -70,7 +70,7 @@ class RouteFront(
         val allowOnion: Boolean = false,
         /** Answers repeated refusals of the same host late, so an app retrying a blocked name stops costing battery. */
         val backoff: RefusalBackoff = RefusalBackoff(),
-        /** Firefox VPN engine: ports Mozilla's proxy does not carry never go through it (see [PortGate]). */
+        /** Foxy engine: ports Mozilla's proxy does not carry never go through it (see [PortGate]). */
         val portGate: PortGate? = null
     )
 

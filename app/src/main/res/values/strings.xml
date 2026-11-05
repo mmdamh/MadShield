@@ -488,7 +488,7 @@
     <string name="path_psiphon">Psiphon</string>
     <string name="path_tor">Tor</string>
     <string name="path_singbox">Your server (sing-box)</string>
-    <string name="path_firefox">Firefox VPN (Mozilla)</string>
+    <string name="path_firefox">Foxy (Mozilla)</string>
     <string name="path_warp">WARP</string>
     <string name="path_internet">Internet</string>
     <string name="usage_title">Usage</string>
@@ -550,18 +550,18 @@
     <string name="sw_live_update_sub">Shows the status on the lock screen and as a chip in the status bar. With Speed in notification on, the download speed shows in the chip and both speeds on the lock screen. Android decides when to show it, and you can turn it off for this app in Android settings.</string>
     <string name="live_off">Live updates are off for this app in Android settings</string>
 
-    <!-- update28: Firefox VPN engine (test branch) -->
-    <string name="fx_title">Firefox VPN</string>
+    <!-- update28: Foxy engine (test branch) -->
+    <string name="fx_title">Foxy</string>
     <string name="fx_engine_label">Engine</string>
     <string name="fx_engine_warp">WARP</string>
-    <string name="fx_engine_firefox">Firefox VPN</string>
-    <string name="fx_tile_title">Firefox VPN account</string>
+    <string name="fx_engine_firefox">Foxy</string>
+    <string name="fx_tile_title">Foxy account</string>
     <string name="fx_tile_sub">Sign in, data left, location</string>
-    <string name="fx_chip">Firefox VPN</string>
+    <string name="fx_chip">Foxy</string>
     <string name="fx_intro">Mozilla\'s VPN through your own Firefox Account, as a separate engine next to WARP (not chained with it). Your traffic goes from this phone straight to Mozilla\'s servers. One account, with its own free monthly data (about 50 GB). This is an unofficial client: Mozilla has not approved it.</string>
     <string name="fx_privacy">Your Firefox password and sign-in tokens stay in this app\'s private folder on this phone. Mozilla\'s proxy carries TCP only, so UDP is off with this engine. MadShield uses one account and never switches between accounts, because Mozilla\'s terms allow one account per person.</string>
-    <string name="fx_starting">Starting the Firefox VPN core…</string>
-    <string name="fx_start_failed">Could not start the Firefox VPN core: %1$s</string>
+    <string name="fx_starting">Starting the Foxy core…</string>
+    <string name="fx_start_failed">Could not start the Foxy core: %1$s</string>
     <string name="fx_retry">Try again</string>
     <string name="fx_account">Account</string>
     <string name="fx_signin_title">Sign in with your Firefox Account</string>
@@ -593,10 +593,10 @@
     <string name="fx_location_none">Locations appear after you sign in.</string>
     <string name="fx_location_note">Changing the location restarts the Firefox connection for a moment.</string>
     <string name="fx_exit_now">Exit: %1$s</string>
-    <string name="fx_engine_missing">This build has no Firefox VPN engine.</string>
-    <string name="fx_vpn_running_note">A connection is using the Firefox VPN core right now; this page talks to it.</string>
+    <string name="fx_engine_missing">This build has no Foxy engine.</string>
+    <string name="fx_vpn_running_note">A connection is using the Foxy core right now; this page talks to it.</string>
     <string name="fx_ports_title">Ports Mozilla refuses</string>
-    <string name="fx_ports_sub">Mozilla\'s servers carry web ports only (80, 443, 8080, 8443). Games, mail, SSH and other ports cannot go through Firefox VPN. Applies from the next connection.</string>
+    <string name="fx_ports_sub">Mozilla\'s servers carry web ports only (80, 443, 8080, 8443). Games, mail, SSH and other ports cannot go through Foxy. Applies from the next connection.</string>
     <string name="fx_ports_block">Block</string>
     <string name="fx_ports_direct">Direct</string>
     <string name="fx_ports_hint_block">Blocked: nothing leaves outside the VPN. An app that keeps retrying is slowed down, to save battery.</string>

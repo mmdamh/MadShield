@@ -10,7 +10,7 @@ import java.net.Socket
 import java.net.SocketAddress
 
 /**
- * Login of an upstream SOCKS5 listener (RFC 1929 username/password). Only the Firefox VPN engine has one: its core
+ * Login of an upstream SOCKS5 listener (RFC 1929 username/password). Only the Foxy engine has one: its core
  * listens on loopback, where every app on the phone could otherwise use the account's data. The password is never
  * printed ([toString] hides both values).
  */
@@ -24,7 +24,7 @@ class SocksAuth(val user: String, val password: String) {
 }
 
 /**
- * The login for the engine's upstream port, set by [EngineProcessManager] while a Firefox VPN core runs. Everything that
+ * The login for the engine's upstream port, set by [EngineProcessManager] while a Foxy core runs. Everything that
  * dials that port ([RouteFront], the DoH client, the health probe) asks [forPort]; other ports never get a login, so
  * the default engines behave exactly as before.
  */

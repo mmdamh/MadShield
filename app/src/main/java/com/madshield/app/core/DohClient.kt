@@ -132,7 +132,7 @@ class DohClient(private val spec: DohSpec, private val socksPort: Int?) : DnsTra
 private class UpstreamSocketFactory(private val port: Int?) : SocketFactory() {
     override fun createSocket(): Socket =
         if (port == null) Socket()
-        else UpstreamLogin.forPort(port)?.let { LoginSocksSocket(port, it) } // the Firefox VPN core wants a login
+        else UpstreamLogin.forPort(port)?.let { LoginSocksSocket(port, it) } // the Foxy core wants a login
             ?: Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", port)))
 
     // OkHttp only ever calls createSocket(); the connecting variants are deliberately unsupported.

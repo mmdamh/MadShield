@@ -486,7 +486,7 @@
     <string name="path_psiphon">Psiphon</string>
     <string name="path_tor">Tor</string>
     <string name="path_singbox">سرور شما (sing-box)</string>
-    <string name="path_firefox">Firefox VPN (موزیلا)</string>
+    <string name="path_firefox">Foxy (موزیلا)</string>
     <string name="path_warp">WARP</string>
     <string name="path_internet">اینترنت</string>
     <string name="usage_title">مصرف</string>
@@ -548,18 +548,18 @@
     <string name="sw_live_update_sub">وضعیت را روی صفحه قفل و به‌صورت یک چیپ در نوار وضعیت نشان می‌دهد. اگر «سرعت در نوتیفیکیشن» روشن باشد، سرعت دانلود در چیپ و هر دو سرعت روی صفحه قفل دیده می‌شود. نمایش آن با خود اندروید است و می‌توانید در تنظیمات اندروید برای این برنامه خاموشش کنید.</string>
     <string name="live_off">Live updates در تنظیمات اندروید برای این برنامه خاموش است</string>
 
-    <!-- update28: موتور Firefox VPN (برنچ تست) -->
-    <string name="fx_title">Firefox VPN</string>
+    <!-- update28: موتور Foxy (برنچ تست) -->
+    <string name="fx_title">Foxy</string>
     <string name="fx_engine_label">موتور</string>
     <string name="fx_engine_warp">WARP</string>
-    <string name="fx_engine_firefox">Firefox VPN</string>
-    <string name="fx_tile_title">حساب Firefox VPN</string>
+    <string name="fx_engine_firefox">Foxy</string>
+    <string name="fx_tile_title">حساب Foxy</string>
     <string name="fx_tile_sub">ورود، حجم باقی‌مانده، لوکیشن</string>
-    <string name="fx_chip">Firefox VPN</string>
+    <string name="fx_chip">Foxy</string>
     <string name="fx_intro">VPN موزیلا با حساب Firefox خودتان؛ یک موتور جدا کنار WARP (نه زنجیره‌شده با آن). ترافیک شما مستقیم از این گوشی به سرورهای موزیلا می‌رود. یک حساب، با حجم رایگان ماهانه‌ی خودش (حدود ۵۰ گیگابایت). این کلاینت غیررسمی است و موزیلا آن را تأیید نکرده.</string>
     <string name="fx_privacy">رمز Firefox و توکن‌های ورود فقط در پوشه‌ی خصوصی همین برنامه روی همین گوشی می‌مانند. پروکسی موزیلا فقط TCP می‌برد، پس با این موتور UDP خاموش است. MadShield فقط یک حساب استفاده می‌کند و بین حساب‌ها جابه‌جا نمی‌شود، چون شرایط موزیلا یک حساب برای هر نفر را اجازه می‌دهد.</string>
-    <string name="fx_starting">در حال راه‌اندازی هسته‌ی Firefox VPN…</string>
-    <string name="fx_start_failed">هسته‌ی Firefox VPN راه نیفتاد: %1$s</string>
+    <string name="fx_starting">در حال راه‌اندازی هسته‌ی Foxy…</string>
+    <string name="fx_start_failed">هسته‌ی Foxy راه نیفتاد: %1$s</string>
     <string name="fx_retry">تلاش دوباره</string>
     <string name="fx_account">حساب</string>
     <string name="fx_signin_title">ورود با حساب Firefox</string>
@@ -591,10 +591,10 @@
     <string name="fx_location_none">بعد از ورود، لوکیشن‌ها نمایش داده می‌شوند.</string>
     <string name="fx_location_note">با تغییر لوکیشن، اتصال Firefox برای لحظه‌ای دوباره برقرار می‌شود.</string>
     <string name="fx_exit_now">خروجی: %1$s</string>
-    <string name="fx_engine_missing">این بیلد موتور Firefox VPN ندارد.</string>
-    <string name="fx_vpn_running_note">اتصالی همین حالا از هسته‌ی Firefox VPN استفاده می‌کند؛ این صفحه با همان کار می‌کند.</string>
+    <string name="fx_engine_missing">این بیلد موتور Foxy ندارد.</string>
+    <string name="fx_vpn_running_note">اتصالی همین حالا از هسته‌ی Foxy استفاده می‌کند؛ این صفحه با همان کار می‌کند.</string>
     <string name="fx_ports_title">پورت‌هایی که Mozilla رد می‌کند</string>
-    <string name="fx_ports_sub">سرورهای Mozilla فقط پورت‌های وب (80، 443، 8080، 8443) را عبور می‌دهند. بازی، ایمیل، SSH و پورت‌های دیگر از Firefox VPN رد نمی‌شوند. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="fx_ports_sub">سرورهای Mozilla فقط پورت‌های وب (80، 443، 8080، 8443) را عبور می‌دهند. بازی، ایمیل، SSH و پورت‌های دیگر از Foxy رد نمی‌شوند. از اتصال بعدی اعمال می‌شود.</string>
     <string name="fx_ports_block">بلاک</string>
     <string name="fx_ports_direct">مستقیم</string>
     <string name="fx_ports_hint_block">بلاک: چیزی بیرون از VPN نمی‌رود. برنامه‌ای که مدام تلاش مجدد می‌کند کند می‌شود تا باتری مصرف نشود.</string>

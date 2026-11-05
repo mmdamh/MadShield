@@ -2248,7 +2248,7 @@ private fun fxPolicyTests() {
     check("fx policy: the WARP engine keeps them", ConnectPolicy.shouldTryGoolH2(EngineConfig(protocol = Protocol.GOOL), "gateway scan failed") && ConnectPolicy.shouldTryHardened(EngineConfig(), "x"))
     check("fx policy: time allowance covers start plus connect", ConnectPolicy.firstPassTimeoutMs(fx) == FxVpn.START_ALLOWANCE_MS + FxVpn.CONNECT_ALLOWANCE_MS)
     check("fx policy: WARP timing unchanged", ConnectPolicy.firstPassTimeoutMs(EngineConfig()) == ConnectPolicy.SCANNED_PASS_MS && ConnectPolicy.firstPassTimeoutMs(EngineConfig(protocol = Protocol.WIREGUARD)) == ConnectPolicy.SIMPLE_PASS_MS)
-    check("fx policy: Firefox failures use the slow retry schedule", ConnectPolicy.isChainFailure(FxErrors.english("quota")) && ConnectPolicy.isChainFailure("the Firefox VPN core stopped"))
+    check("fx policy: Firefox failures use the slow retry schedule", ConnectPolicy.isChainFailure(FxErrors.english("quota")) && ConnectPolicy.isChainFailure("the Foxy core stopped"))
     check("fx policy: WARP transport failures still do not", !ConnectPolicy.isChainFailure("no answer from the engine after 90s"))
     check("fx config: default config is the WARP engine", EngineConfig().engineKind == EngineKind.WARP)
 }

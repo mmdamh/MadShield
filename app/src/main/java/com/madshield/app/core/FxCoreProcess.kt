@@ -13,15 +13,15 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.security.SecureRandom
 
-/** Where a running Firefox VPN core can be reached (see [FxVpn]). The login never leaves the app's process. */
+/** Where a running Foxy core can be reached (see [FxVpn]). The login never leaves the app's process. */
 class FxEndpoint(val apiPort: Int, val socksPort: Int, val auth: SocksAuth, val dataDir: File) {
     fun client(): FxClient = FxClient(apiPort, File(dataDir, FxVpn.TOKEN_FILE))
 }
 
 /**
- * One run of the Firefox VPN core as a child process: starts it, pumps its output into the in-memory log (never a file),
+ * One run of the Foxy core as a child process: starts it, pumps its output into the in-memory log (never a file),
  * and stops it. Two owners use it and never at the same time: [EngineProcessManager] for a connection, and [FxSession]
- * for the Firefox VPN page (sign-in and account) while no connection runs. [FxRuntime.endpoint] says which one is live.
+ * for the Foxy page (sign-in and account) while no connection runs. [FxRuntime.endpoint] says which one is live.
  *
  * The core is started with its standard input OPEN (our end of the pipe): when this app dies the pipe closes and the
  * core ends by itself, so no engine is ever left running without its app.
@@ -102,7 +102,7 @@ class FxCoreProcess(private val context: Context) {
                 val lines = synchronized(tail) { tail.toList() }
                 lastExit = EngineExit(code, lines)
                 RingLogBuffer.append("[fxvpn] exited unexpectedly with code $code")
-                DiagnosticsHub.recordExit("Firefox VPN core exited unexpectedly with code $code", lines)
+                DiagnosticsHub.recordExit("Foxy core exited unexpectedly with code $code", lines)
             }
         }
         return ep
@@ -132,9 +132,9 @@ class FxCoreProcess(private val context: Context) {
         val joined = exit.lastLines.joinToString("\n")
         return when {
             joined.contains("CANNOT LINK EXECUTABLE") ->
-                "Android could not load the Firefox VPN core: " + (exit.lastLines.firstOrNull { it.contains("CANNOT LINK") } ?: "link error")
-            joined.contains("address already in use", ignoreCase = true) -> "the Firefox VPN port is used by another program"
-            else -> "The Firefox VPN core stopped (exit code ${exit.code})" +
+                "Android could not load the Foxy core: " + (exit.lastLines.firstOrNull { it.contains("CANNOT LINK") } ?: "link error")
+            joined.contains("address already in use", ignoreCase = true) -> "the Foxy port is used by another program"
+            else -> "The Foxy core stopped (exit code ${exit.code})" +
                 (exit.lastLines.lastOrNull()?.takeIf { it.isNotBlank() }?.let { ": ${LogRedactor.redact(it).take(160)}" } ?: "")
         }
     }
@@ -142,7 +142,7 @@ class FxCoreProcess(private val context: Context) {
     private fun waitForPrevious() {
         val prev = dying ?: return
         if (prev.isAlive && !CoreProcessGuard.stop(prev, 1_000)) {
-            throw IllegalStateException("The previous Firefox VPN core has not shut down yet. Try again in a moment.")
+            throw IllegalStateException("The previous Foxy core has not shut down yet. Try again in a moment.")
         }
         dying = null
     }
@@ -150,14 +150,14 @@ class FxCoreProcess(private val context: Context) {
     private fun preflight(bin: File) {
         if (!bin.isFile) {
             throw EnginePreflightException(
-                "This build has no Firefox VPN engine (libfxvpn.so missing). Rebuild with the updated CI workflow, or use the WARP engine."
+                "This build has no Foxy engine (libfxvpn.so missing). Rebuild with the updated CI workflow, or use the WARP engine."
             )
         }
         val info = try { ElfInspector.inspect(bin) } catch (e: IOException) {
-            throw EnginePreflightException("The Firefox VPN core is not a valid executable (${e.message}).")
+            throw EnginePreflightException("The Foxy core is not a valid executable (${e.message}).")
         }
         if (info.machineName !in Build.SUPPORTED_ABIS) {
-            throw EnginePreflightException("The Firefox VPN core was built for ${info.machineName}, but this device runs ${Build.SUPPORTED_ABIS.joinToString()}.")
+            throw EnginePreflightException("The Foxy core was built for ${info.machineName}, but this device runs ${Build.SUPPORTED_ABIS.joinToString()}.")
         }
     }
 
@@ -169,7 +169,7 @@ class FxCoreProcess(private val context: Context) {
         val mine = expected.filterKeys { it == FxVpn.BIN }
         val result = BinaryIntegrity.verifyDir(nativeDir, mine)
         if (!result.ok) {
-            throw EnginePreflightException("The Firefox VPN core does not match what the build produced. Reinstall the app from your own build.")
+            throw EnginePreflightException("The Foxy core does not match what the build produced. Reinstall the app from your own build.")
         }
     }
 }
@@ -198,7 +198,7 @@ object PhoneDns {
     }
 }
 
-/** Process-wide facts about the Firefox VPN engine. */
+/** Process-wide facts about the Foxy engine. */
 object FxRuntime {
     /** The core that is running right now (set by whoever started it), or null. */
     @Volatile var endpoint: FxEndpoint? = null
@@ -224,7 +224,7 @@ object FxRuntime {
 }
 
 /**
- * The core for the Firefox VPN PAGE (sign-in, account, quota, location) while no connection uses it. A connection that
+ * The core for the Foxy PAGE (sign-in, account, quota, location) while no connection uses it. A connection that
  * runs the Firefox engine owns its own core and the page simply talks to that one ([FxRuntime.endpoint]); starting a
  * connection stops this one first ([stopForConnection]) because the connection needs its own login and ports.
  */
@@ -253,7 +253,7 @@ object FxSession {
             try { return ep.client().status() } catch (e: IOException) { last = e }
             try { Thread.sleep(250) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
         }
-        throw IOException("the Firefox VPN core did not answer" + (last?.message?.let { ": $it" } ?: ""))
+        throw IOException("the Foxy core did not answer" + (last?.message?.let { ": $it" } ?: ""))
     }
 
     /** The page was closed: the core it started stops (nothing keeps running for an account page). */

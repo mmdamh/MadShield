@@ -106,7 +106,7 @@ fun HomeScreen(
                 onSelect = onSetMode
             )
         }
-        // update28: the connection engine. Only offered when this build carries the Firefox VPN core.
+        // update28: the connection engine. Only offered when this build carries the Foxy core.
         val homeCtx = LocalContext.current
         if (remember { FxRuntime.isInBuild(homeCtx) }) {
             Spacer(Modifier.height(8.dp))
@@ -158,7 +158,7 @@ fun HomeScreen(
     }
 }
 
-/** Opens the Firefox VPN page (sign in, data left, location). Only shown while the Firefox VPN engine is selected. */
+/** Opens the Foxy page (sign in, data left, location). Only shown while the Foxy engine is selected. */
 @Composable
 private fun FirefoxTile(onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme

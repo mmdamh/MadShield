@@ -247,7 +247,7 @@ private fun DetailSheet(c: ConnView, config: EngineConfig, onClose: () -> Unit) 
                 RouteAction.DIRECT -> add(stringResource(R.string.path_direct))
                 RouteAction.PROXY -> {
                     if (config.engineKind == EngineKind.FIREFOX) {
-                        // The Firefox VPN engine is its own path: no WARP and no chain behind it.
+                        // The Foxy engine is its own path: no WARP and no chain behind it.
                         add(stringResource(R.string.path_firefox))
                     } else {
                         when (config.privacyChain) {

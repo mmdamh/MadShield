@@ -308,7 +308,7 @@ class AetherVpnService : VpnService() {
                 timeoutMs = timeoutMs,
                 engineAlive = { engine.isRunning },
                 cancelled = { job?.isActive == false },
-                auth = engine.probeAuth // only the Firefox VPN core has a login
+                auth = engine.probeAuth // only the Foxy core has a login
             )) {
                 SocksProbe.Wait.READY -> {
                     // With a chain on, the port answers before Psiphon/Tor are connected: wait for the

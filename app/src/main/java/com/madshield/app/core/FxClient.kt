@@ -7,7 +7,7 @@ import java.net.Proxy
 import java.net.URL
 
 /**
- * Blocking client of the Firefox VPN core's dashboard API on 127.0.0.1:[apiPort]. Call it from a background thread.
+ * Blocking client of the Foxy core's dashboard API on 127.0.0.1:[apiPort]. Call it from a background thread.
  *
  * Every request carries the token the core wrote to its data folder ([tokenFile]); the core answers nothing else (it runs
  * with "local token required", see native/fxvpn/host/main.go), so another app on the phone that finds the port gets a 401.
@@ -20,7 +20,7 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
 
     private fun token(): String {
         val t = try { tokenFile.readText().trim() } catch (_: IOException) { "" }
-        if (t.isEmpty()) throw IOException("the Firefox VPN core is not ready (no token yet)")
+        if (t.isEmpty()) throw IOException("the Foxy core is not ready (no token yet)")
         return t
     }
 

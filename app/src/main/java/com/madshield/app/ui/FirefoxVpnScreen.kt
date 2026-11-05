@@ -1,6 +1,7 @@
 package com.madshield.app.ui
 
 import android.graphics.BitmapFactory
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,7 +28,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The Firefox VPN page: sign in with a Firefox Account, see the data left, choose a location.
+ * The Foxy page: sign in with a Firefox Account, see the data left, choose a location.
  *
  * It talks to the core's loopback API through [FxClient]. If a connection runs the Firefox engine, that engine's core is
  * used; otherwise this page starts a core of its own ([FxSession]) and stops it when the page closes, so nothing keeps
@@ -387,7 +388,7 @@ private fun LocationSheet(locations: List<FxLocation>, selected: String, onPick:
         )
         Spacer(Modifier.height(8.dp))
         androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 520.dp)) {
-            androidx.compose.foundation.lazy.items(shown, key = { it.code + "/" + it.city }) { l ->
+            items(shown, key = { it.code + "/" + it.city }) { l ->
                 val isSel = if (selected.isEmpty()) l.recommended else selected.equals(l.code, ignoreCase = true)
                 Row(
                     Modifier.fillMaxWidth().clickable { onPick(if (l.recommended) "" else l.code) }.padding(vertical = 10.dp),

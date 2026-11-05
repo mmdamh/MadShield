@@ -15,7 +15,7 @@ object EngineEnv {
     const val SINGBOX_BIN = "libsingbox.so"
     /** The experimental sing-box TUN tunnel engine (update24), started by vpn/SingBoxTunEngine, not by EngineProcessManager. */
     const val SINGTUN_BIN = "libsingtun.so"
-    /** The Firefox VPN engine (update28), run by [FxCoreProcess]. */
+    /** The Foxy engine (update28), run by [FxCoreProcess]. */
     const val FXVPN_BIN = FxVpn.BIN
 }
 
@@ -83,7 +83,7 @@ class EngineProcessManager(private val context: Context) {
 
     @Volatile private var front: RouteFront? = null
 
-    // ---- Firefox VPN engine (update28). Null unless the connection uses it; then the WARP fields above stay unused.
+    // ---- Foxy engine (update28). Null unless the connection uses it; then the WARP fields above stay unused.
     @Volatile private var fx: FxCoreProcess? = null
     /** Login of the upstream listener for health probes (null for every other engine). */
     @Volatile var probeAuth: SocksAuth? = null
@@ -91,7 +91,7 @@ class EngineProcessManager(private val context: Context) {
     /** Why the Firefox core could not be brought up (power-on failed or its API never answered); null when nothing is known. */
     @Volatile private var fxNote: String? = null
 
-    /** This connection runs the Firefox VPN engine. */
+    /** This connection runs the Foxy engine. */
     val isFirefox: Boolean get() = fx != null
 
     // ---- custom chain (sing-box), see SingBoxConfig. All null/false unless the chain is SINGBOX.
@@ -333,20 +333,20 @@ class EngineProcessManager(private val context: Context) {
         }
     }
 
-    // ------------------------------------------------------------------------------------ Firefox VPN engine
+    // ------------------------------------------------------------------------------------ Foxy engine
 
     /**
-     * Starts the Firefox VPN core and the routing front in front of it. The front is ALWAYS on here (the core's listener
+     * Starts the Foxy core and the routing front in front of it. The front is ALWAYS on here (the core's listener
      * needs a login, which only [RouteFront] and the DoH client carry; hev and the sing-box TUN engine send to the front
      * without one). The core carries TCP only, so UDP is refused by the front and DNS is hev's mapped DNS ([EngineConfig.udpEffective]).
      */
     private fun startFirefox(config: EngineConfig, ruleWriter: RuleFileWriter) {
         fxNote = null
-        FxSession.stopForConnection() // the Firefox VPN page's own core makes room: a connection needs its own login and ports
+        FxSession.stopForConnection() // the Foxy page's own core makes room: a connection needs its own login and ports
         val routesFile = ruleWriter.writeRoutesFile(config.directRules, config.blockRules)
         val ruleMatcher = if (routesFile != null) RouteMatcher.fromFile(routesFile) else null
         val plan = FrontPlan.of(PrivacyChain.NONE, config.dohActive, ruleMatcher != null && !ruleMatcher.isEmpty, config.socksPort, config.udpEffective)
-        check(plan.frontOn) { "the Firefox VPN engine always runs behind the routing front" }
+        check(plan.frontOn) { "the Foxy engine always runs behind the routing front" }
         if (!SocksProbe.awaitPortFree(config.socksPort, 1_500)) {
             throw IllegalStateException(
                 "Port ${config.socksPort} is still in use by another process. " +
@@ -401,9 +401,9 @@ class EngineProcessManager(private val context: Context) {
                 try { Thread.sleep(250) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
             }
             if (up) ep.client().power(true)
-            else fxNote = "the Firefox VPN core did not answer" + (last?.message?.let { ": $it" } ?: "")
+            else fxNote = "the Foxy core did not answer" + (last?.message?.let { ": $it" } ?: "")
         } catch (e: IOException) {
-            fxNote = "the Firefox VPN core refused to start its proxy: ${e.message}"
+            fxNote = "the Foxy core refused to start its proxy: ${e.message}"
         }
         fxNote?.let { RingLogBuffer.append("[fxvpn] $it") }
     }
@@ -424,16 +424,16 @@ class EngineProcessManager(private val context: Context) {
     /**
      * After the proxy listens: asks the core to connect to Mozilla (its first use wakes it: server list, pass, session) and
      * runs its connection test through the new session. Blocking, up to [timeoutMs].
-     * @return null when the Firefox VPN carries traffic, otherwise the reason (or "cancelled").
+     * @return null when the Foxy carries traffic, otherwise the reason (or "cancelled").
      */
     fun awaitFirefoxReady(timeoutMs: Long, cancelled: () -> Boolean): String? {
-        val ep = fx?.endpoint ?: return "the Firefox VPN core is not running"
+        val ep = fx?.endpoint ?: return "the Foxy core is not running"
         val client = ep.client()
         val deadline = System.currentTimeMillis() + timeoutMs
         // Hard stops the core reports by itself (no account, quota, sign-in expired) end the wait at once.
         while (System.currentTimeMillis() < deadline) {
             if (cancelled()) return "cancelled"
-            if (!isRunning) return failureReason() ?: "the Firefox VPN core exited"
+            if (!isRunning) return failureReason() ?: "the Foxy core exited"
             val st = try { client.status() } catch (_: IOException) { null }
             if (st != null) {
                 (FxProgress.fromStatus(st) as? FxVerdict.Failed)?.let { return FxErrors.english(it.code, it.detail) }
@@ -455,7 +455,7 @@ class EngineProcessManager(private val context: Context) {
         } catch (e: FxClient.ApiException) {
             FxErrors.english("", e.message ?: "")
         } catch (e: IOException) {
-            if (!isRunning) failureReason() ?: "the Firefox VPN core exited" else "the Firefox VPN core did not answer the connection test (${e.message})"
+            if (!isRunning) failureReason() ?: "the Foxy core exited" else "the Foxy core did not answer the connection test (${e.message})"
         }
     }
 

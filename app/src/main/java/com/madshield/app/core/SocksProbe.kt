@@ -39,7 +39,7 @@ object SocksProbe {
             false
         }
 
-    /** The same check for a listener that wants a username and password (the Firefox VPN core): the login must be accepted. */
+    /** The same check for a listener that wants a username and password (the Foxy core): the login must be accepted. */
     private fun loginOk(host: String, port: Int, connectTimeoutMs: Int, readTimeoutMs: Int, auth: SocksAuth): Boolean =
         try {
             Socket().use { s ->

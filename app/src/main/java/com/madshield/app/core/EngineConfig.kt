@@ -219,13 +219,13 @@ data class EngineConfig(
      */
     val engineKind: EngineKind = EngineKind.WARP,
 
-    /** Firefox VPN engine only: what to do with a TCP port Mozilla does not carry (see [FxPortPolicy]). */
+    /** Foxy engine only: what to do with a TCP port Mozilla does not carry (see [FxPortPolicy]). */
     val fxPortPolicy: FxPortPolicy = FxPortPolicy.BLOCK
 ) {
     /** The engine is "up" only after something beyond the listening port answered: a chain's announcement, or Mozilla's connection test. */
     val needsReadyWait: Boolean get() = effectiveChain != PrivacyChain.NONE || engineKind == EngineKind.FIREFOX
 
-    /** The Firefox VPN engine carries TCP only, so UDP is off for such a connection whatever the setting says. */
+    /** The Foxy engine carries TCP only, so UDP is off for such a connection whatever the setting says. */
     val udpEffective: Boolean get() = udpEnabled && engineKind == EngineKind.WARP
 
     /** DoH switched on AND at least one resolver written. */
@@ -339,13 +339,13 @@ object ConnectPolicy {
         reason != null && reason.contains("gateway scan failed", ignoreCase = true)
 
     /**
-     * The failure came from the chain helper (psiphon/tor), not from the WARP transport. A Firefox VPN failure counts too:
+     * The failure came from the chain helper (psiphon/tor), not from the WARP transport. A Foxy failure counts too:
      * it is never a WARP transport problem, and the slow retry schedule (with the engine stopped in between) is what a
      * missing account or a used-up quota needs, not a retry every few seconds.
      */
     fun isChainFailure(reason: String?): Boolean =
         reason != null && (Regex("\\b(psiphon|tor|sing-box)\\b", RegexOption.IGNORE_CASE).containsMatchIn(reason) ||
-            reason.contains("Firefox VPN", ignoreCase = true) || reason.contains("Firefox Account", ignoreCase = true))
+            reason.contains("Foxy", ignoreCase = true) || reason.contains("Firefox Account", ignoreCase = true))
 
     /**
      * Gool over MASQUE failed in the way the classic topology can avoid. With a chain on, a plain
