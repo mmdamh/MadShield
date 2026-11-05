@@ -69,7 +69,9 @@ class RouteFront(
         val guardFakeIps: Boolean = false,
         val allowOnion: Boolean = false,
         /** Answers repeated refusals of the same host late, so an app retrying a blocked name stops costing battery. */
-        val backoff: RefusalBackoff = RefusalBackoff()
+        val backoff: RefusalBackoff = RefusalBackoff(),
+        /** Firefox VPN engine: ports Mozilla's proxy does not carry never go through it (see [PortGate]). */
+        val portGate: PortGate? = null
     )
 
     private companion object {
@@ -263,12 +265,20 @@ class RouteFront(
             val onion = domain != null && options.resolver != null && domain.lowercase().endsWith(".onion")
             var action = if (domain != null) matcher.decideDomain(domain, port) else matcher.decideIp(addr, port)
             if (onion && action == RouteAction.DIRECT) action = RouteAction.PROXY // a .onion name has no clear-net address
+            // A port the upstream refuses anyway is settled here: asking Mozilla would only cost a round trip per retry.
+            var byPortGate = false
+            options.portGate?.let { gate ->
+                val g = gate.decide(action, port)
+                if (g != action) { action = g; byPortGate = true }
+            }
 
             when (action) {
                 RouteAction.BLOCK -> {
                     nBlock.incrementAndGet()
                     tracker.blocked(labelOf(domain, addr), domain != null, port)
-                    refuse(cout, domain, 0x02, byRule = true)
+                    // A refusal that is certain (not a rule): a retrying app is slowed down after a few tries, per host AND port.
+                    if (byPortGate) refuse(cout, domain, 0x02, byRule = false, key = labelOf(domain, addr).lowercase() + ":" + port)
+                    else refuse(cout, domain, 0x02, byRule = true)
                     return
                 }
                 RouteAction.DIRECT -> {
@@ -511,9 +521,10 @@ class RouteFront(
      * A refusal that may be answered late (see [RefusalBackoff]). The wait happens on this connection's own thread,
      * and only for a host that keeps being refused; everything else is answered at once.
      */
-    private fun refuse(out: OutputStream, domain: String?, code: Int, byRule: Boolean) {
-        if (domain != null) {
-            val hold = options.backoff.refused(domain.lowercase(), byRule)
+    private fun refuse(out: OutputStream, domain: String?, code: Int, byRule: Boolean, key: String? = null) {
+        val streak = key ?: domain?.lowercase()
+        if (streak != null) {
+            val hold = options.backoff.refused(streak, byRule)
             if (hold > 0 && options.backoff.tryHold()) {
                 try {
                     nHeld.incrementAndGet()

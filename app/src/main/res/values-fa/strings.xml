@@ -593,4 +593,10 @@
     <string name="fx_exit_now">خروجی: %1$s</string>
     <string name="fx_engine_missing">این بیلد موتور Firefox VPN ندارد.</string>
     <string name="fx_vpn_running_note">اتصالی همین حالا از هسته‌ی Firefox VPN استفاده می‌کند؛ این صفحه با همان کار می‌کند.</string>
+    <string name="fx_ports_title">پورت‌هایی که Mozilla رد می‌کند</string>
+    <string name="fx_ports_sub">سرورهای Mozilla فقط پورت‌های وب (80، 443، 8080، 8443) را عبور می‌دهند. بازی، ایمیل، SSH و پورت‌های دیگر از Firefox VPN رد نمی‌شوند. از اتصال بعدی اعمال می‌شود.</string>
+    <string name="fx_ports_block">بلاک</string>
+    <string name="fx_ports_direct">مستقیم</string>
+    <string name="fx_ports_hint_block">بلاک: چیزی بیرون از VPN نمی‌رود. برنامه‌ای که مدام تلاش مجدد می‌کند کند می‌شود تا باتری مصرف نشود.</string>
+    <string name="fx_ports_hint_direct">مستقیم: این اتصال‌ها VPN را دور می‌زنند و سرور آدرس واقعی شما را می‌بیند. بازی اگر سرورش بدون VPN در دسترس باشد کار می‌کند.</string>
 </resources>

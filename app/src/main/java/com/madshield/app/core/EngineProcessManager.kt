@@ -353,9 +353,11 @@ class EngineProcessManager(private val context: Context) {
                     "Close the app that holds it, or change the SOCKS port in Settings."
             )
         }
+        // Mozilla's proxy carries only a few TCP ports: the rest is blocked or sent direct, as the user chose.
+        val portGate = PortGate(FxVpn.ALLOWED_TCP_PORTS, config.fxPortPolicy.action)
         // DoH resolvers are built BEFORE anything is launched, so a bad setting can never leave a process behind.
         val options: RouteFront.Options = if (!plan.localDoh) {
-            RouteFront.Options(udpCapable = false, udpOn = false, guardFakeIps = config.mode == ConnectionMode.VPN)
+            RouteFront.Options(udpCapable = false, udpOn = false, guardFakeIps = config.mode == ConnectionMode.VPN, portGate = portGate)
         } else {
             val specs = DohSpec.parseList(config.dohResolvers.joinToString("\n")).valid
             if (specs.isEmpty()) {
@@ -364,7 +366,7 @@ class EngineProcessManager(private val context: Context) {
             RouteFront.Options(
                 resolver = FrontResolver(DohTransports.create(specs, plan.upstreamPort), config.ipMode, config.dohServeStale),
                 directResolver = if (config.dohForDirect) FrontResolver(DohTransports.create(specs, null), config.ipMode, config.dohServeStale) else null,
-                udpCapable = false, udpOn = false, guardFakeIps = true
+                udpCapable = false, udpOn = false, guardFakeIps = true, portGate = portGate
             )
         }
 

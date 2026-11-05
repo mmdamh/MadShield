@@ -595,4 +595,10 @@
     <string name="fx_exit_now">Exit: %1$s</string>
     <string name="fx_engine_missing">This build has no Firefox VPN engine.</string>
     <string name="fx_vpn_running_note">A connection is using the Firefox VPN core right now; this page talks to it.</string>
+    <string name="fx_ports_title">Ports Mozilla refuses</string>
+    <string name="fx_ports_sub">Mozilla\'s servers carry web ports only (80, 443, 8080, 8443). Games, mail, SSH and other ports cannot go through Firefox VPN. Applies from the next connection.</string>
+    <string name="fx_ports_block">Block</string>
+    <string name="fx_ports_direct">Direct</string>
+    <string name="fx_ports_hint_block">Blocked: nothing leaves outside the VPN. An app that keeps retrying is slowed down, to save battery.</string>
+    <string name="fx_ports_hint_direct">Direct: these connections skip the VPN and the server sees your real address. A game works if its server is reachable without a VPN.</string>
 </resources>

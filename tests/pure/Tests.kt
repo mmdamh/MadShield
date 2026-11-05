@@ -1967,6 +1967,52 @@ fun fxTests() {
     fxModelTests()
     fxPolicyTests()
     fxHardeningTests()
+    fxPortTests()
+}
+
+/** Ports Mozilla's proxy refuses: the gate, the setting, and a real front that blocks, slows retries down, or sends direct. */
+private fun fxPortTests() {
+    val allowed = FxVpn.ALLOWED_TCP_PORTS
+    check("fx ports: only the four web ports go to Mozilla", allowed == setOf(80, 443, 8080, 8443))
+    val block = PortGate(allowed, RouteAction.BLOCK)
+    val direct = PortGate(allowed, RouteAction.DIRECT)
+    check("fx ports: a web port keeps the VPN route", listOf(80, 443, 8080, 8443).all { block.decide(RouteAction.PROXY, it) == RouteAction.PROXY })
+    check("fx ports: another port is blocked or sent direct as chosen",
+        block.decide(RouteAction.PROXY, 9339) == RouteAction.BLOCK && direct.decide(RouteAction.PROXY, 9339) == RouteAction.DIRECT)
+    check("fx ports: a rule's own block or direct answer is never changed",
+        block.decide(RouteAction.DIRECT, 9339) == RouteAction.DIRECT && direct.decide(RouteAction.BLOCK, 9339) == RouteAction.BLOCK)
+    check("fx ports: the setting defaults to block and survives bad values",
+        EngineConfig().fxPortPolicy == FxPortPolicy.BLOCK && FxPortPolicy.fromStored(null) == FxPortPolicy.BLOCK &&
+            FxPortPolicy.fromStored("junk") == FxPortPolicy.BLOCK && FxPortPolicy.fromStored("direct") == FxPortPolicy.DIRECT)
+    run {
+        val up = FakeUpstream()
+        val port = freePort()
+        val f = RouteFront(port, up.port, RouteMatcher.parse(""), RouteFront.Options(portGate = block, backoff = RefusalBackoff(nameThreshold = 2, holdMs = 700))) { }
+        f.start()
+        fun timed(name: String, p: Int): Pair<Int, Long> {
+            val t0 = System.nanoTime(); val (c, sk) = socks(port, reqName(name, p)); sk.close()
+            return c to (System.nanoTime() - t0) / 1_000_000
+        }
+        val a = timed("game.example", 9339); val b = timed("game.example", 9339)
+        check("fx ports e2e: a refused port is answered 0x02 at once the first time", a.first == 2 && a.second < 500)
+        check("fx ports e2e: a retry of the same host and port is answered late", b.first == 2 && b.second >= 600)
+        val other = timed("game.example", 3724)
+        check("fx ports e2e: another port of the same host is not held", other.first == 2 && other.second < 500)
+        check("fx ports e2e: Mozilla's proxy was never asked about those ports", up.requests.none { it.endsWith(":9339") || it.endsWith(":3724") })
+        val web = timed("web.example", 443)
+        check("fx ports e2e: a web port still goes through the VPN", web.first == 0 && up.requests.contains("CONNECT web.example:443"))
+        f.stop(); up.close()
+    }
+    run {
+        val up = FakeUpstream(); val echo = EchoServer()
+        val port = freePort()
+        val f = RouteFront(port, up.port, RouteMatcher.parse(""), RouteFront.Options(portGate = direct)) { }
+        f.start()
+        val (code, sk) = socks(port, reqName("localhost", echo.port))
+        check("fx ports e2e: with Direct the connection leaves outside the VPN and works", code == 0 && echoOk(sk))
+        check("fx ports e2e: and Mozilla's proxy never sees it", up.requests.isEmpty())
+        sk.close(); f.stop(); up.close(); echo.close()
+    }
 }
 
 /** The guards that keep the Firefox VPN core to Mozilla (native/fxvpn): they live in Go, so the tests read the files. */

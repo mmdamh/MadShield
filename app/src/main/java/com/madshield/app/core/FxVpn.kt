@@ -21,6 +21,29 @@ enum class EngineKind(val stored: String) {
 }
 
 /**
+ * What happens to a TCP connection to a port Mozilla's proxy does not carry (only 80, 443, 8080 and 8443 pass; games,
+ * mail, SSH... are refused by Mozilla itself). [BLOCK] (default) refuses it here, at once, with nothing leaving the phone;
+ * [DIRECT] sends it outside the VPN, which makes a game work if its server is reachable without a VPN, and shows the
+ * phone's real address to that server.
+ */
+enum class FxPortPolicy(val stored: String, val action: RouteAction) {
+    BLOCK("block", RouteAction.BLOCK),
+    DIRECT("direct", RouteAction.DIRECT);
+
+    companion object {
+        fun fromStored(s: String?): FxPortPolicy = entries.firstOrNull { it.stored == s } ?: BLOCK
+    }
+}
+
+/**
+ * The route a connection really takes once the ports Mozilla refuses are considered: a connection that would go through
+ * the VPN to a port outside [allowed] takes [otherwise] instead; everything else (a block or direct RULE) is untouched.
+ */
+class PortGate(val allowed: Set<Int>, val otherwise: RouteAction) {
+    fun decide(action: RouteAction, port: Int): RouteAction = if (action == RouteAction.PROXY && port !in allowed) otherwise else action
+}
+
+/**
  * The Firefox VPN engine: the Go core of the open-source client armanlife/firefox-vpn-client (GPL-3, unofficial, built by
  * CI from the commit in native/fxvpn.pin) run as a child process, started like the other native engines, through
  * native/fxvpn/host/main.go. MadShield talks to it in two ways:
@@ -36,6 +59,9 @@ enum class EngineKind(val stored: String) {
  * failover between accounts (Mozilla's terms allow one account per person; this app offers one).
  */
 object FxVpn {
+    /** TCP ports Mozilla's proxies connect to (the core logs: "connects to ports 80, 443, 8080, and 8443 only"). */
+    val ALLOWED_TCP_PORTS: Set<Int> = setOf(80, 443, 8080, 8443)
+
     const val BIN = "libfxvpn.so"
     const val DATA_DIR = "fxvpn"
     const val TOKEN_FILE = "local-api.token"

@@ -217,7 +217,10 @@ data class EngineConfig(
      * Mozilla's VPN through the user's own Firefox Account instead of the WARP core: separate from it, never a chain on
      * it. Read once per connection. See [FxVpn]; the WARP settings above (protocol, chain, scan, noize...) are not used then.
      */
-    val engineKind: EngineKind = EngineKind.WARP
+    val engineKind: EngineKind = EngineKind.WARP,
+
+    /** Firefox VPN engine only: what to do with a TCP port Mozilla does not carry (see [FxPortPolicy]). */
+    val fxPortPolicy: FxPortPolicy = FxPortPolicy.BLOCK
 ) {
     /** The engine is "up" only after something beyond the listening port answered: a chain's announcement, or Mozilla's connection test. */
     val needsReadyWait: Boolean get() = effectiveChain != PrivacyChain.NONE || engineKind == EngineKind.FIREFOX

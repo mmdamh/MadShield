@@ -33,6 +33,7 @@ class SettingsStore(private val context: Context) {
         val MODE = stringPreferencesKey("mode")
         val TUN_ENGINE = stringPreferencesKey("tun_engine")
         val ENGINE_KIND = stringPreferencesKey("engine_kind")
+        val FX_PORT_POLICY = stringPreferencesKey("fx_port_policy")
         val PROTOCOL = stringPreferencesKey("protocol")
         val DNS = stringSetPreferencesKey("dns_resolvers")
         val DIRECT_RULES = stringSetPreferencesKey("direct_rules")
@@ -137,7 +138,8 @@ class SettingsStore(private val context: Context) {
             tlsPreset = TlsPreset.fromStored(p[Keys.TLS_PRESET]),
             udpEnabled = p[Keys.UDP_ENABLED] ?: true,
             tunEngine = TunEngineId.fromStored(p[Keys.TUN_ENGINE]),
-            engineKind = EngineKind.fromStored(p[Keys.ENGINE_KIND])
+            engineKind = EngineKind.fromStored(p[Keys.ENGINE_KIND]),
+            fxPortPolicy = FxPortPolicy.fromStored(p[Keys.FX_PORT_POLICY])
         )
 
     val configFlow: Flow<EngineConfig> = context.dataStore.data.map { readConfig(it) }
@@ -219,6 +221,7 @@ class SettingsStore(private val context: Context) {
             p[Keys.UDP_ENABLED] = current.udpEnabled
             p[Keys.TUN_ENGINE] = current.tunEngine.stored
             p[Keys.ENGINE_KIND] = current.engineKind.stored
+            p[Keys.FX_PORT_POLICY] = current.fxPortPolicy.stored
             p[Keys.DOH_ON] = current.dohOn
             if (current.dohResolvers.isEmpty()) p.remove(Keys.DOH_RESOLVERS) else p[Keys.DOH_RESOLVERS] = current.dohResolvers.joinToString("\n")
             p[Keys.DOH_VIA_TOR] = current.dohViaTor
