@@ -143,7 +143,6 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                     FxTricks.setHelloSplit(ctx, v)
                     restartPageCore()
                 }
-                }
             }
 
             when {
