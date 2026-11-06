@@ -97,6 +97,6 @@ object FxWebChannel {
         val errno = (obj?.get("errno") as? Number)?.toInt()
         val message = (obj?.get("message") as? String).orEmpty()
         if (status == 400 && (errno == 104 || message.contains("unconfirmed", ignoreCase = true))) return Grant.Unconfirmed
-        return Grant.Failed(status, (message.ifEmpty { text }).take(200))
+        return Grant.Failed(status, (message.ifEmpty { text }).take(400))
     }
 }

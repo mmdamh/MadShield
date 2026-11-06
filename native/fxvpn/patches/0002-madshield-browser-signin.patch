@@ -1,15 +1,23 @@
 diff --git a/core/internal/fxa/madshield_browser.go b/core/internal/fxa/madshield_browser.go
 new file mode 100644
-index 0000000..0405fd2
+index 0000000..fd368b9
 --- /dev/null
 +++ b/core/internal/fxa/madshield_browser.go
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,91 @@
 +package fxa
 +
 +import (
++	"crypto/hmac"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/base64"
 +	"encoding/json"
 +	"errors"
++	"fmt"
++	"net/url"
 +	"regexp"
++	"strings"
++	"time"
 +)
 +
 +// MadShield hook (see native/fxvpn/patches): the sign-in runs in a real browser engine (an Android WebView) because
@@ -45,11 +53,47 @@ index 0000000..0405fd2
 +		return nil, err
 +	}
 +	target := fxaAuthServer + "/oauth/token"
-+	header, err := hawkHeader("POST", target, hawkID, hawkKey, string(body))
++	header, err := standardHawkHeader("POST", target, hawkID, hawkKey, body)
 +	if err != nil {
 +		return nil, err
 +	}
 +	return &OAuthGrantRequest{URL: target, Authorization: header, Body: string(body)}, nil
++}
++
++// standardHawkHeader signs like the Hawk specification and like Firefox does: the payload hash and the MAC are base64
++// (hawkHeader above writes them in hex, which is its own format). Mozilla's server and its bot check see the request a
++// real browser would send.
++func standardHawkHeader(method, rawURL, hawkID string, hawkKey, payload []byte) (string, error) {
++	u, err := url.Parse(rawURL)
++	if err != nil {
++		return "", err
++	}
++	nonceBytes := make([]byte, 6)
++	if _, err := rand.Read(nonceBytes); err != nil {
++		return "", fmt.Errorf("generating nonce: %w", err)
++	}
++	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
++	ts := fmt.Sprintf("%d", time.Now().Unix())
++	port := u.Port()
++	if port == "" {
++		port = "443"
++	}
++	hash := ""
++	if len(payload) > 0 {
++		h := sha256.New()
++		h.Write([]byte("hawk.1.payload\napplication/json\n"))
++		h.Write(payload)
++		h.Write([]byte("\n"))
++		hash = base64.StdEncoding.EncodeToString(h.Sum(nil))
++	}
++	normalized := strings.Join([]string{"hawk.1.header", ts, nonce, strings.ToUpper(method), u.RequestURI(), u.Hostname(), port, hash, "", ""}, "\n")
++	mac := hmac.New(sha256.New, hawkKey)
++	mac.Write([]byte(normalized))
++	header := fmt.Sprintf(`Hawk id="%s", ts="%s", nonce="%s", mac="%s"`, hawkID, ts, nonce, base64.StdEncoding.EncodeToString(mac.Sum(nil)))
++	if hash != "" {
++		header += fmt.Sprintf(`, hash="%s"`, hash)
++	}
++	return header, nil
 +}
 diff --git a/core/internal/service/dashboard.go b/core/internal/service/dashboard.go
 index 912a756..3bd2260 100644

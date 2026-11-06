@@ -2029,7 +2029,7 @@ private fun fxWebTests() {
         FxWebChannel.userAgent("x\"y").contains("Android 14;") && FxWebChannel.userAgent(null).contains("Firefox/"))
     val patch = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText()
     check("fx web: the core side builds the grant with its own signing and adds the account, behind the dashboard guard",
-        patch.contains("BrowserOAuthGrant") && patch.contains("hawkHeader(\"POST\"") && patch.contains("/api/ms/browser-grant") &&
+        patch.contains("BrowserOAuthGrant") && patch.contains("standardHawkHeader(\"POST\"") && patch.contains("base64.StdEncoding.EncodeToString(mac.Sum(nil))") && !patch.contains("hex.EncodeToString") && patch.contains("/api/ms/browser-grant") &&
         patch.contains("/api/ms/browser-import") && patch.contains("addSignedInAccount(email, \"\"") && !patch.contains("http.Client") && !patch.contains("http.Get"))
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host and the grant's nonce; cookies are cleared at the end",

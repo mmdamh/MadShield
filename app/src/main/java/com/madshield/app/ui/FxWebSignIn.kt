@@ -126,7 +126,8 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
             nonce = n
             // the browser sends it, from Mozilla's own page, so Mozilla's bot check sees a browser
             val script = "(function(){fetch(${js(g.url)},{method:'POST',headers:{'Authorization':${js(g.authorization)},'Content-Type':'application/json'},body:${js(g.body)}})" +
-                ".then(function(r){return r.text().then(function(t){ms.onGrant(${js(n)},r.status,t);});})" +
+                ".then(function(r){return r.text().then(function(t){var h='';if(!r.ok){try{r.headers.forEach(function(v,k){h+=' '+k+'='+String(v).slice(0,60);});}catch(e){}}" +
+                "ms.onGrant(${js(n)},r.status,h?(t+' [headers'+h+']'):t);});})" +
                 ".catch(function(e){ms.onGrantError(${js(n)},''+((e&&e.message)||e));});})();"
             webView?.evaluateJavascript(script, null) ?: run { error = "the page is gone" }
         }
