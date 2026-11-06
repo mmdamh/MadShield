@@ -2024,12 +2024,15 @@ private fun fxWebTests() {
         (FxWebChannel.grant(406, "") as FxWebChannel.Grant.Failed).status == 406 &&
         (FxWebChannel.grant(200, "{}") is FxWebChannel.Grant.Failed))
     check("fx web: the WebView says it is Firefox for Android",
-        FxWebChannel.userAgent("14") == "Mozilla/5.0 (Android 14; Mobile; rv:150.0) Gecko/150.0 Firefox/150.0" &&
+        FxWebChannel.userAgent("14") == "Mozilla/5.0 (Android 14; Mobile; rv:158.0) Gecko/158.0 Firefox/158.0" &&
         FxWebChannel.userAgent("16.1").contains("Android 16.1;") && FxWebChannel.userAgent("").contains("Android 14;") &&
         FxWebChannel.userAgent("x\"y").contains("Android 14;") && FxWebChannel.userAgent(null).contains("Firefox/"))
+    check("fx web: cookies of the browser are merged into one header",
+        FxWebChannel.mergeCookies("a=1; b=2", "b=3; c=4", null, "") == "a=1; b=2; c=4" && FxWebChannel.mergeCookies("x; =y; ok=1\u0001; z=9") == "z=9" &&
+        FxWebChannel.mergeCookies(null) == "")
     val patch = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText()
     check("fx web: the core side builds the grant with its own signing and adds the account, behind the dashboard guard",
-        patch.contains("BrowserOAuthGrant") && patch.contains("standardHawkHeader(\"POST\"") && patch.contains("base64.StdEncoding.EncodeToString(mac.Sum(nil))") && !patch.contains("hex.EncodeToString") && patch.contains("/api/ms/browser-grant") &&
+        patch.contains("BrowserOAuthGrant") && patch.contains("standardHawkHeader(\"POST\"") && patch.contains("base64.StdEncoding.EncodeToString(mac.Sum(nil))") && !patch.contains("hex.EncodeToString") && patch.contains("/api/ms/browser-grant") && patch.contains("/api/ms/browser-grant-native") && patch.contains("BrowserNativeGrant") &&
         patch.contains("/api/ms/browser-import") && patch.contains("addSignedInAccount(email, \"\"") && !patch.contains("http.Client") && !patch.contains("http.Get"))
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host and the grant's nonce; cookies are cleared at the end",

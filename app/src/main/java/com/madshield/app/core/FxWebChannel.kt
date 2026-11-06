@@ -53,7 +53,22 @@ object FxWebChannel {
         return "Mozilla/5.0 (Android $v; Mobile; rv:$FIREFOX_VERSION.0) Gecko/$FIREFOX_VERSION.0 Firefox/$FIREFOX_VERSION.0"
     }
 
-    private const val FIREFOX_VERSION = 150
+    private const val FIREFOX_VERSION = 158
+
+    /** One Cookie header from several (the browser's cookies for Mozilla's hosts): the first value of a name wins, odd pairs are dropped. */
+    fun mergeCookies(vararg headers: String?): String {
+        val seen = LinkedHashMap<String, String>()
+        for (h in headers) {
+            if (h.isNullOrBlank()) continue
+            for (part in h.split(';')) {
+                val pair = part.trim()
+                val eq = pair.indexOf('=')
+                if (eq <= 0 || pair.any { it.code < 0x20 || it.code > 0x7e }) continue
+                seen.putIfAbsent(pair.substring(0, eq), pair)
+            }
+        }
+        return seen.values.joinToString("; ")
+    }
 
     fun isSessionToken(s: String): Boolean = s.length == 64 && s.all { it in '0'..'9' || it in 'a'..'f' }
 

@@ -87,6 +87,17 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
         return BrowserGrant(url, auth, body)
     }
 
+    class NativeGrant(val status: Int, val body: String, val diag: String)
+
+    /** Sends the grant request from the core, with the browser's cookies and User-Agent (the way out when the browser's own request is refused). */
+    fun browserGrantNative(sessionToken: String, cookies: String, userAgent: String): NativeGrant {
+        val m = MiniJson.parseObject(call("POST", "/api/ms/browser-grant-native", json(
+            "session_token" to sessionToken, "cookies" to cookies, "user_agent" to userAgent
+        ), timeoutMs = 40_000)) ?: throw IOException("unreadable answer")
+        val status = (m["status"] as? Number)?.toInt() ?: throw IOException("unreadable answer")
+        return NativeGrant(status, m["body"] as? String ?: "", m["diag"] as? String ?: "")
+    }
+
     /** Adds the account the browser signed in, from the OAuth tokens of its grant request. */
     fun browserImport(email: String, g: FxWebChannel.Grant.Ok) {
         call("POST", "/api/ms/browser-import", json(

@@ -1,12 +1,13 @@
 diff --git a/core/internal/fxa/madshield_browser.go b/core/internal/fxa/madshield_browser.go
 new file mode 100644
-index 0000000..fd368b9
+index 0000000..585f372
 --- /dev/null
 +++ b/core/internal/fxa/madshield_browser.go
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,174 @@
 +package fxa
 +
 +import (
++	"context"
 +	"crypto/hmac"
 +	"crypto/rand"
 +	"crypto/sha256"
@@ -14,10 +15,15 @@ index 0000000..fd368b9
 +	"encoding/json"
 +	"errors"
 +	"fmt"
++	"io"
++	"net/http"
 +	"net/url"
 +	"regexp"
++	"sort"
 +	"strings"
 +	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
 +)
 +
 +// MadShield hook (see native/fxvpn/patches): the sign-in runs in a real browser engine (an Android WebView) because
@@ -95,25 +101,103 @@ index 0000000..fd368b9
 +	}
 +	return header, nil
 +}
++
++// NativeGrantResult is the answer of the grant request when this program sends it (see BrowserNativeGrant).
++type NativeGrantResult struct {
++	Status int    `json:"status"`
++	Body   string `json:"body"`
++	Diag   string `json:"diag"`
++}
++
++// printable reports whether s is non-empty (unless empty is allowed) printable ASCII of at most max bytes.
++func printable(s string, max int, allowEmpty bool) bool {
++	if len(s) > max || (s == "" && !allowEmpty) {
++		return false
++	}
++	for i := 0; i < len(s); i++ {
++		if s[i] < 0x20 || s[i] > 0x7e {
++			return false
++		}
++	}
++	return true
++}
++
++// BrowserNativeGrant sends the same grant request itself, with the cookies the browser holds for Mozilla's hosts (the
++// Fastly bot-check cookie among them) and the browser's User-Agent, through the control plane transport (TLS hello
++// split included). It is the way out when the browser's own request is refused. Only the grant URL is ever requested.
++func BrowserNativeGrant(ctx context.Context, sessionToken, cookies, userAgent string) (*NativeGrantResult, error) {
++	g, err := BrowserOAuthGrant(sessionToken)
++	if err != nil {
++		return nil, err
++	}
++	if !printable(cookies, 16384, true) || !printable(userAgent, 300, false) {
++		return nil, errors.New("bad cookies or user agent")
++	}
++	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
++	defer cancel()
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.URL, strings.NewReader(g.Body))
++	if err != nil {
++		return nil, err
++	}
++	req.Header.Set("Authorization", g.Authorization)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Accept", "*/*")
++	req.Header.Set("User-Agent", userAgent)
++	req.Header.Set("Origin", "https://accounts.firefox.com")
++	req.Header.Set("Referer", "https://accounts.firefox.com/")
++	if cookies != "" {
++		req.Header.Set("Cookie", cookies)
++	}
++	resp, err := controlplane.Do(req)
++	if err != nil {
++		return nil, err
++	}
++	defer resp.Body.Close()
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 16384))
++	if err != nil {
++		return nil, err
++	}
++	out := &NativeGrantResult{Status: resp.StatusCode, Body: string(body)}
++	if resp.StatusCode < 200 || resp.StatusCode > 299 {
++		keys := make([]string, 0, len(resp.Header))
++		for k := range resp.Header {
++			if !strings.EqualFold(k, "Set-Cookie") {
++				keys = append(keys, k)
++			}
++		}
++		sort.Strings(keys)
++		var b strings.Builder
++		for _, k := range keys {
++			v := resp.Header.Get(k)
++			if len(v) > 60 {
++				v = v[:60]
++			}
++			b.WriteString(" " + strings.ToLower(k) + "=" + v)
++		}
++		out.Diag = b.String()
++	}
++	return out, nil
++}
 diff --git a/core/internal/service/dashboard.go b/core/internal/service/dashboard.go
-index 912a756..3bd2260 100644
+index 912a756..8828206 100644
 --- a/core/internal/service/dashboard.go
 +++ b/core/internal/service/dashboard.go
-@@ -225,6 +225,8 @@ func (s *dashboardServer) handler() http.Handler {
+@@ -225,6 +225,9 @@ func (s *dashboardServer) handler() http.Handler {
  	mux.HandleFunc("GET /api/signin/{id}", s.handleSignInGet)
  	mux.HandleFunc("POST /api/signin/{id}", s.handleSignInAnswer)
  	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
 +	mux.HandleFunc("POST /api/ms/browser-grant", s.handleBrowserGrant)
++	mux.HandleFunc("POST /api/ms/browser-grant-native", s.handleBrowserGrantNative)
 +	mux.HandleFunc("POST /api/ms/browser-import", s.handleBrowserImport)
  
  	mux.HandleFunc("GET /api/settings", s.handleSettingsGet)
  	mux.HandleFunc("PUT /api/settings", s.handleSettingsPut)
 diff --git a/core/internal/service/madshield_browser.go b/core/internal/service/madshield_browser.go
 new file mode 100644
-index 0000000..119bdce
+index 0000000..570dc13
 --- /dev/null
 +++ b/core/internal/service/madshield_browser.go
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,85 @@
 +package service
 +
 +import (
@@ -142,6 +226,24 @@ index 0000000..119bdce
 +		return
 +	}
 +	writeJSON(w, http.StatusOK, req)
++}
++
++// handleBrowserGrantNative sends the grant request from this program with the browser's cookies and User-Agent.
++func (s *dashboardServer) handleBrowserGrantNative(w http.ResponseWriter, r *http.Request) {
++	var in struct {
++		SessionToken string `json:"session_token"`
++		Cookies      string `json:"cookies"`
++		UserAgent    string `json:"user_agent"`
++	}
++	if !readJSON(w, r, &in) {
++		return
++	}
++	res, err := fxa.BrowserNativeGrant(r.Context(), strings.TrimSpace(in.SessionToken), in.Cookies, in.UserAgent)
++	if err != nil {
++		writeError(w, http.StatusBadGateway, err.Error())
++		return
++	}
++	writeJSON(w, http.StatusOK, res)
 +}
 +
 +// handleBrowserImport adds the account the browser signed in, from the OAuth tokens its grant request returned.

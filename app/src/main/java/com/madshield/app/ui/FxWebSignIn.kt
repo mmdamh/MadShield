@@ -124,10 +124,9 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
             catch (e: Exception) { error = e.message ?: e.javaClass.simpleName; return@launch }
             val n = UUID.randomUUID().toString()
             nonce = n
-            // the browser sends it, from Mozilla's own page, so Mozilla's bot check sees a browser
-            val script = "(function(){fetch(${js(g.url)},{method:'POST',headers:{'Authorization':${js(g.authorization)},'Content-Type':'application/json'},body:${js(g.body)}})" +
-                ".then(function(r){return r.text().then(function(t){var h='';if(!r.ok){try{r.headers.forEach(function(v,k){h+=' '+k+'='+String(v).slice(0,60);});}catch(e){}}" +
-                "ms.onGrant(${js(n)},r.status,h?(t+' [headers'+h+']'):t);});})" +
+            // the browser sends it, from Mozilla's own page and with its cookies (Mozilla's bot check wants the cookie it issued)
+            val script = "(function(){fetch(${js(g.url)},{method:'POST',credentials:'include',headers:{'Authorization':${js(g.authorization)},'Content-Type':'application/json'},body:${js(g.body)}})" +
+                ".then(function(r){return r.text().then(function(t){ms.onGrant(${js(n)},r.status,t);});})" +
                 ".catch(function(e){ms.onGrantError(${js(n)},''+((e&&e.message)||e));});})();"
             webView?.evaluateJavascript(script, null) ?: run { error = "the page is gone" }
         }
@@ -143,7 +142,20 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
         }
     }
 
-    fun handleGrant(n: String, status: Int, text: String) {
+    // the browser's own request was refused: the core sends the same request with the browser's cookies and User-Agent
+    fun nativeGrant(l: FxWebChannel.Login, n: String, why: String, onResult: (status: Int, body: String, diag: String) -> Unit) {
+        val view = webView ?: run { error = why; return }
+        val cm = CookieManager.getInstance()
+        val cookies = FxWebChannel.mergeCookies(cm.getCookie("https://api.accounts.firefox.com"), cm.getCookie("https://accounts.firefox.com"))
+        val ua = view.settings.userAgentString.orEmpty()
+        scope.launch {
+            val r = try { withContext(Dispatchers.IO) { client().browserGrantNative(l.sessionToken, cookies, ua) } }
+            catch (e: Exception) { if (n == nonce && !finished) error = "$why; ${e.message ?: e.javaClass.simpleName}"; return@launch }
+            onResult(r.status, r.body, r.diag)
+        }
+    }
+
+    fun handleGrant(n: String, status: Int, text: String, native: Boolean = false, diag: String = "") {
         val l = login
         if (n != nonce || l == null || finished) return
         when (val g = FxWebChannel.grant(status, text)) {
@@ -153,7 +165,9 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                 waitingConfirm = true
                 scope.launch { delay(3_000); if (!finished && login?.sessionToken == l.sessionToken) requestGrant(l) }
             }
-            is FxWebChannel.Grant.Failed -> error = "HTTP ${g.status}: ${g.text}"
+            is FxWebChannel.Grant.Failed ->
+                if (native) error = "HTTP ${g.status}: ${g.text}${if (diag.isEmpty()) "" else " [headers$diag]"}"
+                else nativeGrant(l, n, "HTTP ${g.status}: ${g.text}") { st, body, d -> handleGrant(n, st, body, native = true, diag = d) }
         }
     }
 
@@ -163,7 +177,7 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                 if (login?.sessionToken != l.sessionToken) { login = l; error = null; waitingConfirm = false; requestGrant(l) }
             },
             onGrant = { n, status, text -> handleGrant(n, status, text) },
-            onGrantError = { n, text -> if (n == nonce && !finished) error = text }
+            onGrantError = { n, text -> val l = login; if (n == nonce && !finished && l != null) nativeGrant(l, n, text) { st, body, d -> handleGrant(n, st, body, native = true, diag = d) } }
         )
     }
 
