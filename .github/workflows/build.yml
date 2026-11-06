@@ -402,7 +402,7 @@ jobs:
           retention-days: 1
 
   # EXPERIMENTAL (update28, test branch): the "Firefox VPN" engine. Mozilla's VPN service, driven by the open-source client
-  # armanlife/firefox-vpn-client (GPL-3, unofficial) at the exact commit in native/fxvpn.pin. Only its Go core is built
+  # armanlife/arman-vpn-client (GPL-3, unofficial) at the exact commit in native/fxvpn.pin. Only its Go core is built
   # (no Flutter app), together with our own small entry point native/fxvpn/host/main.go (loopback API that needs a token,
   # SOCKS5 login, only-Mozilla settings). The build is allowed to fail WITHOUT blocking the APK: the app then says the
   # Firefox VPN engine is not in this build.
@@ -421,17 +421,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch firefox-vpn-client at the pinned commit
+      - name: Fetch arman-vpn-client at the pinned commit
         run: |
           set -e
           pin="$(tr -d '[:space:]' < native/fxvpn.pin)"
           rm -rf native/firefox-vpn-client
           mkdir -p native/firefox-vpn-client
           git -C native/firefox-vpn-client init -q
-          git -C native/firefox-vpn-client fetch -q --depth 1 https://github.com/armanlife/firefox-vpn-client "$pin"
+          git -C native/firefox-vpn-client fetch -q --depth 1 https://github.com/armanlife/arman-vpn-client "$pin"
           git -C native/firefox-vpn-client checkout -q FETCH_HEAD
           test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
-          echo "firefox-vpn-client @ $pin"
+          echo "arman-vpn-client @ $pin"
 
       - name: Install Go (the version the core's go.mod asks for)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5

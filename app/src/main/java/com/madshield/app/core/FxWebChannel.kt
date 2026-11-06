@@ -55,21 +55,6 @@ object FxWebChannel {
 
     private const val FIREFOX_VERSION = 158
 
-    /** One Cookie header from several (the browser's cookies for Mozilla's hosts): the first value of a name wins, odd pairs are dropped. */
-    fun mergeCookies(vararg headers: String?): String {
-        val seen = LinkedHashMap<String, String>()
-        for (h in headers) {
-            if (h.isNullOrBlank()) continue
-            for (part in h.split(';')) {
-                val pair = part.trim()
-                val eq = pair.indexOf('=')
-                if (eq <= 0 || pair.any { it.code < 0x20 || it.code > 0x7e }) continue
-                seen.putIfAbsent(pair.substring(0, eq), pair)
-            }
-        }
-        return seen.values.joinToString("; ")
-    }
-
     fun isSessionToken(s: String): Boolean = s.length == 64 && s.all { it in '0'..'9' || it in 'a'..'f' }
 
     /** The login message: the account's email and session token, and whether the session is already confirmed. */
@@ -89,29 +74,5 @@ object FxWebChannel {
         m.command == CMD_CAN_LINK -> CMD_CAN_LINK to """{"ok":true}"""
         m.messageId.isNotEmpty() -> m.command to """{"ok":true}"""
         else -> null
-    }
-
-    /** The result of the grant request the browser sent. */
-    sealed class Grant {
-        class Ok(val accessToken: String, val refreshToken: String, val expiresIn: Int, val scope: String) : Grant()
-        /** The session is not confirmed yet (an email code or authenticator code is still to be entered): try again soon. */
-        object Unconfirmed : Grant()
-        class Failed(val status: Int, val text: String) : Grant()
-    }
-
-    fun grant(status: Int, text: String): Grant {
-        val obj = MiniJson.parseObject(text)
-        if (status in 200..299) {
-            val access = (obj?.get("access_token") as? String).orEmpty()
-            if (access.isNotEmpty()) {
-                val expires = (obj?.get("expires_in") as? Number)?.toInt() ?: 0
-                return Grant.Ok(access, (obj?.get("refresh_token") as? String).orEmpty(), expires, (obj?.get("scope") as? String).orEmpty())
-            }
-            return Grant.Failed(status, "the answer has no access token")
-        }
-        val errno = (obj?.get("errno") as? Number)?.toInt()
-        val message = (obj?.get("message") as? String).orEmpty()
-        if (status == 400 && (errno == 104 || message.contains("unconfirmed", ignoreCase = true))) return Grant.Unconfirmed
-        return Grant.Failed(status, (message.ifEmpty { text }).take(400))
     }
 }

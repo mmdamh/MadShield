@@ -75,36 +75,13 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
 
     fun signInCancel(id: String) { call("DELETE", "/api/signin/" + enc(id)) }
 
-    /** The OAuth grant request (URL, Authorization header, JSON body) the browser sends for a session token. */
-    class BrowserGrant(val url: String, val authorization: String, val body: String)
-
-    fun browserGrant(sessionToken: String): BrowserGrant {
-        val m = MiniJson.parseObject(call("POST", "/api/ms/browser-grant", json("session_token" to sessionToken))) ?: throw IOException("unreadable grant")
-        val url = m["url"] as? String ?: ""
-        val auth = m["authorization"] as? String ?: ""
-        val body = m["body"] as? String ?: ""
-        if (url.isEmpty() || auth.isEmpty() || body.isEmpty()) throw IOException("unreadable grant")
-        return BrowserGrant(url, auth, body)
-    }
-
-    class NativeGrant(val status: Int, val body: String, val diag: String)
-
-    /** Sends the grant request from the core, with the browser's cookies and User-Agent (the way out when the browser's own request is refused). */
-    fun browserGrantNative(sessionToken: String, cookies: String, userAgent: String): NativeGrant {
-        val m = MiniJson.parseObject(call("POST", "/api/ms/browser-grant-native", json(
-            "session_token" to sessionToken, "cookies" to cookies, "user_agent" to userAgent
-        ), timeoutMs = 40_000)) ?: throw IOException("unreadable answer")
-        val status = (m["status"] as? Number)?.toInt() ?: throw IOException("unreadable answer")
-        return NativeGrant(status, m["body"] as? String ?: "", m["diag"] as? String ?: "")
-    }
-
-    /** Adds the account the browser signed in, from the OAuth tokens of its grant request. */
-    fun browserImport(email: String, g: FxWebChannel.Grant.Ok) {
-        call("POST", "/api/ms/browser-import", json(
-            "email" to email, "access_token" to g.accessToken, "refresh_token" to g.refreshToken,
-            "scope" to g.scope, "expires_in" to g.expiresIn
-        ), timeoutMs = 25_000)
-    }
+    /**
+     * Adds the account a browser sign-in (the WebView on Mozilla's page) captured: the core waits until the session is confirmed
+     * (any code the page asks for), takes the OAuth tokens (its own Firefox-looking request, and Mozilla's OAuth endpoint when the
+     * edge refuses the first) and stores the account. Poll [signInGet] with the id; [signInCancel] ends it.
+     */
+    fun signInBrowser(email: String, sessionToken: String): FxSignIn =
+        FxJson.signIn(call("POST", "/api/signin/browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
 
     fun removeAccount(id: String) { call("DELETE", "/api/accounts/" + enc(id)) }
 

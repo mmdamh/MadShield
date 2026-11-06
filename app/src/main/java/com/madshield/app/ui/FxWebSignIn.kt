@@ -44,13 +44,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.madshield.app.R
 import com.madshield.app.core.FxClient
+import com.madshield.app.core.FxStep
 import com.madshield.app.core.FxWebChannel
 import com.madshield.app.core.MiniJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.UUID
 
 /** The page's side of the WebChannel: forwards what the page sends to the app, and lets the app answer. */
 private const val HOOK_JS = """
@@ -73,11 +73,7 @@ private const val HOOK_JS = """
 private fun js(s: String): String = MiniJson.write(s, 0) // a JSON string is a JavaScript string
 
 /** What the bridge hands to the screen, always on the main thread. */
-internal class BridgeEvents(
-    val onLogin: (FxWebChannel.Login) -> Unit,
-    val onGrant: (nonce: String, status: Int, text: String) -> Unit,
-    val onGrantError: (nonce: String, text: String) -> Unit
-)
+internal class BridgeEvents(val onLogin: (FxWebChannel.Login) -> Unit)
 
 internal class FxBridge(private val view: WebView, private val events: BridgeEvents) {
     @JavascriptInterface
@@ -91,17 +87,11 @@ internal class FxBridge(private val view: WebView, private val events: BridgeEve
         }
         FxWebChannel.login(m)?.let { l -> view.post { events.onLogin(l) } }
     }
-
-    @JavascriptInterface
-    fun onGrant(nonce: String, status: Int, text: String) { view.post { events.onGrant(nonce, status, text) } }
-
-    @JavascriptInterface
-    fun onGrantError(nonce: String, text: String) { view.post { events.onGrantError(nonce, text) } }
 }
 
 /**
  * Full-screen sign-in of the Foxy engine in a WebView on Mozilla's own page (see [FxWebChannel]). Ends by adding the account
- * to the core ([FxClient.browserImport]); [onDone] is then called. Nothing the page shows or sends is kept: the WebView's
+ * to the core ([FxClient.signInBrowser], which the dialog follows); [onDone] is then called. Nothing the page shows or sends is kept: the WebView's
  * cookies and storage are cleared when this closes.
  */
 @SuppressLint("SetJavaScriptEnabled")
@@ -111,78 +101,59 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
     var webView by remember { mutableStateOf<WebView?>(null) }
     var progress by remember { mutableIntStateOf(0) }
     var login by remember { mutableStateOf<FxWebChannel.Login?>(null) }
-    var nonce by remember { mutableStateOf("") }
+    var running by remember { mutableStateOf<String?>(null) } // the core's sign-in being followed
     var waitingConfirm by remember { mutableStateOf(false) }
     var finishing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var finished by remember { mutableStateOf(false) }
 
-    fun requestGrant(l: FxWebChannel.Login) {
-        if (finished) return
-        scope.launch {
-            val g = try { withContext(Dispatchers.IO) { client().browserGrant(l.sessionToken) } }
-            catch (e: Exception) { error = e.message ?: e.javaClass.simpleName; return@launch }
-            val n = UUID.randomUUID().toString()
-            nonce = n
-            // the browser sends it, from Mozilla's own page and with its cookies (Mozilla's bot check wants the cookie it issued)
-            val script = "(function(){fetch(${js(g.url)},{method:'POST',credentials:'include',headers:{'Authorization':${js(g.authorization)},'Content-Type':'application/json'},body:${js(g.body)}})" +
-                ".then(function(r){return r.text().then(function(t){ms.onGrant(${js(n)},r.status,t);});})" +
-                ".catch(function(e){ms.onGrantError(${js(n)},''+((e&&e.message)||e));});})();"
-            webView?.evaluateJavascript(script, null) ?: run { error = "the page is gone" }
-        }
+    // ends the core's sign-in (the page closed, or another session replaced it); it must not outlive the dialog
+    fun cancelRunning() {
+        val id = running ?: return
+        running = null
+        Thread { runCatching { client().signInCancel(id) } }.start()
     }
 
-    fun finish(l: FxWebChannel.Login, g: FxWebChannel.Grant.Ok) {
+    // hands the page's session to the core, which does the rest (waits for the confirmation, gets the tokens, stores the account)
+    // and follows it until it is done
+    fun follow(l: FxWebChannel.Login) {
         if (finished) return
-        finished = true
+        cancelRunning()
+        error = null
+        waitingConfirm = false
         finishing = true
         scope.launch {
-            try { withContext(Dispatchers.IO) { client().browserImport(l.email, g) }; onDone() }
-            catch (e: Exception) { finished = false; finishing = false; error = e.message ?: e.javaClass.simpleName }
-        }
-    }
-
-    // the browser's own request was refused: the core sends the same request with the browser's cookies and User-Agent
-    fun nativeGrant(l: FxWebChannel.Login, n: String, why: String, onResult: (status: Int, body: String, diag: String) -> Unit) {
-        val view = webView ?: run { error = why; return }
-        val cm = CookieManager.getInstance()
-        val cookies = FxWebChannel.mergeCookies(cm.getCookie("https://api.accounts.firefox.com"), cm.getCookie("https://accounts.firefox.com"))
-        val ua = view.settings.userAgentString.orEmpty()
-        scope.launch {
-            val r = try { withContext(Dispatchers.IO) { client().browserGrantNative(l.sessionToken, cookies, ua) } }
-            catch (e: Exception) { if (n == nonce && !finished) error = "$why; ${e.message ?: e.javaClass.simpleName}"; return@launch }
-            onResult(r.status, r.body, r.diag)
-        }
-    }
-
-    fun handleGrant(n: String, status: Int, text: String, native: Boolean = false, diag: String = "") {
-        val l = login
-        if (n != nonce || l == null || finished) return
-        when (val g = FxWebChannel.grant(status, text)) {
-            is FxWebChannel.Grant.Ok -> finish(l, g)
-            FxWebChannel.Grant.Unconfirmed -> {
-                // the page still asks for a code or a link: ask again in a few seconds
-                waitingConfirm = true
-                scope.launch { delay(3_000); if (!finished && login?.sessionToken == l.sessionToken) requestGrant(l) }
+            var id = ""
+            try {
+                id = withContext(Dispatchers.IO) { client().signInBrowser(l.email, l.sessionToken).id }
+                running = id
+                while (!finished && running == id && login?.sessionToken == l.sessionToken) {
+                    val s = withContext(Dispatchers.IO) { client().signInGet(id) }
+                    waitingConfirm = s.step == FxStep.WORKING && s.message.contains("confirmed", ignoreCase = true)
+                    when (s.step) {
+                        FxStep.DONE -> { finished = true; running = null; onDone(); return@launch }
+                        FxStep.FAILED, FxStep.CANCELLED -> {
+                            running = null
+                            finishing = false
+                            error = listOf(s.message, s.error).filter { it.isNotBlank() }.joinToString(": ").ifEmpty { "failed" }
+                            return@launch
+                        }
+                        else -> delay(1_000)
+                    }
+                }
+            } catch (e: Exception) {
+                if (running == id || id.isEmpty()) { running = null; finishing = false; error = e.message ?: e.javaClass.simpleName }
             }
-            is FxWebChannel.Grant.Failed ->
-                if (native) error = "HTTP ${g.status}: ${g.text}${if (diag.isEmpty()) "" else " [headers$diag]"}"
-                else nativeGrant(l, n, "HTTP ${g.status}: ${g.text}") { st, body, d -> handleGrant(n, st, body, native = true, diag = d) }
         }
     }
 
     val events = remember {
-        BridgeEvents(
-            onLogin = { l ->
-                if (login?.sessionToken != l.sessionToken) { login = l; error = null; waitingConfirm = false; requestGrant(l) }
-            },
-            onGrant = { n, status, text -> handleGrant(n, status, text) },
-            onGrantError = { n, text -> val l = login; if (n == nonce && !finished && l != null) nativeGrant(l, n, text) { st, body, d -> handleGrant(n, st, body, native = true, diag = d) } }
-        )
+        BridgeEvents(onLogin = { l -> if (login?.sessionToken != l.sessionToken) { login = l; follow(l) } })
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            cancelRunning()
             runCatching {
                 CookieManager.getInstance().removeAllCookies(null)
                 CookieManager.getInstance().flush()
@@ -206,8 +177,8 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                     else LinearProgressIndicator(progress = { progress / 100f }, modifier = Modifier.fillMaxWidth())
                 }
                 val note = when {
-                    finishing -> stringResource(R.string.fx_web_finishing)
                     waitingConfirm -> stringResource(R.string.fx_web_confirm)
+                    finishing -> stringResource(R.string.fx_web_finishing)
                     else -> stringResource(R.string.fx_web_waiting)
                 }
                 Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -216,7 +187,7 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                     Text(stringResource(R.string.fx_web_failed, e), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
                     login?.let { l ->
-                        FilledTonalButton(onClick = { error = null; requestGrant(l) }, modifier = Modifier.padding(horizontal = 16.dp)) {
+                        FilledTonalButton(onClick = { follow(l) }, modifier = Modifier.padding(horizontal = 16.dp)) {
                             Text(stringResource(R.string.fx_web_retry))
                         }
                     }
