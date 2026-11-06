@@ -44,6 +44,17 @@ object FxWebChannel {
         return listOf("firefox.com", "mozilla.org", "mozilla.com").any { h == it || h.endsWith(".$it") }
     }
 
+    /**
+     * The User-Agent of Firefox for Android. Mozilla's page checks it ("Oops! It looks like you're not using Firefox"), and
+     * its sign-in and API treat only a Firefox as a client of the Firefox Account flow; the WebView's own Chrome agent is not.
+     */
+    fun userAgent(androidRelease: String?): String {
+        val v = androidRelease?.trim().orEmpty().takeIf { r -> r.isNotEmpty() && r.length <= 8 && r.all { it.isDigit() || it == '.' } } ?: "14"
+        return "Mozilla/5.0 (Android $v; Mobile; rv:$FIREFOX_VERSION.0) Gecko/$FIREFOX_VERSION.0 Firefox/$FIREFOX_VERSION.0"
+    }
+
+    private const val FIREFOX_VERSION = 150
+
     fun isSessionToken(s: String): Boolean = s.length == 64 && s.all { it in '0'..'9' || it in 'a'..'f' }
 
     /** The login message: the account's email and session token, and whether the session is already confirmed. */

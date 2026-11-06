@@ -2023,13 +2023,17 @@ private fun fxWebTests() {
         FxWebChannel.grant(400, """{"code":400,"errno":104,"message":"Unconfirmed session"}""") === FxWebChannel.Grant.Unconfirmed &&
         (FxWebChannel.grant(406, "") as FxWebChannel.Grant.Failed).status == 406 &&
         (FxWebChannel.grant(200, "{}") is FxWebChannel.Grant.Failed))
+    check("fx web: the WebView says it is Firefox for Android",
+        FxWebChannel.userAgent("14") == "Mozilla/5.0 (Android 14; Mobile; rv:150.0) Gecko/150.0 Firefox/150.0" &&
+        FxWebChannel.userAgent("16.1").contains("Android 16.1;") && FxWebChannel.userAgent("").contains("Android 14;") &&
+        FxWebChannel.userAgent("x\"y").contains("Android 14;") && FxWebChannel.userAgent(null).contains("Firefox/"))
     val patch = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText()
     check("fx web: the core side builds the grant with its own signing and adds the account, behind the dashboard guard",
         patch.contains("BrowserOAuthGrant") && patch.contains("hawkHeader(\"POST\"") && patch.contains("/api/ms/browser-grant") &&
         patch.contains("/api/ms/browser-import") && patch.contains("addSignedInAccount(email, \"\"") && !patch.contains("http.Client") && !patch.contains("http.Get"))
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host and the grant's nonce; cookies are cleared at the end",
-        screen.contains("FxWebChannel.hostAllowed") && screen.contains("n == nonce") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))
+        screen.contains("FxWebChannel.userAgent") && screen.contains("FxWebChannel.hostAllowed") && screen.contains("n == nonce") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))
     check("fx web: R8 keeps the bridge methods",
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/proguard-rules.pro").readText().contains("FxBridge { @android.webkit.JavascriptInterface"))
 }

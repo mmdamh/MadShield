@@ -212,6 +212,7 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                         WebView(context).apply {
                             webView = this
                             settings.javaScriptEnabled = true
+                            settings.userAgentString = FxWebChannel.userAgent(android.os.Build.VERSION.RELEASE) // Mozilla's page wants a Firefox
                             settings.domStorageEnabled = true
                             settings.allowFileAccess = false
                             settings.allowContentAccess = false
