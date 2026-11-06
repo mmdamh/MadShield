@@ -28,25 +28,3 @@ func TestHostAllowed(t *testing.T) {
 		t.Error("hostGuard must follow hostAllowed")
 	}
 }
-
-func TestLoopbackProxy(t *testing.T) {
-	good := map[string]string{
-		"127.0.0.1:1819":    "127.0.0.1:1819",
-		" 127.0.0.1:10808 ": "127.0.0.1:10808",
-		"localhost:1080":    "localhost:1080",
-		"LOCALHOST:1080":    "localhost:1080",
-		"[::1]:1080":        "[::1]:1080",
-		"127.5.5.5:65535":   "127.5.5.5:65535",
-	}
-	for in, want := range good {
-		if got := loopbackProxy(in); got != want {
-			t.Errorf("loopbackProxy(%q) = %q, want %q", in, got, want)
-		}
-	}
-	for _, in := range []string{"", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:abc", "8.8.8.8:1080", "192.168.1.5:1080",
-		"example.com:1080", "0.0.0.0:1080", "socks5://127.0.0.1:1080", "127.0.0.1.evil.com:1080", ":1080"} {
-		if got := loopbackProxy(in); got != "" {
-			t.Errorf("loopbackProxy(%q) = %q, want it refused", in, got)
-		}
-	}
-}

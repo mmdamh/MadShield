@@ -1970,6 +1970,7 @@ fun fxTests() {
     fxPortTests()
     fxLocationTests()
     fxSplitTests()
+    fxWebTests()
 }
 
 private fun fxSplitTests() {
@@ -1985,20 +1986,52 @@ private fun fxSplitTests() {
     val main = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
     check("fx split: the core's entry point reads MFX_HELLO_SPLIT and accepts only the core's own names",
         main.contains("MFX_HELLO_SPLIT") && main.contains("hellosplit.Valid(v)") && main.contains("cfg.Network.HelloSplit = v"))
-    check("fx proxy: only an address on this phone is taken",
-        listOf("127.0.0.1:1819", " localhost:10808 ", "LOCALHOST:1080", "[::1]:1080", "127.5.5.5:65535").map { FxVpn.cleanLoopbackProxy(it) } ==
-            listOf("127.0.0.1:1819", "localhost:10808", "localhost:1080", "[::1]:1080", "127.5.5.5:65535"))
-    check("fx proxy: anything else is refused",
-        listOf(null, "", "127.0.0.1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:x", "8.8.8.8:1080", "192.168.1.2:1080", "example.com:1080",
-            "0.0.0.0:1080", "socks5://127.0.0.1:1080", "127.0.0.1.evil.com:1080", ":1080", "127.0.0.256:1080", "127.0.0:1080").all { FxVpn.cleanLoopbackProxy(it) == null })
-    check("fx proxy: the environment carries it only when valid",
-        FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", signInProxy = "127.0.0.1:1819")["MFX_UPSTREAM_PROXY"] == "127.0.0.1:1819" &&
-        "MFX_UPSTREAM_PROXY" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c") &&
-        "MFX_UPSTREAM_PROXY" !in FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", signInProxy = "8.8.8.8:1080"))
-    check("fx proxy: the Go side takes only loopback too, and a connection's core is started without it",
-        main.contains("loopbackProxy(os.Getenv(\"MFX_UPSTREAM_PROXY\"))") &&
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/EngineProcessManager.kt").readText().contains("proc.start(plan.corePort, FxVpn.DEFAULT_DNS)"))
     check("fx split: the relay and the upstream proxy stay forced off", main.contains("cfg.Network.APIRelay = \"\"") && main.contains("cfg.Network.UpstreamProxyEnabled = false"))
+}
+
+private fun fxWebTests() {
+    val tok = "0123456789abcdef".repeat(4)
+    fun msg(command: String, messageId: String = "", data: String = "{}") =
+        FxWebChannel.parse("""{"id":"account_updates","message":{"command":"$command","messageId":"$messageId","data":$data}}""")!!
+    check("fx web: a WebChannel message is read", msg("fxaccounts:fxa_status", "m1").let { it.command == "fxaccounts:fxa_status" && it.messageId == "m1" })
+    check("fx web: junk is not a message", FxWebChannel.parse("") == null && FxWebChannel.parse("[]") == null && FxWebChannel.parse("""{"id":"x"}""") == null &&
+        FxWebChannel.parse("""{"message":{"messageId":"1"}}""") == null && FxWebChannel.parse("x".repeat(300_000)) == null)
+    check("fx web: the page is told it is not signed in and may link", FxWebChannel.reply(msg("fxaccounts:fxa_status", "m"))!!.second.contains("\"signedInUser\":null") &&
+        FxWebChannel.reply(msg("fxaccounts:can_link_account", "m"))!!.second == """{"ok":true}""")
+    check("fx web: any other message with an id is acknowledged, one without is not",
+        FxWebChannel.reply(msg("fxaccounts:something", "m9"))!!.second == """{"ok":true}""" && FxWebChannel.reply(msg("fxaccounts:something")) == null)
+    val ok = FxWebChannel.login(msg("fxaccounts:login", "m", """{"email":"a@b.c","uid":"u","sessionToken":"$tok","verified":true,"keyFetchToken":"k"}"""))
+    check("fx web: the login message gives email and session token", ok != null && ok.email == "a@b.c" && ok.sessionToken == tok && ok.verified)
+    check("fx web: a login that still needs a code is not verified",
+        FxWebChannel.login(msg("fxaccounts:login", "", """{"email":"a@b.c","sessionToken":"$tok","verified":false}"""))!!.verified.not() &&
+        FxWebChannel.login(msg("fxaccounts:login", "", """{"email":"a@b.c","sessionToken":"$tok","verificationReason":"login"}"""))!!.verified.not())
+    check("fx web: a login without a good token or email is refused",
+        FxWebChannel.login(msg("fxaccounts:login", "", """{"email":"a@b.c","sessionToken":"zz"}""")) == null &&
+        FxWebChannel.login(msg("fxaccounts:login", "", """{"email":"nobody","sessionToken":"$tok"}""")) == null &&
+        FxWebChannel.login(msg("fxaccounts:other", "", """{"email":"a@b.c","sessionToken":"$tok"}""")) == null)
+    check("fx web: only Mozilla's account pages may talk to the bridge",
+        FxWebChannel.hostAllowed("accounts.firefox.com") && FxWebChannel.hostAllowed("FIREFOX.com.") && !FxWebChannel.hostAllowed("evil.com") &&
+        !FxWebChannel.hostAllowed("firefox.com.evil.com") && !FxWebChannel.hostAllowed("notfirefox.com") && !FxWebChannel.hostAllowed(null))
+    check("fx web: the WebView stays on Mozilla over https",
+        FxWebChannel.navigationAllowed("https", "accounts.firefox.com") && FxWebChannel.navigationAllowed("https", "support.mozilla.org") &&
+        !FxWebChannel.navigationAllowed("http", "accounts.firefox.com") && !FxWebChannel.navigationAllowed("https", "example.com") &&
+        !FxWebChannel.navigationAllowed("intent", "accounts.firefox.com") && !FxWebChannel.navigationAllowed("https", "mozilla.org.evil.com"))
+    check("fx web: a grant answer gives the tokens",
+        (FxWebChannel.grant(200, """{"access_token":"A","refresh_token":"R","expires_in":86400,"scope":"s"}""") as? FxWebChannel.Grant.Ok)
+            .let { it != null && it.accessToken == "A" && it.refreshToken == "R" && it.expiresIn == 86400 && it.scope == "s" })
+    check("fx web: an unconfirmed session is waited for, other errors are shown",
+        FxWebChannel.grant(400, """{"code":400,"errno":104,"message":"Unconfirmed session"}""") === FxWebChannel.Grant.Unconfirmed &&
+        (FxWebChannel.grant(406, "") as FxWebChannel.Grant.Failed).status == 406 &&
+        (FxWebChannel.grant(200, "{}") is FxWebChannel.Grant.Failed))
+    val patch = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText()
+    check("fx web: the core side builds the grant with its own signing and adds the account, behind the dashboard guard",
+        patch.contains("BrowserOAuthGrant") && patch.contains("hawkHeader(\"POST\"") && patch.contains("/api/ms/browser-grant") &&
+        patch.contains("/api/ms/browser-import") && patch.contains("addSignedInAccount(email, \"\"") && !patch.contains("http.Client") && !patch.contains("http.Get"))
+    val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
+    check("fx web: the bridge checks the page's host and the grant's nonce; cookies are cleared at the end",
+        screen.contains("FxWebChannel.hostAllowed") && screen.contains("n == nonce") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))
+    check("fx web: R8 keeps the bridge methods",
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/proguard-rules.pro").readText().contains("FxBridge { @android.webkit.JavascriptInterface"))
 }
 
 private fun fxLocationTests() {

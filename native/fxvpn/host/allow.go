@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -58,25 +56,4 @@ func hostGuard(name string) error {
 		fmt.Fprintf(os.Stderr, "madshield-fx: refused to contact %q: not a Mozilla host\n", name)
 	}
 	return fmt.Errorf("madshield: %q is not a Mozilla host; it is not contacted", name)
-}
-
-// loopbackProxy cleans the address of the SOCKS5 proxy the user may name for the sign-in page (MFX_UPSTREAM_PROXY):
-// only a proxy on this phone (127.0.0.1, ::1 or localhost) with a port is accepted, so the account's password never
-// leaves for a proxy somewhere else. Anything else gives "".
-func loopbackProxy(v string) string {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(v))
-	if err != nil {
-		return ""
-	}
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return ""
-	}
-	h := strings.ToLower(host)
-	if h == "localhost" {
-		return net.JoinHostPort("localhost", port)
-	}
-	if ip, err := netip.ParseAddr(h); err == nil && ip.IsLoopback() {
-		return net.JoinHostPort(ip.String(), port)
-	}
-	return ""
 }

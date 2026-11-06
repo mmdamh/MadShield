@@ -25,3 +25,7 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# The Foxy sign-in page talks to the app through a WebView JavaScript bridge (ui/FxWebSignIn.kt). The page calls these
+# methods by name, so R8 must not rename or remove them.
+-keep class com.madshield.app.ui.FxBridge { @android.webkit.JavascriptInterface <methods>; }

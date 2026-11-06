@@ -48,6 +48,7 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
     var locations by remember { mutableStateOf<List<FxLocation>?>(null) }
     var signIn by remember { mutableStateOf<FxSignIn?>(null) }
     var signInError by remember { mutableStateOf<String?>(null) }
+    var webSignIn by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
@@ -142,12 +143,6 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                     FxTricks.setHelloSplit(ctx, v)
                     restartPageCore()
                 }
-                if (accounts.isEmpty()) {
-                    // only while no account is signed in: the proxy is for the sign-in, a connection never uses it
-                    SignInProxyCard(saved = remember(reload) { FxTricks.signInProxy(ctx).orEmpty() }, running = connectionRuns) { v ->
-                        FxTricks.setSignInProxy(ctx, v)
-                        restartPageCore()
-                    }
                 }
             }
 
@@ -169,6 +164,7 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                     if (account == null) {
                         SignInCard(
                             signIn = si, error = signInError, busy = busy,
+                            onBrowser = { signInError = null; webSignIn = true },
                             onStart = { email, password ->
                                 signInError = null
                                 scope.launch {
@@ -217,6 +213,13 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
         }
     }
 
+    if (webSignIn) {
+        FxWebSignInDialog(
+            client = { FxSession.ensure(ctx).client() },
+            onDone = { webSignIn = false; scope.launch { try { refresh(withLocations = true) } catch (e: Exception) { signInError = e.message ?: e.javaClass.simpleName } } },
+            onClose = { webSignIn = false }
+        )
+    }
     if (confirmRemove) {
         val id = accounts.firstOrNull()?.id
         AlertDialog(
@@ -251,6 +254,7 @@ private fun SignInCard(
     signIn: FxSignIn?,
     error: String?,
     busy: Boolean,
+    onBrowser: () -> Unit,
     onStart: (String, String) -> Unit,
     onAnswer: (String) -> Unit,
     onCancel: () -> Unit
@@ -258,6 +262,14 @@ private fun SignInCard(
     SectionCard(stringResource(R.string.fx_signin_title)) {
         val step = signIn?.step
         if (signIn == null || step == FxStep.FAILED || step == FxStep.CANCELLED) {
+            // Mozilla's bot check refuses a password sent from the app (HTTP 406); its own page, in a browser engine, passes it
+            Button(enabled = !busy, onClick = onBrowser, modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.fx_web_button)) }
+            HelperText(stringResource(R.string.fx_web_hint))
+            var usePassword by remember { mutableStateOf(false) }
+            if (!usePassword) {
+                TextButton(onClick = { usePassword = true }) { Text(stringResource(R.string.fx_web_password_toggle)) }
+                return@SectionCard
+            }
             var email by remember { mutableStateOf("") }
             var password by remember { mutableStateOf("") }
             OutlinedTextField(
@@ -456,32 +468,6 @@ private fun HelloSplitCard(selected: FxHelloSplit, running: Boolean, onPick: (Fx
             onSelect = onPick
         )
         HelperText(stringResource(R.string.fx_split_sub))
-        if (running) HelperText(stringResource(R.string.fx_split_running))
-    }
-}
-
-/**
- * A SOCKS5 proxy on this phone for the sign-in only (see [FxCoreProcess]): for when Mozilla's edge refuses the network's own
- * address ("Fastly anti-bot challenge ... HTTP 406"). Only 127.x / localhost addresses are taken, so the password never
- * leaves for a proxy somewhere else. Empty means none.
- */
-@Composable
-private fun SignInProxyCard(saved: String, running: Boolean, onApply: (String) -> Unit) {
-    var text by remember(saved) { mutableStateOf(saved) }
-    val parsed = FxVpn.cleanLoopbackProxy(text)
-    val bad = text.isNotBlank() && parsed == null
-    SectionCard(stringResource(R.string.fx_proxy_title)) {
-        HelperText(stringResource(R.string.fx_proxy_sub))
-        OutlinedTextField(
-            value = text, onValueChange = { text = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("127.0.0.1:1819") }, isError = bad,
-            supportingText = if (bad) ({ Text(stringResource(R.string.fx_proxy_bad)) }) else null
-        )
-        Spacer(Modifier.height(8.dp))
-        FilledTonalButton(
-            onClick = { onApply(parsed.orEmpty()) },
-            enabled = !bad && (parsed.orEmpty() != saved)
-        ) { Text(stringResource(if (text.isBlank()) R.string.fx_proxy_clear else R.string.fx_proxy_apply)) }
         if (running) HelperText(stringResource(R.string.fx_split_running))
     }
 }

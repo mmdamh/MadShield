@@ -75,6 +75,26 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
 
     fun signInCancel(id: String) { call("DELETE", "/api/signin/" + enc(id)) }
 
+    /** The OAuth grant request (URL, Authorization header, JSON body) the browser sends for a session token. */
+    class BrowserGrant(val url: String, val authorization: String, val body: String)
+
+    fun browserGrant(sessionToken: String): BrowserGrant {
+        val m = MiniJson.parseObject(call("POST", "/api/ms/browser-grant", json("session_token" to sessionToken))) ?: throw IOException("unreadable grant")
+        val url = m["url"] as? String ?: ""
+        val auth = m["authorization"] as? String ?: ""
+        val body = m["body"] as? String ?: ""
+        if (url.isEmpty() || auth.isEmpty() || body.isEmpty()) throw IOException("unreadable grant")
+        return BrowserGrant(url, auth, body)
+    }
+
+    /** Adds the account the browser signed in, from the OAuth tokens of its grant request. */
+    fun browserImport(email: String, g: FxWebChannel.Grant.Ok) {
+        call("POST", "/api/ms/browser-import", json(
+            "email" to email, "access_token" to g.accessToken, "refresh_token" to g.refreshToken,
+            "scope" to g.scope, "expires_in" to g.expiresIn
+        ), timeoutMs = 25_000)
+    }
+
     fun removeAccount(id: String) { call("DELETE", "/api/accounts/" + enc(id)) }
 
     fun locations(): List<FxLocation> = FxJson.locations(call("GET", "/api/locations", timeoutMs = 25_000)) ?: throw IOException("unreadable locations")
