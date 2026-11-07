@@ -164,10 +164,10 @@ index 0000000..87540af
 +}
 diff --git a/core/internal/fxa/madshield_browser.go b/core/internal/fxa/madshield_browser.go
 new file mode 100644
-index 0000000..1f24159
+index 0000000..00d0fa5
 --- /dev/null
 +++ b/core/internal/fxa/madshield_browser.go
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,429 @@
 +package fxa
 +
 +import (
@@ -201,6 +201,11 @@ index 0000000..1f24159
 +//	           POST oauth.accounts.firefox.com/v1/token (the code and its verifier; no signature)
 +//	challenge  the edge's own client challenge, solved (challenge.go), then token and code once more
 +//
++// Each route is tried as two different clients: first as MadShield itself, the way an app of Mozilla's own says who it is
++// (a short product User-Agent, plain Go TLS and HTTP/2, no browser headers), then as Firefox (its User-Agent, its TLS
++// hello, with and without the headers its page adds). The edge may judge a client by how well its parts agree, and which
++// of the two agrees is not known, so the error keeps what every try answered.
++//
 +// Nothing here solves a challenge or retries without the caller knowing: fxaDo, which does, is not used.
 +
 +const (
@@ -223,6 +228,34 @@ index 0000000..1f24159
 +
 +func (e *StepsError) Error() string { return strings.Join(e.Steps, " | ") }
 +func (e *StepsError) Unwrap() error { return e.Err }
++
++// appUserAgent names MadShield the way Mozilla's own apps name themselves: product, version, system. The Android release
++// is not known to this program, so the common one is named.
++const appUserAgent = "MozillaVPN/2.24.0 (sys:android 14)"
++
++// How a request presents itself.
++const (
++	asApp         = iota // the app User-Agent, Go's own TLS (HTTP/2 when the server takes it)
++	asFirefox            // Firefox's User-Agent and TLS hello
++	asFirefoxPage        // Firefox, with the origin and fetch metadata its own page sends
++)
++
++var appClient = func() *http.Client {
++	return &http.Client{Timeout: 30 * time.Second, Transport: appTransport()}
++}
++
++// appTransport is the control plane's own transport (its resolver, its relay if one is set) without the Firefox TLS hello,
++// so Go's own handshake runs and net/http can speak HTTP/2.
++func appTransport() http.RoundTripper {
++	base := controlplane.Transport()
++	if t, ok := base.(*http.Transport); ok {
++		c := t.Clone()
++		c.DialTLSContext = nil
++		c.ForceAttemptHTTP2 = true
++		return c
++	}
++	return base
++}
 +
 +// hexHawk is set when the server refused the base64 signature and took the hex one (this program's older form).
 +var hexHawk atomic.Bool
@@ -259,8 +292,8 @@ index 0000000..1f24159
 +}
 +
 +// send sends body (JSON, may be empty) to target, signed with the session's Hawk credentials when hawkID is not empty.
-+// web adds what Firefox's own page sends with such a request (its origin and the fetch metadata).
-+func send(ctx context.Context, method, target string, body []byte, hawkID string, hawkKey []byte, web bool) (*answer, error) {
++// who says how the request presents itself (asApp, asFirefox, asFirefoxPage).
++func send(ctx context.Context, method, target string, body []byte, hawkID string, hawkKey []byte, who int) (*answer, error) {
 +	flip := false
 +	for {
 +		req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(string(body)))
@@ -270,8 +303,14 @@ index 0000000..1f24159
 +		if len(body) > 0 {
 +			req.Header.Set("Content-Type", "application/json")
 +		}
-+		controlplane.ApplyFirefoxHeaders(req)
-+		if web {
++		if who == asApp {
++			req.Header.Set("User-Agent", appUserAgent)
++			req.Header.Set("Accept", "*/*")
++			req.Header.Set("Accept-Encoding", "identity")
++		} else {
++			controlplane.ApplyFirefoxHeaders(req)
++		}
++		if who == asFirefoxPage {
 +			req.Header.Set("Origin", "https://accounts.firefox.com")
 +			req.Header.Set("Referer", "https://accounts.firefox.com/")
 +			req.Header.Set("Accept", "*/*")
@@ -292,7 +331,12 @@ index 0000000..1f24159
 +			}
 +			req.Header.Set("Authorization", header)
 +		}
-+		resp, err := controlplane.Do(req)
++		var resp *http.Response
++		if who == asApp {
++			resp, err = appClient().Do(req)
++		} else {
++			resp, err = controlplane.Do(req)
++		}
 +		if err != nil {
 +			return nil, err
 +		}
@@ -352,10 +396,21 @@ index 0000000..1f24159
 +// route is one way of getting the tokens. It returns the tokens; or refused (the edge answered 406); or an error.
 +type route func(ctx context.Context, hawkID string, hawkKey []byte, note func(string)) (tok *TokenResponse, refused bool, err error)
 +
-+func withWeb(r func(context.Context, string, []byte, func(string), bool) (*TokenResponse, bool, error), web bool) route {
++func as(r func(context.Context, string, []byte, func(string), int) (*TokenResponse, bool, error), who int) route {
 +	return func(ctx context.Context, id string, key []byte, note func(string)) (*TokenResponse, bool, error) {
-+		return r(ctx, id, key, note, web)
++		return r(ctx, id, key, note, who)
 +	}
++}
++
++// whoLabel is how a step of the error names the client it was sent as.
++func whoLabel(who int) string {
++	switch who {
++	case asApp:
++		return "app "
++	case asFirefoxPage:
++		return "page "
++	}
++	return ""
 +}
 +
 +func readTokens(a *answer) (*TokenResponse, error) {
@@ -375,13 +430,10 @@ index 0000000..1f24159
 +}
 +
 +// tokenRoute is POST /v1/oauth/token with the fxa-credentials grant.
-+func tokenRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), web bool) (*TokenResponse, bool, error) {
-+	label := "token"
-+	if web {
-+		label = "token+page headers"
-+	}
++func tokenRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), who int) (*TokenResponse, bool, error) {
++	label := whoLabel(who) + "token"
 +	body, _ := json.Marshal(grantBody{ClientID: firefoxClientID, GrantType: "fxa-credentials", Scope: oauthScope, AccessType: "offline"})
-+	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/token", body, hawkID, hawkKey, web)
++	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/token", body, hawkID, hawkKey, who)
 +	if err != nil {
 +		note(label + ": " + networkText(err))
 +		return nil, false, nil
@@ -398,11 +450,8 @@ index 0000000..1f24159
 +}
 +
 +// codeRoute asks the account API for an authorization code (PKCE, S256) and exchanges it at the OAuth server.
-+func codeRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), web bool) (*TokenResponse, bool, error) {
-+	label := "authorization"
-+	if web {
-+		label = "authorization+page headers"
-+	}
++func codeRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), who int) (*TokenResponse, bool, error) {
++	label := whoLabel(who) + "authorization"
 +	var secret [32]byte
 +	var stateBytes [16]byte
 +	if _, err := rand.Read(secret[:]); err != nil {
@@ -419,7 +468,7 @@ index 0000000..1f24159
 +		ClientID: firefoxClientID, ResponseType: "code", Scope: oauthScope, State: state, AccessType: "offline",
 +		CodeChallenge: base64.RawURLEncoding.EncodeToString(sum[:]), CodeChallengeMethod: "S256",
 +	})
-+	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/authorization", body, hawkID, hawkKey, web)
++	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/authorization", body, hawkID, hawkKey, who)
 +	if err != nil {
 +		note(label + ": " + networkText(err))
 +		return nil, false, nil
@@ -440,12 +489,12 @@ index 0000000..1f24159
 +	}
 +
 +	body, _ = json.Marshal(codeBody{ClientID: firefoxClientID, GrantType: "authorization_code", Code: granted.Code, CodeVerifier: verifier})
-+	a, err = send(ctx, http.MethodPost, browserOAuthTokenURL, body, "", nil, web)
++	a, err = send(ctx, http.MethodPost, browserOAuthTokenURL, body, "", nil, who)
 +	if err != nil {
-+		note("code exchange: " + networkText(err))
++		note(whoLabel(who) + "code exchange: " + networkText(err))
 +		return nil, false, nil
 +	}
-+	note("code exchange " + describe(a))
++	note(whoLabel(who) + "code exchange " + describe(a))
 +	switch {
 +	case a.status == http.StatusOK:
 +		tok, err := readTokens(a)
@@ -492,7 +541,7 @@ index 0000000..1f24159
 +			}
 +			note("challenge solved")
 +		}
-+		for _, r := range []route{withWeb(tokenRoute, false), withWeb(codeRoute, false), withWeb(tokenRoute, true), withWeb(codeRoute, true)} {
++		for _, r := range []route{as(tokenRoute, asApp), as(codeRoute, asApp), as(tokenRoute, asFirefox), as(codeRoute, asFirefox), as(tokenRoute, asFirefoxPage), as(codeRoute, asFirefoxPage)} {
 +			tok, refused, err := r(ctx, hawkID, hawkKey, note)
 +			if ctx.Err() != nil {
 +				return nil, ctx.Err()
@@ -518,12 +567,24 @@ index 0000000..1f24159
 +		if ctx.Err() != nil {
 +			return
 +		}
-+		a, err := send(ctx, method, fxaAuthServer+path, body, hawkID, hawkKey, true)
++		a, err := send(ctx, method, fxaAuthServer+path, body, hawkID, hawkKey, asFirefoxPage)
 +		if err != nil {
 +			note("probe " + name + ": " + networkText(err))
 +			return
 +		}
 +		note("probe " + name + " " + describe(a))
++	}
++	// The same two as the app: whether the app's way of presenting itself is let through anywhere at all.
++	for _, p := range []struct{ name, path string }{{"app session status", "/session/status"}, {"app empty grant", "/oauth/token"}} {
++		method, body := http.MethodGet, []byte(nil)
++		if p.path == "/oauth/token" {
++			method, body = http.MethodPost, []byte("{}")
++		}
++		if a, err := send(ctx, method, fxaAuthServer+p.path, body, hawkID, hawkKey, asApp); err != nil {
++			note("probe " + p.name + ": " + networkText(err))
++		} else {
++			note("probe " + p.name + " " + describe(a))
++		}
 +	}
 +	probe("session status", http.MethodGet, "/session/status", nil)
 +	probe("empty grant", http.MethodPost, "/oauth/token", []byte("{}"))
