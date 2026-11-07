@@ -64,7 +64,6 @@ import java.util.Locale
 fun HomeScreen(
     config: EngineConfig,
     connectionState: ConnectionState,
-    onSetMode: (ConnectionMode) -> Unit,
     onUpdate: ((EngineConfig) -> EngineConfig) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
@@ -94,18 +93,6 @@ fun HomeScreen(
             }
         }
         Spacer(Modifier.height(12.dp))
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            PillToggle(
-                options = listOf(
-                    stringResource(R.string.mode_proxy) to ConnectionMode.PROXY_ONLY,
-                    stringResource(R.string.mode_vpn) to ConnectionMode.VPN
-                ),
-                selected = config.mode,
-                // Switching mode while a session exists would orphan it; only allowed when idle/failed.
-                enabled = connectionState is ConnectionState.Idle || connectionState is ConnectionState.Error,
-                onSelect = onSetMode
-            )
-        }
         // update28: the connection engine. Only offered when this build carries the Foxy core.
         val homeCtx = LocalContext.current
         if (remember { FxRuntime.isInBuild(homeCtx) }) {

@@ -127,6 +127,22 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
             Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // The place to exit from is the thing used most, so it comes first (once an account is signed in).
+            if (inBuild && !loading && fatal == null && accounts.isNotEmpty()) {
+                LocationCard(
+                    locations = locations,
+                    selected = status?.selection ?: "",
+                    busy = busy,
+                    onPick = { code ->
+                        launchCall { it.setLocation(code) }
+                        // show the choice at once; the next status read confirms it
+                        status = status?.copy(selection = code)
+                    }
+                )
+                status?.takeIf { it.exitCountry.isNotEmpty() }?.let {
+                    HelperText(stringResource(R.string.fx_exit_now, listOf(it.exitCity, it.exitCountry).filter { s -> s.isNotEmpty() }.joinToString(", ")))
+                }
+            }
             InfoHint(stringResource(R.string.fx_intro))
             InfoHint(stringResource(R.string.fx_privacy))
             if (inBuild) {
@@ -191,19 +207,6 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                         )
                     } else {
                         AccountCard(account, status, onRemove = { confirmRemove = true })
-                        LocationCard(
-                            locations = locations,
-                            selected = status?.selection ?: "",
-                            busy = busy,
-                            onPick = { code ->
-                                launchCall { it.setLocation(code) }
-                                // show the choice at once; the next status read confirms it
-                                status = status?.copy(selection = code)
-                            }
-                        )
-                        status?.takeIf { it.exitCountry.isNotEmpty() }?.let {
-                            HelperText(stringResource(R.string.fx_exit_now, listOf(it.exitCity, it.exitCountry).filter { s -> s.isNotEmpty() }.joinToString(", ")))
-                        }
                         if (FxRuntime.endpoint != null && !FxSession.ownsCore) HelperText(stringResource(R.string.fx_vpn_running_note))
                     }
                 }

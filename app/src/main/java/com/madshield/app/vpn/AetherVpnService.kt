@@ -141,6 +141,8 @@ class AetherVpnService : VpnService() {
         scope.launch { screen.screenOn.collect { on -> sampleUsage(!on) } }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
         scope.launch { settingsStore.configFlow.map { it.udpEffective }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
+        // Foxy: Block <-> Direct for the ports Mozilla does not carry is applied at once, without a reconnect.
+        scope.launch { settingsStore.configFlow.map { it.fxPortPolicy }.distinctUntilChanged().collect { engine.applyFxPortPolicy(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the tunnel stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }

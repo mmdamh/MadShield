@@ -64,6 +64,8 @@ class ProxyOnlyService : Service() {
         InsightHub.closeAllConnections = { engine.closeAllConnections() }
         // UDP Support is applied live when a front runs (see EngineProcessManager.applyUdpEnabled); otherwise at the next connection.
         scope.launch { settingsStore.configFlow.map { it.udpEffective }.distinctUntilChanged().collect { engine.applyUdpEnabled(it) } }
+        // Foxy: Block <-> Direct for the ports Mozilla does not carry is applied at once, without a reconnect.
+        scope.launch { settingsStore.configFlow.map { it.fxPortPolicy }.distinctUntilChanged().collect { engine.applyFxPortPolicy(it) } }
         // Live switch between saved custom links: only sing-box is replaced, the proxy stays up (see ChainLinkSwapper).
         chainSwapper = ChainLinkSwapper(engine, settingsStore)
         scope.launch { AetherController.linkSwapRequests.collect { chainSwapper.reconcile() } }

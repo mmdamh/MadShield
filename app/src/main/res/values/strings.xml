@@ -24,6 +24,12 @@
     <string name="action_clear">Clear</string>
     <string name="copied">Copied</string>
     <string name="mode_proxy">Proxy</string>
+    <string name="sec_mode">Connection mode</string>
+    <string name="mode_locked">Disconnect first to change the mode.</string>
+    <string name="reconnect_title">Apply the change?</string>
+    <string name="reconnect_body">This change takes effect after a reconnect. The connection drops for a few seconds.</string>
+    <string name="reconnect_now">Reconnect now</string>
+    <string name="reconnect_later">Later</string>
     <string name="mode_vpn">VPN</string>
     <string name="status_idle">Not connected</string>
     <string name="status_connecting">Connecting…</string>
@@ -503,6 +509,8 @@
     <string name="usage_total_range">Total in this period: %1$s</string>
     <string name="usage_routes">Where today went</string>
     <string name="usage_routes_none">The split between VPN, direct and blocked appears when the app\'s routing is on.</string>
+    <string name="usage_blocked_range">Blocked in this period: %1$d</string>
+    <string name="usage_blocked_month">Blocked requests, last 30 days  %1$d</string>
     <string name="usage_blocked_requests">Blocked requests  %1$d</string>
     <string name="usage_privacy">Only byte totals per day are stored, on this phone. No sites, no DNS requests, no apps. Counted while the VPN is connected.</string>
     <string name="usage_reset">Reset usage</string>

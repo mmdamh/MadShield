@@ -90,6 +90,8 @@ class EngineProcessManager(private val context: Context) {
         private set
     /** Why the Firefox core could not be brought up (power-on failed or its API never answered); null when nothing is known. */
     @Volatile private var fxNote: String? = null
+    /** The running Foxy connection's port gate, so Block <-> Direct can change without a restart. */
+    @Volatile private var fxGate: PortGate? = null
 
     /** This connection runs the Foxy engine. */
     val isFirefox: Boolean get() = fx != null
@@ -355,6 +357,7 @@ class EngineProcessManager(private val context: Context) {
         }
         // Mozilla's proxy carries only a few TCP ports: the rest is blocked or sent direct, as the user chose.
         val portGate = PortGate(FxVpn.ALLOWED_TCP_PORTS, config.fxPortPolicy.action)
+        fxGate = portGate
         // DoH resolvers are built BEFORE anything is launched, so a bad setting can never leave a process behind.
         val options: RouteFront.Options = if (!plan.localDoh) {
             RouteFront.Options(udpCapable = false, udpOn = false, guardFakeIps = config.mode == ConnectionMode.VPN, portGate = portGate)
@@ -412,6 +415,7 @@ class EngineProcessManager(private val context: Context) {
     private fun stopFirefox() {
         val p = fx ?: return
         fx = null
+        fxGate = null
         probeAuth = null
         UpstreamLogin.clear()
         if (FxRuntime.endpoint === p.endpoint) FxRuntime.endpoint = null
@@ -756,6 +760,16 @@ class EngineProcessManager(private val context: Context) {
     fun applyUdpEnabled(on: Boolean): Boolean {
         val f = front ?: return false
         f.setUdpEnabled(on)
+        return true
+    }
+
+    /**
+     * Foxy: the policy for ports Mozilla does not carry changed while connected. True = applied now (the gate lives in the
+     * routing front, so the next connection already follows it; nothing restarts). False = no Foxy connection runs.
+     */
+    fun applyFxPortPolicy(policy: FxPortPolicy): Boolean {
+        val g = fxGate ?: return false
+        g.otherwise = policy.action
         return true
     }
 

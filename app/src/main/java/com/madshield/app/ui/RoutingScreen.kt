@@ -59,6 +59,24 @@ fun RoutingScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         PageHeader(stringResource(R.string.nav_routing), stringResource(R.string.routing_subtitle))
+        // ---------------------------------------------------------------- how the phone is connected (moved off Home)
+        SectionCard(stringResource(R.string.sec_mode)) {
+            val idle = connectionState is com.madshield.app.core.ConnectionState.Idle ||
+                connectionState is com.madshield.app.core.ConnectionState.Error
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                PillToggle(
+                    options = listOf(
+                        stringResource(R.string.mode_proxy) to ConnectionMode.PROXY_ONLY,
+                        stringResource(R.string.mode_vpn) to ConnectionMode.VPN
+                    ),
+                    selected = config.mode,
+                    // Switching while a session exists would orphan it; only allowed when idle/failed.
+                    enabled = idle,
+                    onSelect = { m -> onUpdate { it.copy(mode = m) } }
+                )
+            }
+            if (!idle) HelperText(stringResource(R.string.mode_locked))
+        }
         // ---------------------------------------------------------------- protocol
         SectionCard(stringResource(R.string.sec_protocol)) {
             SegmentedChoice(

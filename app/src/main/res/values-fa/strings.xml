@@ -24,6 +24,12 @@
     <string name="action_clear">پاک کردن</string>
     <string name="copied">کپی شد</string>
     <string name="mode_proxy">پروکسی</string>
+    <string name="sec_mode">حالت اتصال</string>
+    <string name="mode_locked">برای تغییر حالت، اول قطع کنید.</string>
+    <string name="reconnect_title">اعمال تغییر؟</string>
+    <string name="reconnect_body">این تغییر بعد از اتصال دوباره اعمال می‌شود. اتصال چند ثانیه قطع می‌شود.</string>
+    <string name="reconnect_now">اتصال دوباره</string>
+    <string name="reconnect_later">بعداً</string>
     <string name="mode_vpn">وی‌پی‌ان</string>
     <string name="status_idle">متصل نیستید</string>
     <string name="status_connecting">در حال اتصال…</string>
@@ -501,6 +507,8 @@
     <string name="usage_total_range">مجموع این بازه: %1$s</string>
     <string name="usage_routes">امروز از کجا رد شد</string>
     <string name="usage_routes_none">تقسیم VPN، مستقیم و مسدود وقتی دیده می‌شود که مسیریابی داخلی برنامه روشن باشد.</string>
+    <string name="usage_blocked_range">مسدود در این بازه: %1$d</string>
+    <string name="usage_blocked_month">درخواست‌های مسدود، ۳۰ روز اخیر  %1$d</string>
     <string name="usage_blocked_requests">درخواست‌های مسدود  %1$d</string>
     <string name="usage_privacy">فقط مجموع بایت‌ها در هر روز و روی همین گوشی ذخیره می‌شود. نه سایت، نه درخواست DNS، نه برنامه. فقط وقتی VPN وصل است شمرده می‌شود.</string>
     <string name="usage_reset">بازنشانی مصرف</string>

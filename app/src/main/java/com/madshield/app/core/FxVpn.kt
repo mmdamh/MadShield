@@ -39,7 +39,9 @@ enum class FxPortPolicy(val stored: String, val action: RouteAction) {
  * The route a connection really takes once the ports Mozilla refuses are considered: a connection that would go through
  * the VPN to a port outside [allowed] takes [otherwise] instead; everything else (a block or direct RULE) is untouched.
  */
-class PortGate(val allowed: Set<Int>, val otherwise: RouteAction) {
+class PortGate(val allowed: Set<Int>, otherwise: RouteAction) {
+    /** Changed while connected (Block <-> Direct): the next connection follows it, nothing is restarted. */
+    @Volatile var otherwise: RouteAction = otherwise
     fun decide(action: RouteAction, port: Int): RouteAction = if (action == RouteAction.PROXY && port !in allowed) otherwise else action
 }
 

@@ -1971,6 +1971,34 @@ fun fxTests() {
     fxLocationTests()
     fxSplitTests()
     fxWebTests()
+    liveApplyTests()
+}
+
+// update37: what applies at once and what asks for a reconnect
+private fun liveApplyTests() {
+    val base = EngineConfig()
+    val gate = PortGate(setOf(80, 443), RouteAction.BLOCK)
+    check("live: the port gate follows a changed policy at once", gate.decide(RouteAction.PROXY, 25) == RouteAction.BLOCK)
+    gate.otherwise = RouteAction.DIRECT
+    check("live: Block -> Direct is taken by the next connection, rules are untouched",
+        gate.decide(RouteAction.PROXY, 25) == RouteAction.DIRECT && gate.decide(RouteAction.PROXY, 443) == RouteAction.PROXY &&
+        gate.decide(RouteAction.BLOCK, 25) == RouteAction.BLOCK)
+    check("reconnect: nothing changed -> same key", base.restartKey() == EngineConfig().restartKey())
+    check("reconnect: Foxy port policy never asks for a reconnect",
+        base.copy(engineKind = EngineKind.FIREFOX).restartKey() == base.copy(engineKind = EngineKind.FIREFOX, fxPortPolicy = FxPortPolicy.DIRECT).restartKey())
+    check("reconnect: UDP Support, notification options never ask for one",
+        base.restartKey() == base.copy(udpEnabled = false, notifSpeed = false, liveUpdate = true).restartKey())
+    check("reconnect: a different profile, protocol, rule or app choice asks",
+        base.restartKey() != base.copy(protocol = Protocol.MASQUE_H2, privacyChain = PrivacyChain.TOR).restartKey() &&
+        base.restartKey() != base.copy(directRules = listOf("example.com")).restartKey() &&
+        base.restartKey() != base.copy(appSelectionMode = AppSelectionMode.EXCLUDE_SELECTED).restartKey() &&
+        base.restartKey() != base.copy(engineKind = EngineKind.FIREFOX).restartKey())
+    check("reconnect: a Psiphon country alone (chain not Psiphon) does not ask; with Psiphon it does",
+        base.restartKey() == base.copy(psiphonRegion = "DE").restartKey() &&
+        base.copy(protocol = Protocol.MASQUE_H2, privacyChain = PrivacyChain.PSIPHON).restartKey() !=
+            base.copy(protocol = Protocol.MASQUE_H2, privacyChain = PrivacyChain.PSIPHON, psiphonRegion = "DE").restartKey())
+    check("reconnect: WARP-only knobs do not ask while Foxy runs",
+        base.copy(engineKind = EngineKind.FIREFOX).restartKey() == base.copy(engineKind = EngineKind.FIREFOX, scanMode = "thorough", noizeProfile = "off").restartKey())
 }
 
 private fun fxSplitTests() {

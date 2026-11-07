@@ -15,6 +15,9 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.getBottom
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBars
@@ -23,6 +26,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -35,6 +39,7 @@ import com.madshield.app.ui.theme.MadShieldTheme
 import com.madshield.app.ui.theme.DarkMode
 import com.madshield.app.ui.theme.UiPrefs
 import com.madshield.app.vpn.AetherVpnService
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -163,7 +168,50 @@ class MainActivity : ComponentActivity() {
                 val connectionState by AetherController.state.collectAsState()
                 var tab by rememberSaveable { mutableStateOf(Tab.Home) }
 
-                NavHost(nav, startDestination = "main") {
+                // "Reconnect to apply": what the running connection was started with. A change the engine reads only while
+                // it starts (see RestartKey) asks once, a moment after the last edit; "Later" keeps quiet until the next change.
+                var applied by remember { mutableStateOf<com.madshield.app.core.RestartKey?>(null) }
+                var laterKey by remember { mutableStateOf<com.madshield.app.core.RestartKey?>(null) }
+                var askReconnect by remember { mutableStateOf(false) }
+                val nowKey = remember(config) { config.restartKey() }
+                LaunchedEffect(connectionState) {
+                    when (connectionState) {
+                        is ConnectionState.Connecting -> { applied = settingsStore.configFlow.first().restartKey(); laterKey = null }
+                        is ConnectionState.Connected -> if (applied == null) applied = settingsStore.configFlow.first().restartKey()
+                        is ConnectionState.Idle, is ConnectionState.Error -> { applied = null; laterKey = null; askReconnect = false }
+                        else -> {}
+                    }
+                }
+                LaunchedEffect(nowKey, applied, laterKey, connectionState) {
+                    val a = applied
+                    if (a != null && connectionState is ConnectionState.Connected && nowKey != a && nowKey != laterKey) {
+                        kotlinx.coroutines.delay(1_500)
+                        askReconnect = true
+                    } else {
+                        askReconnect = false
+                    }
+                }
+                if (askReconnect) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { laterKey = nowKey; askReconnect = false },
+                        title = { androidx.compose.material3.Text(androidx.compose.ui.res.stringResource(R.string.reconnect_title)) },
+                        text = { androidx.compose.material3.Text(androidx.compose.ui.res.stringResource(R.string.reconnect_body)) },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(onClick = { askReconnect = false; reconnect(config) }) {
+                                androidx.compose.material3.Text(androidx.compose.ui.res.stringResource(R.string.reconnect_now))
+                            }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(onClick = { laterKey = nowKey; askReconnect = false }) {
+                                androidx.compose.material3.Text(androidx.compose.ui.res.stringResource(R.string.reconnect_later))
+                            }
+                        }
+                    )
+                }
+
+                // Edge-to-edge: the window is not resized for the keyboard, so every screen is padded by the
+                // keyboard's height here, once. Fields at the bottom of a page then stay visible and scroll into view.
+                NavHost(nav, startDestination = "main", modifier = Modifier.imePadding()) {
                     composable("main") {
                         val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
                         val padding = PaddingValues(top = top)
@@ -173,7 +221,6 @@ class MainActivity : ComponentActivity() {
                                     Tab.Home -> HomeScreen(
                                         config = config,
                                         connectionState = connectionState,
-                                        onSetMode = { m -> updateConfig { it.copy(mode = m) } },
                                         onUpdate = { t -> updateConfig(t) },
                                         onConnect = { requestConnect(config) },
                                         onDisconnect = { disconnect(config) },
@@ -208,7 +255,9 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             }
-                            Box(Modifier.align(Alignment.BottomCenter)) {
+                            // The floating bar would ride on top of the keyboard, so it hides while typing.
+                            val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+                            if (!keyboardOpen) Box(Modifier.align(Alignment.BottomCenter)) {
                                 FloatingNavBar(current = tab, onSelect = { tab = it })
                             }
                         }
@@ -273,6 +322,17 @@ class MainActivity : ComponentActivity() {
             vpnPermissionLauncher.launch(prepareIntent)
         } else {
             startForegroundService(Intent(this, AetherVpnService::class.java).setAction(AetherVpnService.ACTION_CONNECT))
+        }
+    }
+
+    /** Stops the running connection and starts it again with what is saved now. */
+    private fun reconnect(config: EngineConfig) {
+        lifecycleScope.launch {
+            disconnect(config)
+            kotlinx.coroutines.withTimeoutOrNull(12_000) {
+                AetherController.state.first { it is ConnectionState.Idle || it is ConnectionState.Error }
+            }
+            requestConnect(settingsStore.configFlow.first())
         }
     }
 

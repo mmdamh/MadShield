@@ -85,8 +85,15 @@ fun UsageScreen(onBack: () -> Unit) {
                 ) { range = it; picked = null }
                 Spacer(Modifier.height(12.dp))
                 val sel = data.indexOfFirst { it.day == picked }.takeIf { it >= 0 }
-                BarChart(data, sel, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary) { i ->
+                val vpnColor = routeColor(com.madshield.app.core.RouteAction.PROXY)
+                val directColor = routeColor(com.madshield.app.core.RouteAction.DIRECT)
+                BarChart(data, sel, vpnColor, directColor, MaterialTheme.colorScheme.outlineVariant) { i ->
                     picked = if (data[i].day == picked) null else data[i].day
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Legend(vpnColor, stringResource(R.string.route_vpn))
+                    Legend(directColor, stringResource(R.string.route_direct))
                 }
                 Spacer(Modifier.height(8.dp))
                 val d = sel?.let { data[it] }
@@ -107,11 +114,23 @@ fun UsageScreen(onBack: () -> Unit) {
                         Legend(MaterialTheme.colorScheme.primary, stringResource(R.string.usage_wifi) + "  " + formatBytes(d.wifi))
                         Legend(MaterialTheme.colorScheme.secondary, stringResource(R.string.usage_mobile) + "  " + formatBytes(d.mobile))
                     }
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Legend(vpnColor, stringResource(R.string.route_vpn) + "  " + formatBytes(d.vpn))
+                        Legend(directColor, stringResource(R.string.route_direct) + "  " + formatBytes(d.direct))
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Legend(routeColor(com.madshield.app.core.RouteAction.BLOCK), stringResource(R.string.usage_blocked_requests, d.blocked))
                 }
                 Spacer(Modifier.height(8.dp))
                 val sum = data.fold(0L) { a, d -> a + d.total }
                 Text(
                     stringResource(R.string.usage_total_range, formatBytes(sum)),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    stringResource(R.string.usage_blocked_range, data.fold(0L) { a, d -> a + d.blocked }),
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -129,6 +148,10 @@ fun UsageScreen(onBack: () -> Unit) {
                     Spacer(Modifier.height(4.dp))
                     Legend(routeColor(com.madshield.app.core.RouteAction.BLOCK), stringResource(R.string.usage_blocked_requests, t.blocked))
                 }
+                // The monthly figure: the last 30 days, whatever range the chart above shows.
+                val month = (29 downTo 0).fold(0L) { a, i -> a + l.get(today.minusDays(i.toLong()).toString()).blocked }
+                Spacer(Modifier.height(8.dp))
+                Legend(routeColor(com.madshield.app.core.RouteAction.BLOCK), stringResource(R.string.usage_blocked_month, month))
             }
 
             HelperText(stringResource(R.string.usage_privacy))
@@ -184,10 +207,14 @@ private fun SplitBar(a: Long, b: Long, ca: Color, cb: Color) {
     }
 }
 
-/** Per-day stacked bars: download below, upload on top. A tap on a bar (or the space above it) selects that day. */
+/**
+ * Per-day stacked bars: what went through the VPN below, what went direct on top, and (only when the day has more
+ * traffic than the routing front counted, e.g. an older day) the remainder in a neutral colour. A tap on a bar (or
+ * the space above it) selects that day.
+ */
 @Composable
-private fun BarChart(days: List<DayUsage>, selected: Int?, down: Color, up: Color, onTap: (Int) -> Unit) {
-    val max = (days.maxOfOrNull { it.total } ?: 0L).coerceAtLeast(1L).toFloat()
+private fun BarChart(days: List<DayUsage>, selected: Int?, vpn: Color, direct: Color, rest: Color, onTap: (Int) -> Unit) {
+    val max = (days.maxOfOrNull { maxOf(it.total, it.vpn + it.direct) } ?: 0L).coerceAtLeast(1L).toFloat()
     val baseline = MaterialTheme.colorScheme.outlineVariant
     val n = days.size
     val tap by rememberUpdatedState(onTap) // the gesture block below is not restarted, so it must not keep an old lambda
@@ -204,12 +231,15 @@ private fun BarChart(days: List<DayUsage>, selected: Int?, down: Color, up: Colo
         days.forEachIndexed { i, d ->
             val x = i * (w + gap)
             val dim = if (selected == null || selected == i) 1f else 0.35f
-            val hd = size.height * (d.down / max)
-            val hu = size.height * (d.up / max)
-            if (hd > 0f) drawRect(down.copy(alpha = dim), Offset(x, size.height - hd), Size(w, hd))
-            if (hu > 0f) drawRect(up.copy(alpha = dim), Offset(x, size.height - hd - hu), Size(w, hu))
+            val hv = size.height * (d.vpn / max)
+            val hd = size.height * (d.direct / max)
+            val hr = size.height * (maxOf(d.total - d.vpn - d.direct, 0L) / max)
+            var y = size.height
+            if (hv > 0f) { y -= hv; drawRect(vpn.copy(alpha = dim), Offset(x, y), Size(w, hv)) }
+            if (hd > 0f) { y -= hd; drawRect(direct.copy(alpha = dim), Offset(x, y), Size(w, hd)) }
+            if (hr > 0f) { y -= hr; drawRect(rest.copy(alpha = dim), Offset(x, y), Size(w, hr)) }
             // A day with no data still gets a thin tick, so it can be tapped and read as "0".
-            if (hd <= 0f && hu <= 0f) drawRect(baseline, Offset(x, size.height - 2.dp.toPx()), Size(w, 2.dp.toPx()))
+            if (hv <= 0f && hd <= 0f && hr <= 0f) drawRect(baseline, Offset(x, size.height - 2.dp.toPx()), Size(w, 2.dp.toPx()))
         }
     }
 }
