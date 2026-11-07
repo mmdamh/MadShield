@@ -610,6 +610,7 @@
     <string name="fx_web_confirm">Confirm the sign-in (code or link), then wait here.</string>
     <string name="fx_web_finishing">Finishing the sign-in…</string>
     <string name="fx_web_failed">Could not finish the sign-in: %1$s</string>
+    <string name="fx_web_blocked">Mozilla's security check refused to give this app the account's token from this network. What each step answered:</string>
     <string name="fx_web_retry">Try again</string>
     <string name="fx_web_close">Close</string>
     <string name="fx_web_reload">Reload the page</string>

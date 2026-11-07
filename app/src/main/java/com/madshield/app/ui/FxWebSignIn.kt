@@ -98,6 +98,7 @@ internal class FxBridge(private val view: WebView, private val events: BridgeEve
 @Composable
 fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val blockedText = stringResource(R.string.fx_web_blocked)
     var webView by remember { mutableStateOf<WebView?>(null) }
     var progress by remember { mutableIntStateOf(0) }
     var login by remember { mutableStateOf<FxWebChannel.Login?>(null) }
@@ -129,13 +130,14 @@ fun FxWebSignInDialog(client: () -> FxClient, onDone: () -> Unit, onClose: () ->
                 running = id
                 while (!finished && running == id && login?.sessionToken == l.sessionToken) {
                     val s = withContext(Dispatchers.IO) { client().signInGet(id) }
-                    waitingConfirm = s.step == FxStep.WORKING && s.message.contains("confirmed", ignoreCase = true)
+                    waitingConfirm = s.step == FxStep.WORKING && s.errorCode == "waiting_confirm"
                     when (s.step) {
                         FxStep.DONE -> { finished = true; running = null; onDone(); return@launch }
                         FxStep.FAILED, FxStep.CANCELLED -> {
                             running = null
                             finishing = false
-                            error = listOf(s.message, s.error).filter { it.isNotBlank() }.joinToString(": ").ifEmpty { "failed" }
+                            error = if (s.errorCode == "blocked") "$blockedText\n${s.error}"
+                            else listOf(s.error, s.message).firstOrNull { it.isNotBlank() } ?: "failed"
                             return@launch
                         }
                         else -> delay(1_000)

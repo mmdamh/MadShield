@@ -1,5 +1,5 @@
 // madshield-fx is the small program MadShield runs for its "Firefox VPN" engine. It is built inside the module of
-// armanlife/arman-vpn-client (core/), at the commit in native/fxvpn.pin, because it uses that module's internal
+// armanlife/firefox-vpn-client (core/), at the commit in native/fxvpn.pin, because it uses that module's internal
 // packages: CI copies this folder to core/cmd/madshield-fx/ and builds it as a static linux/arm64 ELF.
 //
 // It does what the project's own phone build does (core/mobile/mobile.go), as a separate process instead of a library:
@@ -41,12 +41,12 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/armanlife/arman-vpn-client/core/internal/config"
-	"github.com/armanlife/arman-vpn-client/core/internal/guardian"
-	"github.com/armanlife/arman-vpn-client/core/internal/hellosplit"
-	"github.com/armanlife/arman-vpn-client/core/internal/netcheck"
-	"github.com/armanlife/arman-vpn-client/core/internal/resolver"
-	"github.com/armanlife/arman-vpn-client/core/internal/service"
+	"github.com/armanlife/firefox-vpn-client/core/internal/config"
+	"github.com/armanlife/firefox-vpn-client/core/internal/guardian"
+	"github.com/armanlife/firefox-vpn-client/core/internal/hellosplit"
+	"github.com/armanlife/firefox-vpn-client/core/internal/netcheck"
+	"github.com/armanlife/firefox-vpn-client/core/internal/resolver"
+	"github.com/armanlife/firefox-vpn-client/core/internal/service"
 )
 
 // extraRoots: root certificates Mozilla's servers chain to that older Android stores lack (the same file the project's
@@ -166,7 +166,6 @@ func applyEnv(path string) error {
 	// would see the tokens, no second proxy in front, no system proxy, no TUN of the core's own.
 	cfg.Routing.Enabled = false
 	cfg.Network.APIRelay = ""
-	cfg.Network.APIRelayEnabled = false
 	cfg.Network.GuardianEndpoint = guardian.DefaultEndpoint // the account's token goes to Mozilla's service only
 	cfg.Proxy.Server = ""                                   // the server is chosen from Mozilla's list by country
 	cfg.Network.UpstreamProxyEnabled = false

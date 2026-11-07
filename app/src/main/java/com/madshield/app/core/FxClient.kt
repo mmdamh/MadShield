@@ -76,12 +76,12 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
     fun signInCancel(id: String) { call("DELETE", "/api/signin/" + enc(id)) }
 
     /**
-     * Adds the account a browser sign-in (the WebView on Mozilla's page) captured: the core waits until the session is confirmed
-     * (any code the page asks for), takes the OAuth tokens (its own Firefox-looking request, and Mozilla's OAuth endpoint when the
-     * edge refuses the first) and stores the account. Poll [signInGet] with the id; [signInCancel] ends it.
+     * Hands the session of a browser sign-in (the WebView on Mozilla's page) to the core: it asks Mozilla for the account's
+     * tokens (waiting while the page still asks for a code), stores the account without a password and ends the session. It
+     * runs like the password sign-in: poll [signInGet] with the id, [signInCancel] ends it.
      */
     fun signInBrowser(email: String, sessionToken: String): FxSignIn =
-        FxJson.signIn(call("POST", "/api/signin/browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
+        FxJson.signIn(call("POST", "/api/ms/signin-browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
 
     fun removeAccount(id: String) { call("DELETE", "/api/accounts/" + enc(id)) }
 

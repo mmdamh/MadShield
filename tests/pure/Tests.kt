@@ -2021,9 +2021,10 @@ private fun fxWebTests() {
         FxWebChannel.userAgent("16.1").contains("Android 16.1;") && FxWebChannel.userAgent("").contains("Android 14;") &&
         FxWebChannel.userAgent("x\"y").contains("Android 14;") && FxWebChannel.userAgent(null).contains("Firefox/"))
     val patches = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches").list().orEmpty().toList()
-    check("fx web: the core's own browser sign-in is used (no MadShield grant code in the core)",
-        patches == listOf("0001-madshield-hooks.patch") &&
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText().contains("/api/signin/browser"))
+    check("fx web: the core hook has our browser sign-in route, Firefox TLS for the control plane, and no other project's name",
+        patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch") &&
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText().contains("/api/ms/signin-browser") &&
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText().let { p2 -> p2.contains("/api/ms/signin-browser") && p2.contains("fxa.BrowserTokens") && p2.contains("DialTLSContext") && !p2.contains("Arman VPN", ignoreCase = true) })
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host; the core sign-in is cancelled and cookies cleared at the end",
         screen.contains("FxWebChannel.userAgent") && screen.contains("FxWebChannel.hostAllowed") && screen.contains("cancelRunning()") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))

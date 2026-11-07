@@ -608,6 +608,7 @@
     <string name="fx_web_confirm">ورود را تأیید کنید (کد یا لینک) و همین‌جا منتظر بمانید.</string>
     <string name="fx_web_finishing">در حال پایان ورود…</string>
     <string name="fx_web_failed">ورود تمام نشد: %1$s</string>
+    <string name="fx_web_blocked">بررسی امنیتی Mozilla از این شبکه به برنامه توکن حساب را نداد. جواب هر مرحله:</string>
     <string name="fx_web_retry">دوباره</string>
     <string name="fx_web_close">بستن</string>
     <string name="fx_web_reload">بارگذاری دوباره‌ی صفحه</string>

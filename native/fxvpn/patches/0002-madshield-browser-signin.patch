@@ -1,0 +1,692 @@
+diff --git a/core/internal/controlplane/client.go b/core/internal/controlplane/client.go
+index 4c02fed..d2deaf0 100644
+--- a/core/internal/controlplane/client.go
++++ b/core/internal/controlplane/client.go
+@@ -33,6 +33,7 @@ var defaultTransport = func() *http.Transport {
+ 	t := http.DefaultTransport.(*http.Transport).Clone()
+ 	t.Proxy = nil
+ 	t.DialContext = DialContext
++	t.DialTLSContext = browserTLS(DialContext, 10*time.Second) // MadShield hook: Firefox's TLS hello
+ 	return t
+ }()
+ 
+@@ -52,6 +53,7 @@ func QuickTransport(wait time.Duration) *http.Transport {
+ 		}
+ 		return hellosplit.Wrap(conn), nil
+ 	}
++	t.DialTLSContext = browserTLS(t.DialContext, wait) // MadShield hook: Firefox's TLS hello
+ 	t.TLSHandshakeTimeout = wait
+ 	return t
+ }
+diff --git a/core/internal/controlplane/madshield_tls.go b/core/internal/controlplane/madshield_tls.go
+new file mode 100644
+index 0000000..87540af
+--- /dev/null
++++ b/core/internal/controlplane/madshield_tls.go
+@@ -0,0 +1,138 @@
++package controlplane
++
++import (
++	"context"
++	"crypto/tls"
++	"net"
++	"time"
++
++	utls "github.com/refraction-networking/utls"
++	"github.com/refraction-networking/utls/dicttls"
++)
++
++// MadShield hook (see native/fxvpn/patches): the requests to Mozilla's account and Guardian servers carry a Firefox
++// User-Agent, so the TLS under them should look like Firefox's too. Go's own ClientHello does not, and Mozilla's edge
++// (Fastly) answers a client whose hello and User-Agent disagree with HTTP 406. The hello below is the one the data-plane
++// connections already use (package proxy keeps its own copy; it cannot be imported here).
++
++var browserSessions = utls.NewLRUClientSessionCache(64)
++
++type dialFunc func(ctx context.Context, network, address string) (net.Conn, error)
++
++// browserTLS is a DialTLSContext: it connects with connect and completes TLS with Firefox's hello within wait. A
++// network or server that does not take that hello gets Go's own for this connection (nothing is remembered: one bad
++// connection must not give up the Firefox look for good). HTTP/1.1 only: net/http speaks HTTP/2 just over its own TLS.
++func browserTLS(connect dialFunc, wait time.Duration) dialFunc {
++	return func(ctx context.Context, network, address string) (net.Conn, error) {
++		host, _, err := net.SplitHostPort(address)
++		if err != nil {
++			return nil, err
++		}
++		raw, err := connect(ctx, network, address)
++		if err != nil {
++			return nil, err
++		}
++		shakeCtx, cancel := context.WithTimeout(ctx, wait)
++		conn, err := browserHandshake(shakeCtx, raw, host)
++		cancel()
++		if err == nil {
++			return conn, nil
++		}
++		_ = raw.Close()
++		if ctx.Err() != nil {
++			return nil, err
++		}
++		raw, err = connect(ctx, network, address)
++		if err != nil {
++			return nil, err
++		}
++		shakeCtx, cancel = context.WithTimeout(ctx, wait)
++		defer cancel()
++		plain := tls.Client(raw, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
++		if err := plain.HandshakeContext(shakeCtx); err != nil {
++			_ = raw.Close()
++			return nil, err
++		}
++		return plain, nil
++	}
++}
++
++func browserHandshake(ctx context.Context, raw net.Conn, host string) (net.Conn, error) {
++	conn := utls.UClient(raw, &utls.Config{
++		ServerName:         host,
++		ClientSessionCache: browserSessions,
++		OmitEmptyPsk:       true,
++	}, utls.HelloCustom)
++	if err := conn.ApplyPreset(browserHello()); err != nil {
++		return nil, err
++	}
++	if err := conn.HandshakeContext(ctx); err != nil {
++		return nil, err
++	}
++	return conn, nil
++}
++
++// browserHello is desktop Firefox's ClientHello, in its order. A spec is good for one connection.
++func browserHello() *utls.ClientHelloSpec {
++	return &utls.ClientHelloSpec{
++		TLSVersMin: utls.VersionTLS12,
++		TLSVersMax: utls.VersionTLS13,
++		CipherSuites: []uint16{
++			utls.TLS_AES_128_GCM_SHA256,
++			utls.TLS_CHACHA20_POLY1305_SHA256,
++			utls.TLS_AES_256_GCM_SHA384,
++			utls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
++			utls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
++			utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
++			utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
++			utls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
++			utls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
++			utls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
++			utls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
++			utls.TLS_RSA_WITH_AES_128_GCM_SHA256,
++			utls.TLS_RSA_WITH_AES_256_GCM_SHA384,
++			utls.TLS_RSA_WITH_AES_128_CBC_SHA,
++			utls.TLS_RSA_WITH_AES_256_CBC_SHA,
++		},
++		CompressionMethods: []uint8{0},
++		Extensions: []utls.TLSExtension{
++			&utls.SNIExtension{},
++			&utls.ExtendedMasterSecretExtension{},
++			&utls.RenegotiationInfoExtension{Renegotiation: utls.RenegotiateOnceAsClient},
++			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{
++				utls.X25519MLKEM768, utls.X25519, utls.CurveP256, utls.CurveP384, utls.CurveP521,
++			}},
++			&utls.SupportedPointsExtension{SupportedPoints: []uint8{0}},
++			&utls.SessionTicketExtension{},
++			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
++			&utls.StatusRequestExtension{},
++			&utls.FakeDelegatedCredentialsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
++				utls.ECDSAWithP256AndSHA256, utls.ECDSAWithP384AndSHA384, utls.ECDSAWithP521AndSHA512, utls.ECDSAWithSHA1,
++			}},
++			&utls.SCTExtension{},
++			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{
++				{Group: utls.X25519MLKEM768}, {Group: utls.X25519}, {Group: utls.CurveP256},
++			}},
++			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
++			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
++				utls.ECDSAWithP256AndSHA256, utls.ECDSAWithP384AndSHA384, utls.ECDSAWithP521AndSHA512,
++				utls.PSSWithSHA256, utls.PSSWithSHA384, utls.PSSWithSHA512,
++				utls.PKCS1WithSHA256, utls.PKCS1WithSHA384, utls.PKCS1WithSHA512,
++				utls.ECDSAWithSHA1, utls.PKCS1WithSHA1,
++			}},
++			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{utls.PskModeDHE}},
++			&utls.FakeRecordSizeLimitExtension{Limit: 0x4001},
++			&utls.UtlsCompressCertExtension{Algorithms: []utls.CertCompressionAlgo{
++				utls.CertCompressionZlib, utls.CertCompressionBrotli, utls.CertCompressionZstd,
++			}},
++			&utls.GREASEEncryptedClientHelloExtension{
++				CandidateCipherSuites: []utls.HPKESymmetricCipherSuite{
++					{KdfId: dicttls.HKDF_SHA256, AeadId: dicttls.AEAD_AES_128_GCM},
++					{KdfId: dicttls.HKDF_SHA256, AeadId: dicttls.AEAD_CHACHA20_POLY1305},
++				},
++				CandidatePayloadLens: []uint16{224},
++			},
++			&utls.UtlsPreSharedKeyExtension{},
++		},
++	}
++}
+diff --git a/core/internal/fxa/madshield_browser.go b/core/internal/fxa/madshield_browser.go
+new file mode 100644
+index 0000000..1f24159
+--- /dev/null
++++ b/core/internal/fxa/madshield_browser.go
+@@ -0,0 +1,368 @@
++package fxa
++
++import (
++	"context"
++	"crypto/hmac"
++	"crypto/rand"
++	"crypto/sha256"
++	"encoding/base64"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"strings"
++	"sync/atomic"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
++)
++
++// MadShield hook (see native/fxvpn/patches): the account's tokens for a session the app's browser view signed in.
++//
++// Mozilla's edge (Fastly) refuses the "fxa-credentials" grant from many clients with HTTP 406. This file asks for the
++// tokens by every route the account server offers, one at a time, and keeps what each one answered, so a failure says
++// which step was refused instead of one general message:
++//
++//	token      POST /v1/oauth/token                     (grant fxa-credentials, the session's Hawk signature)
++//	code       POST /v1/oauth/authorization             (session-signed, PKCE) then
++//	           POST oauth.accounts.firefox.com/v1/token (the code and its verifier; no signature)
++//	challenge  the edge's own client challenge, solved (challenge.go), then token and code once more
++//
++// Nothing here solves a challenge or retries without the caller knowing: fxaDo, which does, is not used.
++
++const (
++	// browserOAuthTokenURL is the OAuth server's own token endpoint, a different host from the account API.
++	browserOAuthTokenURL = "https://oauth.accounts.firefox.com/v1/token"
++
++	// FxA errnos of a session that is not confirmed yet (a code or link the page still asks for).
++	ErrnoUnverifiedAccount = 104
++	ErrnoUnverifiedSession = 138
++)
++
++// ErrEdgeRefused is the cause of a [StepsError] when no route got past Mozilla's edge.
++var ErrEdgeRefused = errors.New("Mozilla's edge refused every way of getting the account's tokens")
++
++// StepsError is the failure of [BrowserTokens]: what each step answered, in order.
++type StepsError struct {
++	Steps []string
++	Err   error
++}
++
++func (e *StepsError) Error() string { return strings.Join(e.Steps, " | ") }
++func (e *StepsError) Unwrap() error { return e.Err }
++
++// hexHawk is set when the server refused the base64 signature and took the hex one (this program's older form).
++var hexHawk atomic.Bool
++
++type grantBody struct {
++	ClientID   string `json:"client_id"`
++	GrantType  string `json:"grant_type"`
++	Scope      string `json:"scope"`
++	AccessType string `json:"access_type"`
++}
++
++type authorizationBody struct {
++	ClientID            string `json:"client_id"`
++	ResponseType        string `json:"response_type"`
++	Scope               string `json:"scope"`
++	State               string `json:"state"`
++	AccessType          string `json:"access_type"`
++	CodeChallenge       string `json:"code_challenge"`
++	CodeChallengeMethod string `json:"code_challenge_method"`
++}
++
++type codeBody struct {
++	ClientID     string `json:"client_id"`
++	GrantType    string `json:"grant_type"`
++	Code         string `json:"code"`
++	CodeVerifier string `json:"code_verifier"`
++}
++
++// answer is one HTTP answer: its status, a bounded body, and a few headers that say who answered.
++type answer struct {
++	status int
++	body   []byte
++	from   string
++}
++
++// send sends body (JSON, may be empty) to target, signed with the session's Hawk credentials when hawkID is not empty.
++// web adds what Firefox's own page sends with such a request (its origin and the fetch metadata).
++func send(ctx context.Context, method, target string, body []byte, hawkID string, hawkKey []byte, web bool) (*answer, error) {
++	flip := false
++	for {
++		req, err := http.NewRequestWithContext(ctx, method, target, strings.NewReader(string(body)))
++		if err != nil {
++			return nil, err
++		}
++		if len(body) > 0 {
++			req.Header.Set("Content-Type", "application/json")
++		}
++		controlplane.ApplyFirefoxHeaders(req)
++		if web {
++			req.Header.Set("Origin", "https://accounts.firefox.com")
++			req.Header.Set("Referer", "https://accounts.firefox.com/")
++			req.Header.Set("Accept", "*/*")
++			req.Header.Set("Accept-Language", "en-US,en;q=0.5")
++			req.Header.Set("Sec-Fetch-Dest", "empty")
++			req.Header.Set("Sec-Fetch-Mode", "cors")
++			req.Header.Set("Sec-Fetch-Site", "same-site")
++		}
++		if hawkID != "" {
++			var header string
++			if hexHawk.Load() != flip {
++				header, err = hawkHeader(method, target, hawkID, hawkKey, string(body))
++			} else {
++				header, err = hawkHeaderBase64(method, target, hawkID, hawkKey, body)
++			}
++			if err != nil {
++				return nil, err
++			}
++			req.Header.Set("Authorization", header)
++		}
++		resp, err := controlplane.Do(req)
++		if err != nil {
++			return nil, err
++		}
++		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
++		resp.Body.Close()
++		if readErr != nil {
++			return nil, readErr
++		}
++		a := &answer{status: resp.StatusCode, body: data, from: resp.Header.Get("X-Served-By")}
++		// The signature was refused (401): the server may take the other way of writing it. Tried once; the form that
++		// is not refused is kept for the next calls.
++		if a.status == http.StatusUnauthorized && hawkID != "" && !flip {
++			flip = true
++			continue
++		}
++		if flip && a.status != http.StatusUnauthorized {
++			hexHawk.Store(!hexHawk.Load())
++		}
++		return a, nil
++	}
++}
++
++// hawkHeaderBase64 signs as the Hawk specification does (and Firefox): the payload hash and the MAC are base64.
++func hawkHeaderBase64(method, rawURL, id string, key, payload []byte) (string, error) {
++	u, err := url.Parse(rawURL)
++	if err != nil {
++		return "", err
++	}
++	nonceBytes := make([]byte, 6)
++	if _, err := rand.Read(nonceBytes); err != nil {
++		return "", fmt.Errorf("generating nonce: %w", err)
++	}
++	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
++	ts := fmt.Sprintf("%d", time.Now().Unix())
++	port := u.Port()
++	if port == "" {
++		port = "443"
++	}
++	hash := ""
++	if len(payload) > 0 {
++		h := sha256.New()
++		h.Write([]byte("hawk.1.payload\napplication/json\n"))
++		h.Write(payload)
++		h.Write([]byte("\n"))
++		hash = base64.StdEncoding.EncodeToString(h.Sum(nil))
++	}
++	normalized := strings.Join([]string{"hawk.1.header", ts, nonce, strings.ToUpper(method), u.RequestURI(), u.Hostname(), port, hash, "", ""}, "\n")
++	mac := hmac.New(sha256.New, key)
++	mac.Write([]byte(normalized))
++	header := fmt.Sprintf(`Hawk id="%s", ts="%s", nonce="%s", mac="%s"`, id, ts, nonce, base64.StdEncoding.EncodeToString(mac.Sum(nil)))
++	if hash != "" {
++		header += fmt.Sprintf(`, hash="%s"`, hash)
++	}
++	return header, nil
++}
++
++// route is one way of getting the tokens. It returns the tokens; or refused (the edge answered 406); or an error.
++type route func(ctx context.Context, hawkID string, hawkKey []byte, note func(string)) (tok *TokenResponse, refused bool, err error)
++
++func withWeb(r func(context.Context, string, []byte, func(string), bool) (*TokenResponse, bool, error), web bool) route {
++	return func(ctx context.Context, id string, key []byte, note func(string)) (*TokenResponse, bool, error) {
++		return r(ctx, id, key, note, web)
++	}
++}
++
++func readTokens(a *answer) (*TokenResponse, error) {
++	var tok TokenResponse
++	if err := json.Unmarshal(a.body, &tok); err != nil || tok.AccessToken == "" {
++		return nil, errors.New("the answer holds no access token")
++	}
++	return &tok, nil
++}
++
++func describe(a *answer) string {
++	s := fmt.Sprintf("%d", a.status)
++	if a.from != "" {
++		s += " (" + a.from + ")"
++	}
++	return s
++}
++
++// tokenRoute is POST /v1/oauth/token with the fxa-credentials grant.
++func tokenRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), web bool) (*TokenResponse, bool, error) {
++	label := "token"
++	if web {
++		label = "token+page headers"
++	}
++	body, _ := json.Marshal(grantBody{ClientID: firefoxClientID, GrantType: "fxa-credentials", Scope: oauthScope, AccessType: "offline"})
++	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/token", body, hawkID, hawkKey, web)
++	if err != nil {
++		note(label + ": " + networkText(err))
++		return nil, false, nil
++	}
++	note(label + " " + describe(a))
++	switch {
++	case a.status == http.StatusOK:
++		tok, err := readTokens(a)
++		return tok, false, err
++	case a.status == http.StatusNotAcceptable:
++		return nil, true, nil
++	}
++	return nil, false, newFxaAPIError(a.status, a.body)
++}
++
++// codeRoute asks the account API for an authorization code (PKCE, S256) and exchanges it at the OAuth server.
++func codeRoute(ctx context.Context, hawkID string, hawkKey []byte, note func(string), web bool) (*TokenResponse, bool, error) {
++	label := "authorization"
++	if web {
++		label = "authorization+page headers"
++	}
++	var secret [32]byte
++	var stateBytes [16]byte
++	if _, err := rand.Read(secret[:]); err != nil {
++		return nil, false, err
++	}
++	if _, err := rand.Read(stateBytes[:]); err != nil {
++		return nil, false, err
++	}
++	verifier := base64.RawURLEncoding.EncodeToString(secret[:])
++	sum := sha256.Sum256([]byte(verifier))
++	state := hex.EncodeToString(stateBytes[:])
++
++	body, _ := json.Marshal(authorizationBody{
++		ClientID: firefoxClientID, ResponseType: "code", Scope: oauthScope, State: state, AccessType: "offline",
++		CodeChallenge: base64.RawURLEncoding.EncodeToString(sum[:]), CodeChallengeMethod: "S256",
++	})
++	a, err := send(ctx, http.MethodPost, fxaAuthServer+"/oauth/authorization", body, hawkID, hawkKey, web)
++	if err != nil {
++		note(label + ": " + networkText(err))
++		return nil, false, nil
++	}
++	note(label + " " + describe(a))
++	switch {
++	case a.status == http.StatusNotAcceptable:
++		return nil, true, nil
++	case a.status != http.StatusOK:
++		return nil, false, newFxaAPIError(a.status, a.body)
++	}
++	var granted struct {
++		Code  string `json:"code"`
++		State string `json:"state"`
++	}
++	if json.Unmarshal(a.body, &granted) != nil || granted.Code == "" || granted.State != state {
++		return nil, false, errors.New("the authorization answer holds no matching code")
++	}
++
++	body, _ = json.Marshal(codeBody{ClientID: firefoxClientID, GrantType: "authorization_code", Code: granted.Code, CodeVerifier: verifier})
++	a, err = send(ctx, http.MethodPost, browserOAuthTokenURL, body, "", nil, web)
++	if err != nil {
++		note("code exchange: " + networkText(err))
++		return nil, false, nil
++	}
++	note("code exchange " + describe(a))
++	switch {
++	case a.status == http.StatusOK:
++		tok, err := readTokens(a)
++		return tok, false, err
++	case a.status == http.StatusNotAcceptable:
++		return nil, true, nil
++	}
++	return nil, false, newFxaAPIError(a.status, a.body)
++}
++
++// networkText is a network error without the URL (it may hold a token) and short.
++func networkText(err error) string {
++	var urlErr *url.Error
++	if errors.As(err, &urlErr) {
++		err = urlErr.Err
++	}
++	s := err.Error()
++	if len(s) > 80 {
++		s = s[:80]
++	}
++	return s
++}
++
++// BrowserTokens gets the account's OAuth tokens for sessionToken, the session a browser view signed in (confirmed or
++// not). An answer of the account server that is not the edge's refusal comes back as it is (an unconfirmed session is
++// errno [ErrnoUnverifiedAccount] or [ErrnoUnverifiedSession], see [Errno]); when every route is refused or cannot be
++// reached the error is a [*StepsError].
++func BrowserTokens(ctx context.Context, sessionToken string) (*TokenResponse, error) {
++	hawkID, hawkKey, err := deriveHawkCredentials(sessionToken, "sessionToken")
++	if err != nil {
++		return nil, fmt.Errorf("deriving hawk credentials: %w", err)
++	}
++	var steps []string
++	note := func(s string) { steps = append(steps, s) }
++	for round := 0; round < 2; round++ {
++		if round == 1 {
++			// Both routes were refused: the edge's own challenge, solved the way a browser would, then every route once more.
++			if err := solveFastlyChallenge(ctx); err != nil {
++				if ctx.Err() != nil {
++					return nil, ctx.Err()
++				}
++				note("challenge failed: " + networkText(err))
++				break
++			}
++			note("challenge solved")
++		}
++		for _, r := range []route{withWeb(tokenRoute, false), withWeb(codeRoute, false), withWeb(tokenRoute, true), withWeb(codeRoute, true)} {
++			tok, refused, err := r(ctx, hawkID, hawkKey, note)
++			if ctx.Err() != nil {
++				return nil, ctx.Err()
++			}
++			if err != nil {
++				return nil, err
++			}
++			if tok != nil {
++				return tok, nil
++			}
++			_ = refused // a refusal or a network failure: the next route is tried
++		}
++	}
++	probeRefusals(ctx, hawkID, hawkKey, note)
++	return nil, &StepsError{Steps: steps, Err: ErrEdgeRefused}
++}
++
++// probeRefusals says what the edge looks at, by sending requests that differ from the refused one in one thing each
++// (none of them gets a token the program keeps): whether any signed request passes, whether the body matters, and
++// whether the VPN scope or the client is what is refused. The answers go into the error the person can report.
++func probeRefusals(ctx context.Context, hawkID string, hawkKey []byte, note func(string)) {
++	probe := func(name, method, path string, body []byte) {
++		if ctx.Err() != nil {
++			return
++		}
++		a, err := send(ctx, method, fxaAuthServer+path, body, hawkID, hawkKey, true)
++		if err != nil {
++			note("probe " + name + ": " + networkText(err))
++			return
++		}
++		note("probe " + name + " " + describe(a))
++	}
++	probe("session status", http.MethodGet, "/session/status", nil)
++	probe("empty grant", http.MethodPost, "/oauth/token", []byte("{}"))
++	other, _ := json.Marshal(grantBody{ClientID: "0000000000000000", GrantType: "fxa-credentials", Scope: oauthScope, AccessType: "offline"})
++	probe("grant, other client", http.MethodPost, "/oauth/token", other)
++	plain, _ := json.Marshal(struct {
++		ClientID  string `json:"client_id"`
++		GrantType string `json:"grant_type"`
++		Scope     string `json:"scope"`
++	}{firefoxClientID, "fxa-credentials", "profile"})
++	probe("grant, profile scope", http.MethodPost, "/oauth/token", plain)
++}
+diff --git a/core/internal/service/dashboard.go b/core/internal/service/dashboard.go
+index 912a756..0947681 100644
+--- a/core/internal/service/dashboard.go
++++ b/core/internal/service/dashboard.go
+@@ -222,6 +222,7 @@ func (s *dashboardServer) handler() http.Handler {
+ 	mux.HandleFunc("DELETE /api/accounts/{id}", s.handleAccountRemove)
+ 
+ 	mux.HandleFunc("POST /api/signin", s.handleSignInStart)
++	mux.HandleFunc("POST /api/ms/signin-browser", s.handleBrowserSignIn)
+ 	mux.HandleFunc("GET /api/signin/{id}", s.handleSignInGet)
+ 	mux.HandleFunc("POST /api/signin/{id}", s.handleSignInAnswer)
+ 	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
+diff --git a/core/internal/service/madshield_browser.go b/core/internal/service/madshield_browser.go
+new file mode 100644
+index 0000000..401145a
+--- /dev/null
++++ b/core/internal/service/madshield_browser.go
+@@ -0,0 +1,136 @@
++package service
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/hex"
++	"errors"
++	"net/http"
++	"regexp"
++	"strings"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
++)
++
++// MadShield hook (see native/fxvpn/patches): the sign-in of an account whose password the app never sees. The app's
++// browser view shows Mozilla's own sign-in page and hands over the session token the page ends with; this runs the rest
++// like the password sign-in does (the same session registry, the same polling), asking Mozilla for the tokens with
++// fxa.BrowserTokens and storing the account without a password.
++
++const (
++	signInBlocked        = "blocked"         // Mozilla's edge refused every way of getting the tokens (the error text lists the steps)
++	signInWaitingConfirm = "waiting_confirm" // working, not failed: the page still asks for a code or a link
++	browserPollEvery     = 4 * time.Second
++)
++
++var sessionTokenForm = regexp.MustCompile(`^[0-9a-f]{64}$`)
++
++// startBrowser begins a sign-in for the session token a browser view captured for email.
++func (r *signInRegistry) startBrowser(email, sessionToken string) (signInView, error) {
++	email = fxa.NormalizeEmail(email)
++	sessionToken = strings.ToLower(strings.TrimSpace(sessionToken))
++	if email == "" || !sessionTokenForm.MatchString(sessionToken) {
++		return signInView{}, errors.New("an email and a session token are required")
++	}
++	var idBytes [12]byte
++	if _, err := rand.Read(idBytes[:]); err != nil {
++		return signInView{}, err
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), signInTimeout)
++	s := &signIn{
++		view:   signInView{ID: hex.EncodeToString(idBytes[:]), Email: email, Step: stepWorking, Message: "Signing in", Updated: time.Now()},
++		input:  make(chan string),
++		cancel: cancel,
++	}
++	r.mu.Lock()
++	r.pruneLocked()
++	r.sessions[s.view.ID] = s
++	r.mu.Unlock()
++	go s.runBrowser(ctx, r.d, email, sessionToken)
++	return s.snapshot(), nil
++}
++
++func (s *signIn) runBrowser(ctx context.Context, d *Daemon, email, sessionToken string) {
++	defer s.cancel()
++	accountID, err := s.browserSignIn(ctx, d, email, sessionToken)
++	switch {
++	case errors.Is(err, errSignInCancelled):
++		s.set(stepCancelled, "Sign-in cancelled", signInProblem{}, "")
++	case err != nil:
++		logx.Warn("browser sign-in failed email=%s err=%s", logx.Email(email), fxa.Message(err))
++		s.set(stepFailed, "The account was not added.", browserFailure(err), "")
++	default:
++		s.mu.Lock()
++		s.view.AccountID = accountID
++		s.mu.Unlock()
++		s.set(stepDone, "Account added", signInProblem{}, "")
++	}
++}
++
++func (s *signIn) browserSignIn(ctx context.Context, d *Daemon, email, sessionToken string) (string, error) {
++	s.set(stepWorking, "Getting the account token", signInProblem{}, "")
++	var token *fxa.TokenResponse
++	for token == nil {
++		t, err := fxa.BrowserTokens(ctx, sessionToken)
++		if err == nil {
++			token = t
++			break
++		}
++		if ctx.Err() != nil {
++			if errors.Is(ctx.Err(), context.Canceled) {
++				return "", errSignInCancelled
++			}
++			return "", errSignInTimedOut
++		}
++		// The page still asks for a code or a link: the session is not confirmed. Ask again soon; nothing is lost.
++		if n := fxa.Errno(err); n != fxa.ErrnoUnverifiedAccount && n != fxa.ErrnoUnverifiedSession {
++			return "", err
++		}
++		s.set(stepWorking, "Waiting for the sign-in to be confirmed", signInProblem{code: signInWaitingConfirm}, "")
++		select {
++		case <-ctx.Done():
++		case <-time.After(browserPollEvery):
++		}
++	}
++	s.set(stepWorking, "Saving the account", signInProblem{}, "")
++	acc, err := d.addSignedInAccount(email, "", token)
++	if err != nil {
++		return "", err
++	}
++	// The sign-in session is not needed once the tokens exist (left alive it shows as "unknown" in the account's connected
++	// services). Ending it can take long when the edge is slow, so it must not hold the sign-in up.
++	go func() {
++		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
++		defer cancel()
++		if err := fxa.DestroySession(ctx, sessionToken); err != nil {
++			logx.Warn("ending the sign-in session failed email=%s err=%s", logx.Email(email), logx.Err(err))
++		}
++	}()
++	return acc.ID, nil
++}
++
++func browserFailure(err error) signInProblem {
++	var steps *fxa.StepsError
++	if errors.As(err, &steps) {
++		return signInProblem{signInBlocked, steps.Error()}
++	}
++	return signInFailure(err)
++}
++
++func (s *dashboardServer) handleBrowserSignIn(w http.ResponseWriter, r *http.Request) {
++	var in struct {
++		Email        string `json:"email"`
++		SessionToken string `json:"session_token"`
++	}
++	if !readJSON(w, r, &in) {
++		return
++	}
++	view, err := s.d.signins.startBrowser(in.Email, in.SessionToken)
++	if err != nil {
++		writeError(w, http.StatusBadRequest, err.Error())
++		return
++	}
++	writeJSON(w, http.StatusAccepted, view)
++}
