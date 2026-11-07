@@ -601,6 +601,12 @@
     <string name="fx_exit_now">خروجی: %1$s</string>
     <string name="fx_engine_missing">این بیلد موتور Foxy ندارد.</string>
     <string name="fx_vpn_running_note">اتصالی همین حالا از هسته‌ی Foxy استفاده می‌کند؛ این صفحه با همان کار می‌کند.</string>
+    <string name="fx_speed_title">سرعت</string>
+    <string name="fx_speed_sessions">تعداد session موازی به Mozilla</string>
+    <string name="fx_speed_transport">انتقال به Mozilla</string>
+    <string name="fx_speed_h2">HTTP/2 (TCP)</string>
+    <string name="fx_speed_h3">HTTP/3 (QUIC)</string>
+    <string name="fx_speed_sub">اگر اتصال برقرار است ولی سرعت به چند کیلوبایت افت کرده، شاید شبکه هر اتصال را جدا کُند می‌کند. session موازی بیشتر اتصال‌ها را بین چند session پخش می‌کند؛ HTTP/3 به جای TCP از UDP استفاده می‌کند که بعضی شبکه‌ها با آن فرق می‌گذارند. هر بار یک تغییر بده و سرعت را بسنج؛ پیش‌فرض ۱ و HTTP/2 است چون session بیشتر کمی باتری بیشتری می‌برد.</string>
     <string name="fx_split_title">شکستن بسته‌ی اول TLS</string>
     <string name="fx_split_sub">اگر ورود یا اتصال با «TLS handshake timeout» می‌ایستد، احتمالاً فیلتر شبکه نام سرور را می‌خواند. شکستن بسته‌ی اول اغلب از آن عبور می‌کند و سرورهای Mozilla همان بایت‌ها را می‌گیرند. هم برای ورود و هم برای اتصال اعمال می‌شود.</string>
     <string name="fx_split_sni">شکستن وسط نام (پیشنهادی)</string>

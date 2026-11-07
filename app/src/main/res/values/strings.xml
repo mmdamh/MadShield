@@ -603,6 +603,12 @@
     <string name="fx_exit_now">Exit: %1$s</string>
     <string name="fx_engine_missing">This build has no Foxy engine.</string>
     <string name="fx_vpn_running_note">A connection is using the Foxy core right now; this page talks to it.</string>
+    <string name="fx_speed_title">Speed</string>
+    <string name="fx_speed_sessions">Parallel sessions to Mozilla</string>
+    <string name="fx_speed_transport">Transport to Mozilla</string>
+    <string name="fx_speed_h2">HTTP/2 (TCP)</string>
+    <string name="fx_speed_h3">HTTP/3 (QUIC)</string>
+    <string name="fx_speed_sub">If the speed drops to a few KB/s while it still connects, your network may be slowing every connection down on its own. More parallel sessions spread your connections over several of them; HTTP/3 uses UDP instead of TCP, which some networks treat differently. Try one change at a time and test the speed; 1 and HTTP/2 stay the default because more sessions cost a little more battery.</string>
     <string name="fx_split_title">Split the TLS hello</string>
     <string name="fx_split_sub">If sign-in or connecting stops with “TLS handshake timeout”, a filter on your network is probably reading the server name. Splitting the first packet often gets past it, and Mozilla\'s servers receive the same bytes. It applies to sign-in and to the connection.</string>
     <string name="fx_split_sni">Split inside the name (recommended)</string>

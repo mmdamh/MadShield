@@ -63,7 +63,9 @@ class FxCoreProcess(private val context: Context) {
         val apiPort = FxRuntime.freePort(except = socksPort)
         val creds = FxCredentials.generate(SecureRandom())
         val helloSplit = FxTricks.helloSplit(context)
-        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit)
+        val sessions = FxTricks.sessions(context)
+        val transport = FxTricks.transport(context)
+        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit, sessions, transport)
 
         val pb = ProcessBuilder(bin.absolutePath, "-data-dir", dataDir.absolutePath)
             .directory(dataDir)
@@ -75,7 +77,7 @@ class FxCoreProcess(private val context: Context) {
         // The non-secret part only: the login is never written anywhere.
         RingLogBuffer.append(
             "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"} " +
-                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored}"
+                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored} sessions=$sessions transport=${transport.stored}"
         )
         synchronized(tail) { tail.clear() }
         lastExit = null
@@ -281,6 +283,24 @@ object FxTricks {
     fun helloSplit(context: Context): FxHelloSplit = try {
         FxHelloSplit.fromStored(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null))
     } catch (_: Exception) { FxHelloSplit.DEFAULT }
+
+    fun sessions(context: Context): Int = try {
+        FxSessions.clean(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getInt("sessions", FxSessions.DEFAULT))
+    } catch (_: Exception) { FxSessions.DEFAULT }
+
+    fun setSessions(context: Context, n: Int) {
+        try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putInt("sessions", FxSessions.clean(n)).apply() }
+        catch (_: Exception) { /* not saved: the default applies */ }
+    }
+
+    fun transport(context: Context): FxTransport = try {
+        FxTransport.fromStored(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString("transport", null))
+    } catch (_: Exception) { FxTransport.DEFAULT }
+
+    fun setTransport(context: Context, v: FxTransport) {
+        try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString("transport", v.stored).apply() }
+        catch (_: Exception) { /* not saved: the default applies */ }
+    }
 
     fun setHelloSplit(context: Context, v: FxHelloSplit) {
         try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString(KEY, v.stored).apply() }

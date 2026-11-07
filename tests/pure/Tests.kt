@@ -1972,6 +1972,7 @@ fun fxTests() {
     fxSplitTests()
     fxWebTests()
     liveApplyTests()
+    fxSpeedTests()
 }
 
 // update37: what applies at once and what asks for a reconnect
@@ -2344,4 +2345,19 @@ private fun fxPolicyTests() {
     check("fx policy: Firefox failures use the slow retry schedule", ConnectPolicy.isChainFailure(FxErrors.english("quota")) && ConnectPolicy.isChainFailure("the Foxy core stopped"))
     check("fx policy: WARP transport failures still do not", !ConnectPolicy.isChainFailure("no answer from the engine after 90s"))
     check("fx config: default config is the WARP engine", EngineConfig().engineKind == EngineKind.WARP)
+}
+
+// update39: Foxy speed options (parallel sessions, transport)
+private fun fxSpeedTests() {
+    val creds = FxCredentials("u", "p")
+    val env = FxEnvironment.build(1823, 44827, creds, emptyList(), "/tmp", emptyList(), FxHelloSplit.DEFAULT)
+    check("fx speed: one session and HTTP/2 are said by default (the core keeps them in a file)",
+        env["MFX_UPSTREAM_CONNS"] == "1" && env["MFX_TRANSPORT"] == "h2")
+    val fast = FxEnvironment.build(1823, 44827, creds, emptyList(), "/tmp", emptyList(), FxHelloSplit.DEFAULT, 3, FxTransport.H3)
+    check("fx speed: the choice reaches the core", fast["MFX_UPSTREAM_CONNS"] == "3" && fast["MFX_TRANSPORT"] == "h3")
+    check("fx speed: sessions stay within 1 to 4", FxSessions.clean(0) == 1 && FxSessions.clean(9) == 4 && FxSessions.clean(null) == 1 && FxSessions.clean(2) == 2)
+    check("fx speed: an unknown stored transport falls back to HTTP/2", FxTransport.fromStored("quic") == FxTransport.H2 && FxTransport.fromStored("h3") == FxTransport.H3)
+    val host = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
+    check("fx speed: the entry point reads and bounds both", host.contains("MFX_UPSTREAM_CONNS") && host.contains("maxUpstreamConns") && host.contains("MFX_TRANSPORT") &&
+        host.contains("v == \"h2\" || v == \"h3\""))
 }

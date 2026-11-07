@@ -54,6 +54,8 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
     var reload by remember { mutableIntStateOf(0) }
     val inBuild = remember { FxRuntime.isInBuild(ctx) }
     var split by remember { mutableStateOf(FxTricks.helloSplit(ctx)) }
+    var sessions by remember { mutableStateOf(FxTricks.sessions(ctx)) }
+    var transport by remember { mutableStateOf(FxTricks.transport(ctx)) }
 
     /** One pass of reading: status and accounts, and the locations once an account exists. */
     suspend fun refresh(withLocations: Boolean) {
@@ -159,6 +161,11 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                     FxTricks.setHelloSplit(ctx, v)
                     restartPageCore()
                 }
+                SpeedCard(
+                    sessions, transport, running = connectionRuns,
+                    onSessions = { n -> sessions = n; FxTricks.setSessions(ctx, n) },
+                    onTransport = { v -> transport = v; FxTricks.setTransport(ctx, v) }
+                )
             }
 
             when {
@@ -453,6 +460,39 @@ private fun fmtBytes(b: Long): String = when {
     b >= 1L shl 30 -> String.format(java.util.Locale.US, "%.1f GB", b / (1024.0 * 1024.0 * 1024.0))
     b >= 1L shl 20 -> String.format(java.util.Locale.US, "%.0f MB", b / (1024.0 * 1024.0))
     else -> String.format(java.util.Locale.US, "%d KB", b / 1024)
+}
+
+/**
+ * Speed options for a network that slows the connection to Mozilla down: more parallel sessions (each new connection takes
+ * the next one) and HTTP/3 instead of HTTP/2. Read when a connection's core starts; no sign-in needs them.
+ */
+@Composable
+private fun SpeedCard(
+    sessions: Int, transport: FxTransport, running: Boolean,
+    onSessions: (Int) -> Unit, onTransport: (FxTransport) -> Unit
+) {
+    SectionCard(stringResource(R.string.fx_speed_title)) {
+        Text(stringResource(R.string.fx_speed_sessions), style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(6.dp))
+        SegmentedChoice(
+            options = (FxSessions.MIN..FxSessions.MAX).map { it.toString() to it },
+            selected = sessions,
+            onSelect = onSessions
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(stringResource(R.string.fx_speed_transport), style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(6.dp))
+        SegmentedChoice(
+            options = listOf(
+                stringResource(R.string.fx_speed_h2) to FxTransport.H2,
+                stringResource(R.string.fx_speed_h3) to FxTransport.H3
+            ),
+            selected = transport,
+            onSelect = onTransport
+        )
+        HelperText(stringResource(R.string.fx_speed_sub))
+        if (running) HelperText(stringResource(R.string.fx_split_running))
+    }
 }
 
 /** How the TLS hello of the core's connections to Mozilla goes out (see [FxHelloSplit]). Read when a core starts. */

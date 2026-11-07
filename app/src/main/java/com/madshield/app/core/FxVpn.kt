@@ -144,11 +144,34 @@ enum class FxHelloSplit(val stored: String) {
     }
 }
 
+/** How the data reaches Mozilla's proxy: HTTP/2 over TCP (default) or HTTP/3 over QUIC (UDP). */
+enum class FxTransport(val stored: String) {
+    H2("h2"), H3("h3");
+
+    companion object {
+        val DEFAULT = H2
+        fun fromStored(s: String?): FxTransport = entries.firstOrNull { it.stored == s } ?: DEFAULT
+    }
+}
+
+/**
+ * How many parallel sessions the core keeps open to Mozilla's proxy (1 to 4). Each new connection goes to the next one, so a
+ * network that slows every connection down on its own gives more speed with more of them; each costs a handshake and a
+ * keepalive, so one stays the default.
+ */
+object FxSessions {
+    const val MIN = 1
+    const val MAX = 4
+    const val DEFAULT = 1
+    fun clean(n: Int?): Int = (n ?: DEFAULT).coerceIn(MIN, MAX)
+}
+
 /** The environment of the core's process. Built here (pure) so a test sees exactly what is handed over. */
 object FxEnvironment {
     fun build(
         socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String,
-        systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT
+        systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT,
+        sessions: Int = FxSessions.DEFAULT, transport: FxTransport = FxTransport.DEFAULT
     ): Map<String, String> {
         require(socksPort in 1024..65535 && apiPort in 1024..65535 && socksPort != apiPort) { "bad ports" }
         val env = linkedMapOf(
@@ -167,6 +190,8 @@ object FxEnvironment {
         val system = FxVpn.cleanSystemDns(systemDns)
         if (system.isNotEmpty()) env["MFX_SYSTEM_DNS"] = system.joinToString(",")
         env["MFX_HELLO_SPLIT"] = helloSplit.stored // always sent: the core keeps its setting in a file, so "off" must be said too
+        env["MFX_UPSTREAM_CONNS"] = FxSessions.clean(sessions).toString() // also always sent, for the same reason
+        env["MFX_TRANSPORT"] = transport.stored
         return env
     }
 

@@ -18,6 +18,9 @@
 //	MFX_SOCKS_USER, MFX_SOCKS_PASS SOCKS5 login of the proxy
 //	MFX_DNS                        optional, comma-separated resolvers for the core's own lookups (see config dns.servers)
 //	MFX_HELLO_SPLIT                optional: off, sni, first-byte or record (network.hello_split)
+//	MFX_UPSTREAM_CONNS             optional, 1 to 4: parallel sessions to Mozilla's proxy (proxy.upstream_connections); a
+//	                               network that throttles each connection on its own gives more speed with more of them
+//	MFX_TRANSPORT                  optional: h2 (HTTP/2 over TCP) or h3 (HTTP/3 over QUIC) to Mozilla's proxy (proxy.transport)
 //	MFX_SYSTEM_DNS                 optional, comma-separated IPs of the phone's own DNS servers (plain DNS, port 53): the
 //	                               "system" lookups of the core (its fallback when the encrypted resolvers are blocked)
 //	                               ask these, because a static Go binary on Android finds no /etc/resolv.conf
@@ -191,6 +194,21 @@ func applyEnv(path string) error {
 			fmt.Fprintf(os.Stderr, "[madshield-fx] ignoring MFX_HELLO_SPLIT=%q\n", v)
 		}
 	}
+	// How the data goes to Mozilla's proxy. The app always says both, because the core keeps them in its settings file.
+	if v := strings.TrimSpace(os.Getenv("MFX_UPSTREAM_CONNS")); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n >= 1 && n <= maxUpstreamConns {
+			cfg.Proxy.UpstreamConnections = n
+		} else {
+			fmt.Fprintf(os.Stderr, "[madshield-fx] ignoring MFX_UPSTREAM_CONNS=%q\n", v)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("MFX_TRANSPORT")); v != "" {
+		if v == "h2" || v == "h3" {
+			cfg.Proxy.Transport = v
+		} else {
+			fmt.Fprintf(os.Stderr, "[madshield-fx] ignoring MFX_TRANSPORT=%q\n", v)
+		}
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -200,6 +218,9 @@ func applyEnv(path string) error {
 	}
 	return config.Save(path, cfg)
 }
+
+// maxUpstreamConns bounds the parallel sessions to Mozilla: each one is a handshake, a socket and a keepalive.
+const maxUpstreamConns = 4
 
 // useSystemDNS makes the system resolver (net.DefaultResolver, used by the core for its "system" lookups) ask the
 // phone's DNS servers named in MFX_SYSTEM_DNS. Without it Go reads a missing /etc/resolv.conf and asks 127.0.0.1:53, so on
