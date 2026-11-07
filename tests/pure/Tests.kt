@@ -2020,6 +2020,10 @@ private fun fxWebTests() {
         FxWebChannel.userAgent("14") == "Mozilla/5.0 (Android 14; Mobile; rv:158.0) Gecko/158.0 Firefox/158.0" &&
         FxWebChannel.userAgent("16.1").contains("Android 16.1;") && FxWebChannel.userAgent("").contains("Android 14;") &&
         FxWebChannel.userAgent("x\"y").contains("Android 14;") && FxWebChannel.userAgent(null).contains("Firefox/"))
+    check("fx web: no unescaped apostrophe in the English fx_ strings (aapt rejects it)",
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/res/values/strings.xml").readLines()
+            .filter { it.contains("name=\"fx_") }
+            .none { l -> val body = l.substringAfter(">").substringBeforeLast("</string>"); Regex("(?<!\\\\)'").containsMatchIn(body) })
     val patches = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches").list().orEmpty().toList()
     check("fx web: the core hook has our browser sign-in route, Firefox TLS for the control plane, and no other project's name",
         patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch") &&
