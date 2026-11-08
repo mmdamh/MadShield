@@ -1,5 +1,13 @@
+name: "CodeQL"
 
-name: "CodeQL Advanced"
+# Languages that really exist in this repo as buildable source:
+#   java-kotlin  the Android app (app/), needs a real Gradle build
+#   c-cpp        scripts/aethertun-jni.c (no build needed)
+#   python       scripts/*.py and the CI patch scripts (no build needed)
+#   actions      .github/workflows/*.yml
+# Not analysed on purpose:
+#   go    native/fxvpn/host has no go.mod; it only builds inside the pinned core that CI fetches
+#   rust  the repo holds one .rs patch snippet, not a crate; the core itself is fetched by CI
 
 on:
   push:
@@ -12,7 +20,7 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     permissions:
       security-events: write
@@ -26,50 +34,48 @@ jobs:
         include:
           - language: actions
             build-mode: none
-
           - language: c-cpp
             build-mode: none
-
-          - language: go
-            build-mode: autobuild
-
           - language: java-kotlin
             build-mode: manual
-
           - language: python
             build-mode: none
 
-          - language: rust
-            build-mode: none
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # Setup Java only for Android / Kotlin analysis
       - name: Set up JDK 17
         if: matrix.language == 'java-kotlin'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
 
-      # Initialize CodeQL
+      - name: Set up Android SDK
+        if: matrix.language == 'java-kotlin'
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+
+      # The repo has no gradlew / gradle-wrapper.jar (same note as build.yml), so install Gradle.
+      - name: Set up Gradle
+        if: matrix.language == 'java-kotlin'
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: 8.9
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
-      # Build Android project manually for CodeQL tracing
-      - name: Build Android project
+      # CodeQL must watch the compiler run, so nothing may come from the build cache.
+      # The native .so files are not needed to compile the Kotlin code.
+      - name: Build Android app for CodeQL
         if: matrix.language == 'java-kotlin'
-        shell: bash
-        run: |
-          chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+        run: gradle --no-daemon --no-build-cache --rerun-tasks assembleDebug
 
-      # Perform CodeQL analysis
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
