@@ -445,21 +445,35 @@ class EngineProcessManager(private val context: Context) {
             }
             try { Thread.sleep(300) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
         }
-        if (cancelled()) return "cancelled"
-        return try {
-            val t = client.test()
-            when (val v = FxProgress.fromTest(t)) {
-                FxVerdict.Ready -> {
-                    RingLogBuffer.append("[fxvpn] connected through Mozilla (${t.exitCountry.ifEmpty { "?" }}, ${t.totalMs} ms)")
-                    chainReady = true
-                    null
+        // The core's connection test stops after 15 s, and the first one also does the wake (Fastly's challenge, the pass). On a slow
+        // network that is too short once, but the core keeps what it earned, so the test is repeated until the time is up.
+        var tests = 0
+        while (true) {
+            if (cancelled()) return "cancelled"
+            val reason: String = try {
+                val t = client.test()
+                when (val v = FxProgress.fromTest(t)) {
+                    FxVerdict.Ready -> {
+                        RingLogBuffer.append("[fxvpn] connected through Mozilla (${t.exitCountry.ifEmpty { "?" }}, ${t.totalMs} ms)")
+                        chainReady = true
+                        return null
+                    }
+                    is FxVerdict.Failed -> {
+                        if (!FxProgress.retryable(v.code)) return FxErrors.english(v.code, v.detail)
+                        FxErrors.english(v.code, v.detail)
+                    }
                 }
-                is FxVerdict.Failed -> FxErrors.english(v.code, v.detail)
+            } catch (e: FxClient.ApiException) {
+                return FxErrors.english("", e.message ?: "")
+            } catch (e: IOException) {
+                if (!isRunning) return failureReason() ?: "the Foxy core exited"
+                "the Foxy core did not answer the connection test (${e.message})"
             }
-        } catch (e: FxClient.ApiException) {
-            FxErrors.english("", e.message ?: "")
-        } catch (e: IOException) {
-            if (!isRunning) failureReason() ?: "the Foxy core exited" else "the Foxy core did not answer the connection test (${e.message})"
+            tests++
+            if (!isRunning) return failureReason() ?: "the Foxy core exited"
+            if (System.currentTimeMillis() + FxProgress.RETEST_PAUSE_MS + 5_000 >= deadline) return reason
+            RingLogBuffer.append("[fxvpn] Mozilla did not answer in time (test $tests); trying again without restarting the core")
+            try { Thread.sleep(FxProgress.RETEST_PAUSE_MS) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); return "cancelled" }
         }
     }
 

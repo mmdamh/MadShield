@@ -2324,6 +2324,10 @@ private fun fxPolicyTests() {
     check("fx progress: test ok = ready", FxProgress.fromTest(FxTestResult(true, "", "", "DE", "", 10)) == FxVerdict.Ready)
     check("fx progress: test failure carries its code", (FxProgress.fromTest(FxTestResult(false, "unreachable", "x", "", "", 0)) as FxVerdict.Failed).code == "unreachable")
     check("fx progress: test failure without a code is 'other'", (FxProgress.fromTest(FxTestResult(false, "", "", "", "", 0)) as FxVerdict.Failed).code == "other")
+    check("fx retest: a timed-out connect is tested again", FxProgress.retryable("unreachable") && FxProgress.retryable("other") && FxProgress.retryable("server") && FxProgress.retryable("test_site"))
+    check("fx retest: lasting failures are not", !FxProgress.retryable("sign_in") && !FxProgress.retryable("quota") && !FxProgress.retryable("not_entitled") && !FxProgress.retryable("no_accounts"))
+    check("fx retest: failures testing cannot change are not", !FxProgress.retryable("inside_vpn") && !FxProgress.retryable("proxy_port_in_use") && !FxProgress.retryable("location_refused"))
+    check("fx retest: the pause fits the 75 s connect time many times", FxProgress.RETEST_PAUSE_MS in 1_000L..10_000L && FxVpn.CONNECT_ALLOWANCE_MS / (15_000L + FxProgress.RETEST_PAUSE_MS) >= 3)
     check("fx errors: lasting ones", listOf("no_accounts", "quota", "sign_in", "not_entitled").all { FxErrors.isLasting(it) } && !FxErrors.isLasting("unreachable") && !FxErrors.isLasting("server"))
     check("fx errors: english line names Firefox and keeps the detail short", FxErrors.english("quota", "x".repeat(500)).let { it.contains("Firefox Account") && it.length < 400 })
 

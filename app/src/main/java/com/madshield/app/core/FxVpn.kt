@@ -457,4 +457,16 @@ object FxProgress {
     /** A connection test answered: ok = ready, else its failure code. */
     fun fromTest(t: FxTestResult): FxVerdict =
         if (t.ok) FxVerdict.Ready else FxVerdict.Failed(t.errorCode.ifEmpty { "other" }, t.error)
+
+    /**
+     * A failed connection test worth testing again while the connect time lasts. The core's test has a fixed 15 s limit and the
+     * first one also runs the wake (server list, pass, Fastly's challenge); on a slow network that ends it half done, while the
+     * core keeps what it earned (the solved cookie, the account session). Restarting the core throws that away, so the wait
+     * tries again instead. Not retried: failures that testing again cannot change.
+     */
+    fun retryable(code: String): Boolean =
+        !FxErrors.isLasting(code) && code !in setOf("inside_vpn", "proxy_port_in_use", "location_refused", "upstream_proxy")
+
+    /** Pause between two tests: the core waits ~10 s after a failed connect before it tries Mozilla again. */
+    const val RETEST_PAUSE_MS = 3_000L
 }
