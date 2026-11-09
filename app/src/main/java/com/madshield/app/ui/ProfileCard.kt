@@ -2,6 +2,13 @@ package com.madshield.app.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,10 +28,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.madshield.app.R
@@ -35,6 +47,7 @@ import com.madshield.app.core.PrivacyChain
 import com.madshield.app.core.Protocol
 import com.madshield.app.ui.components.CookieBadge
 import com.madshield.app.ui.components.InfoHint
+import com.madshield.app.ui.components.Motion
 import com.madshield.app.ui.components.SectionCard
 import java.util.Locale
 
@@ -68,7 +81,14 @@ fun ProfileCard(
     SectionCard(stringResource(R.string.sec_profile)) {
         ProfileSegments(selected) { select(it) }
         Spacer(Modifier.height(14.dp))
-        AnimatedContent(targetState = selected, label = "profile-body") { chain ->
+        AnimatedContent(
+            targetState = selected,
+            transitionSpec = {
+                fadeIn(tween(Motion.ENTER_MS - 80, delayMillis = 90, easing = Motion.Decelerate)) togetherWith
+                    fadeOut(tween(90, easing = Motion.Accelerate))
+            },
+            label = "profile-body"
+        ) { chain ->
             Column(Modifier.fillMaxWidth()) {
                 when (chain) {
                     PrivacyChain.NONE -> {
@@ -136,7 +156,12 @@ fun ProfileCard(
     }
 }
 
-/** The four choices as one pill-shaped selector: icon over a one-word label, so nothing is ever cut off. */
+/**
+ * The four choices as one pill-shaped selector: icon over a one-word label, so nothing is ever cut off.
+ * One highlight pill slides under the choices (a spring) instead of each choice switching its own background, so
+ * the eye follows a single moving object. The pill is drawn behind the row and its position is read only while
+ * drawing: moving it never recomposes. In a right-to-left layout the row reverses, and the pill with it.
+ */
 @Composable
 private fun ProfileSegments(selected: PrivacyChain, onSelect: (PrivacyChain) -> Unit) {
     val cs = MaterialTheme.colorScheme
@@ -146,19 +171,39 @@ private fun ProfileSegments(selected: PrivacyChain, onSelect: (PrivacyChain) -> 
         Triple(PrivacyChain.TOR, Icons.Rounded.Security, R.string.profile_tor),
         Triple(PrivacyChain.SINGBOX, Icons.Rounded.Link, R.string.profile_custom)
     )
+    val index = animateFloatAsState(
+        choices.indexOfFirst { it.first == selected }.coerceAtLeast(0).toFloat(),
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "seg-index"
+    )
+    val gap = 4.dp
+    val pill = cs.primary
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(cs.surfaceContainerHigh).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(26.dp))
+            .background(cs.surfaceContainerHigh)
+            .padding(gap)
+            .drawBehind {
+                val n = choices.size
+                val gapPx = gap.toPx()
+                val w = (size.width - gapPx * (n - 1)) / n
+                var x = index.value * (w + gapPx)
+                if (layoutDirection == LayoutDirection.Rtl) x = size.width - w - x
+                drawRoundRect(
+                    pill, topLeft = Offset(x, 0f), size = Size(w, size.height),
+                    cornerRadius = CornerRadius(22.dp.toPx())
+                )
+            },
+        horizontalArrangement = Arrangement.spacedBy(gap)
     ) {
         choices.forEach { (chain, icon, label) ->
             val on = chain == selected
-            val bg by animateColorAsState(if (on) cs.primary else Color.Transparent, label = "seg-bg")
             val fg by animateColorAsState(if (on) cs.onPrimary else cs.onSurfaceVariant, label = "seg-fg")
             Surface(
                 onClick = { onSelect(chain) },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(22.dp),
-                color = bg,
+                color = Color.Transparent,
                 contentColor = fg
             ) {
                 Column(Modifier.padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {

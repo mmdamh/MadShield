@@ -9,7 +9,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,6 +36,7 @@ import androidx.navigation.compose.rememberNavController
 import com.madshield.app.core.*
 import com.madshield.app.ui.*
 import com.madshield.app.ui.components.FloatingNavBar
+import com.madshield.app.ui.components.Motion
 import com.madshield.app.ui.components.Tab
 import com.madshield.app.ui.theme.MadShieldTheme
 import com.madshield.app.ui.theme.DarkMode
@@ -210,12 +214,28 @@ class MainActivity : ComponentActivity() {
 
                 // Edge-to-edge: the window is not resized for the keyboard, so every screen is padded by the
                 // keyboard's height here, once. Fields at the bottom of a page then stay visible and scroll into view.
-                NavHost(nav, startDestination = "main", modifier = Modifier.imePadding()) {
+                // New content comes from the reading-end side: the right in left-to-right layouts, the left in Persian.
+                val dir = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1 else 1
+                NavHost(
+                    nav, startDestination = "main", modifier = Modifier.imePadding(),
+                    enterTransition = { Motion.arrive(dir) },
+                    exitTransition = { Motion.cover(dir) },
+                    popEnterTransition = { Motion.arrive(-dir) },
+                    popExitTransition = { Motion.cover(-dir) }
+                ) {
                     composable("main") {
                         val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
                         val padding = PaddingValues(top = top)
                         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-                            Crossfade(tab, label = "tabs") { current ->
+                            AnimatedContent(
+                                targetState = tab,
+                                transitionSpec = {
+                                    // Further along the bar = arrives from the end side; back = from the start side.
+                                    val step = if (targetState.ordinal >= initialState.ordinal) dir else -dir
+                                    Motion.arrive(step) togetherWith Motion.cover(step)
+                                },
+                                label = "tabs"
+                            ) { current ->
                                 when (current) {
                                     Tab.Home -> HomeScreen(
                                         config = config,

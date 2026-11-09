@@ -175,19 +175,23 @@ fun SettingsScreen(
             InfoHint(stringResource(R.string.zt_help))
         }
 
+        // The pages behind the rows, in three labelled groups: what the VPN is doing, the app itself, tools.
+        GroupLabel(stringResource(R.string.grp_activity))
         NavRow(Icons.Rounded.SwapVert, stringResource(R.string.conn_title), stringResource(R.string.conn_nav_sub), onOpenConnections)
         NavRow(Icons.Rounded.DataUsage, stringResource(R.string.usage_title), stringResource(R.string.usage_nav_sub), onOpenUsage)
+        GroupLabel(stringResource(R.string.grp_app))
+        NavRow(Icons.Rounded.Palette, stringResource(R.string.sec_appearance), stringResource(R.string.appearance_nav_sub), onOpenAppearance)
         NavRow(Icons.Rounded.Storage, stringResource(R.string.storage_title), stringResource(R.string.storage_nav_sub), onOpenStorage)
         NavRow(Icons.Rounded.Backup, stringResource(R.string.bk_title), stringResource(R.string.bk_nav_sub), onOpenBackup)
-        NavRow(Icons.Rounded.Palette, stringResource(R.string.sec_appearance), stringResource(R.string.appearance_nav_sub), onOpenAppearance)
+        GroupLabel(stringResource(R.string.grp_tools))
         NavRow(Icons.Rounded.Tune, stringResource(R.string.sec_advanced), stringResource(R.string.advanced_nav_sub), onOpenAdvanced)
-        // ---------------------------------------------------------------- privacy
         NavRow(
             Icons.Rounded.Speed,
             stringResource(R.string.diag_title),
             stringResource(R.string.diag_nav_sub),
             onOpenDiagnostics
         )
+        // ---------------------------------------------------------------- privacy
         SectionCard(stringResource(R.string.sec_privacy)) {
             Text(
                 stringResource(R.string.privacy_body),
@@ -525,6 +529,15 @@ fun AdvancedScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/** Small heading over a group of page links. */
+@Composable
+private fun GroupLabel(text: String) {
+    Text(
+        text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 8.dp, top = 8.dp)
+    )
 }
 
 @Composable

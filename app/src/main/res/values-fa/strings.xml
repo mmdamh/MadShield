@@ -713,4 +713,7 @@
     <string name="bk_restored_none">چیزی بازیابی نشد.</string>
     <string name="bk_usage_skipped">آمار رد شد، چون اتصال فعال است.</string>
     <string name="bk_secrets_failed">لینک‌ها ذخیره نشد (حافظهٔ امن اجازه نداد).</string>
+    <string name="grp_activity">فعالیت</string>
+    <string name="grp_app">برنامه</string>
+    <string name="grp_tools">ابزارها</string>
 </resources>

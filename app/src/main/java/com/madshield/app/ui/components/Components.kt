@@ -2,7 +2,9 @@ package com.madshield.app.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,10 +29,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,43 +45,83 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
+/** Outline samples per lobe. Joined with smooth curves (see [BlobTable.fill]), so this can stay small. */
+private const val BLOB_SAMPLES_PER_LOBE = 12
+
 /**
- * The scalloped "cookie" button shape of the ZedSecure home screen, drawn with
- * plain Canvas maths (no extra dependency): radius = R * (1 + amplitude * cos(lobes * angle)).
- * Animating [amplitude] and [rotationDeg] gives the calm/searching/live looks.
+ * The fixed part of the cookie outline: sin/cos of every sample angle and cos(lobes * angle), computed ONCE per lobe
+ * count. Per frame the outline then costs a multiply-add per point instead of three trigonometric calls per point.
+ * [xs]/[ys] are scratch space reused by every rebuild (only touched on the main thread, from the draw cache).
+ */
+private class BlobTable(lobes: Int) {
+    val n = lobes * BLOB_SAMPLES_PER_LOBE
+    private val cosA = FloatArray(n)
+    private val sinA = FloatArray(n)
+    private val lobe = FloatArray(n)
+    private val xs = FloatArray(n)
+    private val ys = FloatArray(n)
+
+    init {
+        for (i in 0 until n) {
+            val a = 2.0 * PI * i / n
+            cosA[i] = cos(a).toFloat()
+            sinA[i] = sin(a).toFloat()
+            lobe[i] = cos(lobes * a).toFloat()
+        }
+    }
+
+    /**
+     * Rewrites [path] in place (no new Path, no new buffers): radius = base * (1 + amp * cos(lobes * angle)). The
+     * samples are control points of quadratic curves between the midpoints of neighbouring samples, a closed smooth
+     * outline with no visible facets even though there are only a dozen samples per lobe.
+     */
+    fun fill(path: Path, cx: Float, cy: Float, base: Float, amp: Float) {
+        for (i in 0 until n) {
+            val r = base * (1f + amp * lobe[i])
+            xs[i] = cx + r * cosA[i]
+            ys[i] = cy + r * sinA[i]
+        }
+        path.rewind()
+        val last = n - 1
+        path.moveTo((xs[last] + xs[0]) / 2f, (ys[last] + ys[0]) / 2f)
+        for (i in 0 until n) {
+            val j = if (i == last) 0 else i + 1
+            path.quadraticBezierTo(xs[i], ys[i], (xs[i] + xs[j]) / 2f, (ys[i] + ys[j]) / 2f)
+        }
+        path.close()
+    }
+}
+
+/**
+ * The scalloped "cookie" button shape of the ZedSecure home screen, drawn with plain Canvas maths (no extra
+ * dependency): radius = R * (1 + amplitude * cos(lobes * angle)).
  *
- * [rotationDeg] is a LAMBDA read while drawing, not a value read while composing. Reading the animated angle in
- * composition recomposed the whole home screen on every frame (60 times a second) for as long as the button
- * spun; read in the draw phase it only redraws. The outline path is built once per size/amplitude, not per frame.
+ * Nothing here is read while composing. [amplitude], [endColor] and [rotationDeg] are lambdas over animated State:
+ *  - [amplitude] and [endColor] are read inside the draw cache, so while they animate only the outline/gradient is
+ *    rebuilt (into the same Path, from the precomputed table), never the composition;
+ *  - [rotationDeg] drives a graphicsLayer, so spinning only moves the layer on the render thread: the outline is not
+ *    redrawn per frame at all. (The gradient turns with the shape, as it did when the canvas was rotated.)
+ * The Brush is created with the cache, not on every draw.
  */
 @Composable
 fun CookieBlob(
     modifier: Modifier,
-    brush: Brush,
-    amplitude: Float,
-    rotationDeg: () -> Float,
+    startColor: Color,
+    endColor: () -> Color,
+    amplitude: () -> Float,
+    rotationDeg: (() -> Float)? = null,
     lobes: Int = 10
 ) {
+    val table = remember(lobes) { BlobTable(lobes) }
+    val path = remember { Path() }
+    val turned = if (rotationDeg == null) modifier else modifier.graphicsLayer { rotationZ = rotationDeg() }
     Box(
-        modifier.drawWithCache {
-            val steps = 220
+        turned.drawWithCache {
+            val amp = amplitude()
+            val brush = Brush.linearGradient(listOf(startColor, endColor()))
             val outer = min(size.width, size.height) / 2f
-            val base = outer / (1f + amplitude)
-            val cx = size.width / 2f
-            val cy = size.height / 2f
-            val path = Path()
-            for (i in 0..steps) {
-                val a = 2.0 * PI * i / steps
-                val r = base * (1f + amplitude * cos(lobes * a).toFloat())
-                val x = cx + r * cos(a).toFloat()
-                val y = cy + r * sin(a).toFloat()
-                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-            }
-            path.close()
-            val pivot = androidx.compose.ui.geometry.Offset(cx, cy)
-            onDrawBehind {
-                rotate(rotationDeg(), pivot = pivot) { drawPath(path, brush) }
-            }
+            table.fill(path, size.width / 2f, size.height / 2f, outer / (1f + amp), amp)
+            onDrawBehind { drawPath(path, brush) }
         }
     )
 }
@@ -164,7 +206,7 @@ fun InfoSwitchRow(label: String, info: String, checked: Boolean, onCheckedChange
             Spacer(Modifier.weight(1f))
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
-        AnimatedVisibility(visible = open) { HelperText(info) }
+        AnimatedVisibility(visible = open, enter = Motion.reveal, exit = Motion.conceal) { HelperText(info) }
     }
 }
 
@@ -296,7 +338,7 @@ fun InfoHint(text: String, modifier: Modifier = Modifier, error: Boolean = false
                 color = if (error) cs.error else cs.primary
             )
         }
-        AnimatedVisibility(visible = open) { HelperText(text, error = error) }
+        AnimatedVisibility(visible = open, enter = Motion.reveal, exit = Motion.conceal) { HelperText(text, error = error) }
     }
 }
 
@@ -315,7 +357,10 @@ fun FoldCard(
 ) {
     val cs = MaterialTheme.colorScheme
     var open by rememberSaveable { mutableStateOf(startOpen) }
-    val turn by animateFloatAsState(if (open) 180f else 0f, label = "fold-arrow")
+    val turn = animateFloatAsState(
+        if (open) 180f else 0f,
+        spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "fold-arrow"
+    )
     Surface(shape = RoundedCornerShape(28.dp), color = cs.surfaceContainer, modifier = modifier.fillMaxWidth()) {
         Column {
             Row(
@@ -334,9 +379,12 @@ fun FoldCard(
                         maxLines = 1, overflow = TextOverflow.Ellipsis
                     )
                 }
-                Icon(Icons.Rounded.KeyboardArrowDown, null, tint = cs.onSurfaceVariant, modifier = Modifier.rotate(turn))
+                Icon(
+                    Icons.Rounded.KeyboardArrowDown, null, tint = cs.onSurfaceVariant,
+                    modifier = Modifier.graphicsLayer { rotationZ = turn.value }
+                )
             }
-            AnimatedVisibility(visible = open) {
+            AnimatedVisibility(visible = open, enter = Motion.reveal, exit = Motion.conceal) {
                 Column(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 16.dp), content = content)
             }
         }
@@ -354,9 +402,9 @@ fun CookieBadge(size: Dp, modifier: Modifier = Modifier, content: @Composable Bo
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
         CookieBlob(
             Modifier.matchParentSize(),
-            brush = Brush.linearGradient(listOf(cs.primaryContainer, cs.tertiaryContainer)),
-            amplitude = 0.06f,
-            rotationDeg = { 0f },
+            startColor = cs.primaryContainer,
+            endColor = { cs.tertiaryContainer },
+            amplitude = { 0.06f },
             lobes = 8
         )
         content()

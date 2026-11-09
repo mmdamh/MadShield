@@ -154,8 +154,17 @@ fun ConnectionsScreen(config: EngineConfig, onBack: () -> Unit) {
                 HelperText(stringResource(R.string.conn_none))
             }
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(rows, key = { (if (it.route == RouteAction.BLOCK) "b" else "a") + it.id }) { c ->
-                    ConnRow(c, onOpen = { detail = c }, onClose = { act { InsightHub.closeConnection?.invoke(c.id) } })
+                items(
+                    rows,
+                    key = { (if (it.route == RouteAction.BLOCK) "b" else "a") + it.id },
+                    contentType = { "connection" }
+                ) { c ->
+                    // animateItem: rows that open, close or change filter slide into place instead of jumping.
+                    ConnRow(
+                        c, onOpen = { detail = c },
+                        onClose = { act { InsightHub.closeConnection?.invoke(c.id) } },
+                        modifier = Modifier.animateItem()
+                    )
                 }
             }
         }
@@ -192,12 +201,12 @@ private fun Stat(value: String, label: String, color: Color) {
 }
 
 @Composable
-private fun ConnRow(c: ConnView, onOpen: () -> Unit, onClose: () -> Unit) {
+private fun ConnRow(c: ConnView, onOpen: () -> Unit, onClose: () -> Unit, modifier: Modifier = Modifier) {
     val color = routeColor(c.route)
     val blocked = c.route == RouteAction.BLOCK
     Surface(
         onClick = onOpen, shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()
+        color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = modifier.fillMaxWidth()
     ) {
         Row(Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(10.dp).clip(CircleShape).background(color))

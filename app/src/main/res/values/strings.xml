@@ -715,4 +715,7 @@
     <string name="bk_restored_none">Nothing was restored.</string>
     <string name="bk_usage_skipped">Statistics were skipped because a connection is running.</string>
     <string name="bk_secrets_failed">The links could not be saved (secure storage refused).</string>
+    <string name="grp_activity">Activity</string>
+    <string name="grp_app">App</string>
+    <string name="grp_tools">Tools</string>
 </resources>

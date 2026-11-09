@@ -1,13 +1,13 @@
 package com.madshield.app.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.expandHorizontally
-import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Dns
@@ -17,15 +17,21 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
 import com.madshield.app.R
 
 enum class Tab(val icon: ImageVector, val labelRes: Int) {
@@ -35,13 +41,19 @@ enum class Tab(val icon: ImageVector, val labelRes: Int) {
     Settings(Icons.Rounded.Settings, R.string.nav_settings),
 }
 
+private val TileSize = 52.dp
+private val TileShape = RoundedCornerShape(18.dp)
+
 /**
- * Floating pill navigation in the style of ZedSecure's "expressive" bar: the
- * selected destination expands to show its label, the others are just icons.
+ * Floating pill navigation. Each destination is a square tile with an icon on its face; the selected one flips over
+ * in 3D (a spring, so it settles with a small overshoot) to its other side, which carries the same icon on the
+ * theme's primary-to-tertiary gradient. The label is not drawn but is the tile's accessibility description, and the
+ * tile reports "selected" and the tab role to TalkBack.
  */
 @Composable
 fun FloatingNavBar(current: Tab, onSelect: (Tab) -> Unit) {
     val cs = MaterialTheme.colorScheme
+    val tick = rememberTick()
     Box(
         Modifier
             .fillMaxWidth()
@@ -57,42 +69,77 @@ fun FloatingNavBar(current: Tab, onSelect: (Tab) -> Unit) {
         ) {
             Row(
                 Modifier.padding(8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Tab.entries.forEach { tab ->
-                    val selected = tab == current
-                    val bg by animateColorAsState(if (selected) cs.primary else cs.surfaceContainerHigh, label = "nav-bg")
-                    val fg by animateColorAsState(if (selected) cs.onPrimary else cs.onSurfaceVariant, label = "nav-fg")
-                    val label = stringResource(tab.labelRes)
-                    Surface(
-                        onClick = { onSelect(tab) },
-                        shape = CircleShape,
-                        color = bg,
-                        contentColor = fg
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = if (selected) 16.dp else 14.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(tab.icon, contentDescription = label, modifier = Modifier.size(22.dp))
-                            AnimatedVisibility(
-                                visible = selected,
-                                enter = fadeIn() + expandHorizontally(),
-                                exit = fadeOut() + shrinkHorizontally()
-                            ) {
-                                Text(
-                                    label,
-                                    Modifier.padding(start = 8.dp),
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
+                    FlipTab(
+                        tab = tab,
+                        selected = tab == current,
+                        label = stringResource(tab.labelRes),
+                        onClick = { if (tab != current) { tick(); onSelect(tab) } }
+                    )
                 }
             }
         }
+    }
+}
+
+/**
+ * One tile. Both animated numbers (the flip angle and the press scale) are State read only inside graphicsLayer
+ * blocks, so while a tile moves nothing recomposes: it is render-thread work.
+ *
+ * Two faces share the tile. The back face is pre-turned by 180 degrees so it reads the right way round once the
+ * tile has flipped, and each face is shown only on its own side of the 90 degree mark (alpha 0 on the hidden one).
+ */
+@Composable
+private fun FlipTab(tab: Tab, selected: Boolean, label: String, onClick: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val density = LocalDensity.current.density
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+
+    val flip = animateFloatAsState(
+        if (selected) 180f else 0f,
+        spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow), label = "nav-flip"
+    )
+    val press = animateFloatAsState(if (pressed) 0.92f else 1f, spring(stiffness = 500f), label = "nav-press")
+
+    Box(
+        Modifier
+            .size(TileSize)
+            .graphicsLayer {
+                // A camera that is too close clips the corners of the tile as it turns edge-on.
+                cameraDistance = 12f * density
+                rotationY = flip.value
+                scaleX = press.value
+                scaleY = press.value
+            }
+            .selectable(
+                selected = selected,
+                interactionSource = source,
+                indication = null,
+                role = Role.Tab,
+                onClick = onClick
+            )
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { alpha = if (flip.value < 90f) 1f else 0f }
+                .clip(TileShape)
+                .background(cs.surfaceContainerHighest),
+            contentAlignment = Alignment.Center
+        ) { Icon(tab.icon, contentDescription = null, tint = cs.onSurfaceVariant, modifier = Modifier.size(22.dp)) }
+        Box(
+            Modifier
+                .matchParentSize()
+                .graphicsLayer { rotationY = 180f; alpha = if (flip.value >= 90f) 1f else 0f }
+                .clip(TileShape)
+                .background(Brush.linearGradient(listOf(cs.primary, cs.tertiary))),
+            contentAlignment = Alignment.Center
+        ) { Icon(tab.icon, contentDescription = null, tint = cs.onPrimary, modifier = Modifier.size(22.dp)) }
     }
 }

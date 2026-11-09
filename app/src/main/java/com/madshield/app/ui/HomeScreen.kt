@@ -27,7 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -44,6 +44,7 @@ import com.madshield.app.R
 import com.madshield.app.core.*
 import com.madshield.app.ui.components.CookieBlob
 import com.madshield.app.ui.components.NavClearance
+import com.madshield.app.ui.components.rememberTick
 import com.madshield.app.ui.components.rememberIsForeground
 import com.madshield.app.ui.components.PillToggle
 import com.madshield.app.ui.theme.ConnectStyle
@@ -367,33 +368,54 @@ private fun PowerGlyph(size: androidx.compose.ui.unit.Dp, tint: Color, descripti
     Icon(Icons.Rounded.PowerSettingsNew, contentDescription = description, tint = tint, modifier = Modifier.size(size))
 }
 
+/** Spin speeds in degrees per second: one turn per 3.2 s while connecting, one per 24 s while connected. */
+private const val SPIN_BUSY_DPS = 112.5f
+private const val SPIN_LIVE_DPS = 15f
+
+/**
+ * The blob's angle. The speed is animated and the angle is the running sum of speed x frame time, so going from
+ * "connecting" to "connected" (or to idle) slows the spin down smoothly instead of restarting an animation from
+ * zero, which is what jumped the old repeating transition when its duration changed.
+ *
+ * The frame loop exists only while [active], plus the short moment the speed needs to die away after it ends; an
+ * idle button runs nothing, as before. The angle is State read from a graphicsLayer, so nothing recomposes.
+ */
+@Composable
+private fun rememberBlobSpin(active: Boolean, busy: Boolean): State<Float> {
+    val angle = remember { mutableFloatStateOf(0f) }
+    val speed = animateFloatAsState(
+        when { !active -> 0f; busy -> SPIN_BUSY_DPS; else -> SPIN_LIVE_DPS },
+        spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessVeryLow), label = "blob-speed"
+    )
+    LaunchedEffect(active) {
+        var last = withFrameNanos { it }
+        while (active || speed.value > 0.5f) {
+            val now = withFrameNanos { it }
+            angle.floatValue = (angle.floatValue + speed.value * (now - last) / 1_000_000_000f) % 360f
+            last = now
+        }
+    }
+    return angle
+}
+
 @Composable
 private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     val live = state is ConnectionState.Connected
     val busy = state is ConnectionState.Connecting || state is ConnectionState.Disconnecting
 
-    // Rotation only runs while it means something (connecting / connected); an idle
-    // button costs nothing, which keeps battery use flat.
-    // The angle is kept as State and only read while drawing (see CookieBlob): no recomposition per frame.
-    val spin: State<Float>? = if (busy || live) {
-        val transition = rememberInfiniteTransition(label = "blob")
-        transition.animateFloat(
-            initialValue = 0f, targetValue = 360f,
-            animationSpec = infiniteRepeatable(
-                tween(if (busy) 3200 else 24000, easing = LinearEasing), RepeatMode.Restart
-            ),
-            label = "blob-spin"
-        )
-    } else null
-    val amplitude by animateFloatAsState(
+    // Every animated value below stays State and is read in the draw/layer phase (lambdas), never in composition:
+    // the home screen does not recompose while the button spins, breathes or is pressed.
+    val spin = rememberBlobSpin(active = busy || live, busy = busy)
+    val amplitude = animateFloatAsState(
         when { busy -> 0.10f; live -> 0.075f; else -> 0.04f },
         spring(dampingRatio = 0.6f, stiffness = 260f), label = "blob-amp"
     )
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    val squash by animateFloatAsState(if (pressed) 0.92f else 1f, spring(stiffness = 500f), label = "blob-squash")
-    val end by animateColorAsState(if (live || busy) cs.tertiary else cs.primary, label = "blob-end")
+    val squash = animateFloatAsState(if (pressed) 0.92f else 1f, spring(stiffness = 500f), label = "blob-squash")
+    val end = animateColorAsState(if (live || busy) cs.tertiary else cs.primary, label = "blob-end")
+    val tick = rememberTick()
 
     val action = stringResource(
         when (state) {
@@ -406,19 +428,20 @@ private fun ConnectBlob(state: ConnectionState, onTap: () -> Unit) {
     Box(
         Modifier
             .size(196.dp)
-            .scale(squash)
+            .graphicsLayer { scaleX = squash.value; scaleY = squash.value }
             .clip(CircleShape)
             .clickable(
                 interactionSource = source, indication = null,
-                enabled = state !is ConnectionState.Disconnecting, onClick = onTap
+                enabled = state !is ConnectionState.Disconnecting, onClick = { tick(); onTap() }
             ),
         contentAlignment = Alignment.Center
     ) {
         CookieBlob(
             Modifier.matchParentSize(),
-            brush = Brush.linearGradient(listOf(cs.primary, end)),
-            amplitude = amplitude,
-            rotationDeg = { spin?.value ?: 0f }
+            startColor = cs.primary,
+            endColor = { end.value },
+            amplitude = { amplitude.value },
+            rotationDeg = { spin.value }
         )
         if (live) {
             UptimeText((state as ConnectionState.Connected).sinceMs, cs.onPrimary)
