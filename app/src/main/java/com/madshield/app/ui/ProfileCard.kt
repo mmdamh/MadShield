@@ -266,11 +266,11 @@ private fun CountryRow(
 }
 
 /** "DE" -> its flag emoji. */
-private fun flagOf(code: String): String =
+internal fun flagOf(code: String): String =
     String(code.map { Character.toChars(0x1F1E6 + (it - 'A')) }.flatMap { it.asList() }.toCharArray())
 
 /** "DE" -> "Germany" / "آلمان", in the app's language; falls back to the code if the system has no name for it. */
-private fun countryName(code: String): String {
+internal fun countryName(code: String): String {
     val name = Locale("", code).getDisplayCountry(Locale.getDefault())
     return if (name.isBlank() || name.equals(code, ignoreCase = true)) code else name
 }

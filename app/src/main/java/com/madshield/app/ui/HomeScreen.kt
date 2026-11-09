@@ -75,6 +75,24 @@ fun HomeScreen(
     contentPadding: PaddingValues,
     connectStyle: ConnectStyle = ConnectStyle.BLOB
 ) {
+    // update41: exit address under the Connect button, and the sleep timer.
+    val running by AetherController.active.collectAsState()
+    val socksPort = running?.socksPort ?: config.socksPort
+    var showExit by remember { mutableStateOf(false) }
+    var showSleep by remember { mutableStateOf(false) }
+    val sleepCtx = LocalContext.current
+    LaunchedEffect(Unit) { SleepTimer.restore(sleepCtx) }
+    val connectedSince = (connectionState as? ConnectionState.Connected)?.sinceMs
+    LaunchedEffect(connectedSince, socksPort) {
+        if (connectedSince == null) { ExitIpHub.clear(); return@LaunchedEffect }
+        ExitIpHub.forConnection(connectedSince)
+        // Once per connection (not every time this tab is shown): a short pause lets the first packets settle, then two tries.
+        if (ExitIpHub.v4.value is ExitCheck.Idle) {
+            delay(1_500)
+            ExitIpHub.check(socksPort, ipv6 = false, tries = 2)
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -88,6 +106,11 @@ fun HomeScreen(
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.weight(1f).padding(start = 4.dp)
             )
+            // update41: sleep timer, only while there is a connection to stop.
+            if (connectionState is ConnectionState.Connected) {
+                SleepButton(onClick = { showSleep = true })
+                Spacer(Modifier.width(8.dp))
+            }
             FilledTonalIconButton(onClick = onOpenLog) {
                 Icon(Icons.Rounded.Terminal, contentDescription = stringResource(R.string.log_title))
             }
@@ -114,7 +137,7 @@ fun HomeScreen(
         if (connectionState is ConnectionState.Error) {
             ErrorCard(connectionState.message, onRetry = onConnect, onStop = onDisconnect, onLog = onOpenLog)
         } else {
-            HeroCard(config, connectionState, connectStyle, onTap = {
+            HeroCard(config, connectionState, connectStyle, below = { ExitIpChip(onClick = { showExit = true }) }, onTap = {
                 when (connectionState) {
                     is ConnectionState.Idle -> onConnect()
                     is ConnectionState.Connected, is ConnectionState.Connecting -> onDisconnect()
@@ -124,7 +147,6 @@ fun HomeScreen(
         }
 
         Spacer(Modifier.height(10.dp))
-        val running by AetherController.active.collectAsState()
         FactChips(config, running)
         Spacer(Modifier.height(10.dp))
         if (config.mode == ConnectionMode.VPN) {
@@ -140,6 +162,13 @@ fun HomeScreen(
         ShortcutTiles(onOpenConnections, onOpenUsage, onOpenAdvanced)
         // Bottom padding so the floating navigation bar never covers the last card.
         Spacer(Modifier.height(NavClearance))
+    }
+
+    if (showExit && connectionState is ConnectionState.Connected) {
+        ExitIpSheet(socksPort, vpnMode = config.mode == ConnectionMode.VPN, onDismiss = { showExit = false })
+    }
+    if (showSleep && connectionState is ConnectionState.Connected) {
+        SleepTimerSheet(proxyOnly = (running ?: config).mode == ConnectionMode.PROXY_ONLY, onDismiss = { showSleep = false })
     }
 }
 
@@ -181,7 +210,10 @@ private fun ShortcutTile(icon: ImageVector, title: String, sub: String, onClick:
 // ----------------------------------------------------------------------- hero
 
 @Composable
-private fun HeroCard(config: EngineConfig, state: ConnectionState, style: ConnectStyle, onTap: () -> Unit) {
+private fun HeroCard(
+    config: EngineConfig, state: ConnectionState, style: ConnectStyle,
+    below: @Composable () -> Unit, onTap: () -> Unit
+) {
     val cs = MaterialTheme.colorScheme
     val live = state is ConnectionState.Connected
     val busy = state is ConnectionState.Connecting || state is ConnectionState.Disconnecting
@@ -226,6 +258,10 @@ private fun HeroCard(config: EngineConfig, state: ConnectionState, style: Connec
                 color = sub,
                 textAlign = TextAlign.Center
             )
+            if (live) {
+                Spacer(Modifier.height(14.dp))
+                below()
+            }
             if (busy) {
                 Spacer(Modifier.height(14.dp))
                 LinearProgressIndicator(

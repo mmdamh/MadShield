@@ -249,6 +249,7 @@ class MainActivity : ComponentActivity() {
                                         onOpenConnections = { nav.navigate("connections") },
                                         onOpenUsage = { nav.navigate("usage") },
                                         onOpenStorage = { nav.navigate("storage") },
+                                        onOpenBackup = { nav.navigate("backup") },
                                         onAskPermission = { askPermission(it) },
                                         contentPadding = padding
                                     )
@@ -291,6 +292,7 @@ class MainActivity : ComponentActivity() {
                             { nav.popBackStack() }
                         )
                     }
+                    composable("backup") { BackupScreen(settingsStore, onBack = { nav.popBackStack() }) }
                     composable("diagnostics") {
                         DiagnosticsScreen(config, connectionState, onBack = { nav.popBackStack() })
                     }

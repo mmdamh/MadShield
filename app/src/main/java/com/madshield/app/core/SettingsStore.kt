@@ -86,6 +86,52 @@ class SettingsStore(private val context: Context) {
         val STORAGE_LAST = longPreferencesKey("storage_last_clean_ms")
     }
 
+    // ---- Backup (update41). Every stored setting that can be backed up, by type. A key missing here is simply not
+    // backed up; a key present here is the ONLY kind a restore will write, with its own type, so a damaged or hand-made
+    // file can never put a value of the wrong type under a key (that would crash the next read). Add new keys here too.
+    private val backupStringKeys = listOf(
+        Keys.MODE, Keys.TUN_ENGINE, Keys.ENGINE_KIND, Keys.FX_PORT_POLICY, Keys.PROTOCOL, Keys.APP_SELECTION_MODE,
+        Keys.ZT_TEAM, Keys.EXIT_LOC, Keys.SCAN, Keys.IP_MODE, Keys.NOIZE, Keys.ECH_DNS, Keys.CHAIN, Keys.PSIPHON_REGION,
+        Keys.PERF, Keys.DOH_RESOLVERS, Keys.MASQUE_SNI, Keys.TLS_PRESET, Keys.THEME_ID, Keys.DARK_MODE, Keys.CONNECT_STYLE
+    ).associateBy { it.name }
+    private val backupBoolKeys = listOf(
+        Keys.KILL_SWITCH, Keys.FRAGMENT, Keys.ECH, Keys.MASQUE_H2, Keys.QUICK_RECONNECT, Keys.NOTIF_SPEED,
+        Keys.LIVE_UPDATE, Keys.POWER_SAVER, Keys.UDP_ENABLED, Keys.DOH_ON, Keys.DOH_VIA_TOR, Keys.DOH_SERVE_STALE,
+        Keys.DOH_FOR_DIRECT, Keys.AMOLED, Keys.STORAGE_AUTO, Keys.STORAGE_KEEP_ENGINE
+    ).associateBy { it.name }
+    private val backupIntKeys = listOf(Keys.MTU, Keys.CUSTOM_COLOR, Keys.STORAGE_DAYS).associateBy { it.name }
+    private val backupSetKeys = listOf(Keys.DNS, Keys.DIRECT_RULES, Keys.BLOCK_RULES, Keys.SELECTED_PACKAGES).associateBy { it.name }
+
+    /** All backed-up settings that are set right now (an unset one is left out, so restoring it keeps the default). */
+    suspend fun exportPrefs(): List<PrefEntry> {
+        val p = context.dataStore.data.first()
+        val out = ArrayList<PrefEntry>()
+        for (k in backupStringKeys.values) p[k]?.let { out.add(PrefEntry(k.name, PrefType.STRING, it)) }
+        for (k in backupBoolKeys.values) p[k]?.let { out.add(PrefEntry(k.name, PrefType.BOOL, it)) }
+        for (k in backupIntKeys.values) p[k]?.let { out.add(PrefEntry(k.name, PrefType.INT, it)) }
+        for (k in backupSetKeys.values) p[k]?.let { out.add(PrefEntry(k.name, PrefType.SET, it.toList().sorted())) }
+        return out
+    }
+
+    /** Writes the known entries in ONE transaction and returns how many were applied. Unknown names and mismatched types are ignored. */
+    @Suppress("UNCHECKED_CAST")
+    suspend fun importPrefs(entries: List<PrefEntry>): Int {
+        var applied = 0
+        context.dataStore.edit { p ->
+            applied = 0
+            for (e in entries) {
+                when (e.type) {
+                    PrefType.STRING -> backupStringKeys[e.key]?.let { p[it] = e.value as String; applied++ }
+                    PrefType.BOOL -> backupBoolKeys[e.key]?.let { p[it] = e.value as Boolean; applied++ }
+                    PrefType.INT -> backupIntKeys[e.key]?.let { p[it] = e.value as Int; applied++ }
+                    PrefType.SET -> backupSetKeys[e.key]?.let { p[it] = (e.value as List<String>).toSet(); applied++ }
+                    PrefType.LONG -> Unit
+                }
+            }
+        }
+        return applied
+    }
+
     private val encryptedPrefs by lazy {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -295,4 +341,38 @@ class SettingsStore(private val context: Context) {
             }.apply()
         }
     }
+
+    /** For backup: the saved custom links (as the app stores them) and the Zero Trust secret; only what is set. */
+    fun exportSecrets(): Map<String, Any?> {
+        val out = linkedMapOf<String, Any?>()
+        val book = loadLinkBook()
+        if (book.profiles.isNotEmpty()) out["links"] = LinkProfiles.encode(book)
+        getServiceTokenSecret()?.takeIf { it.isNotBlank() }?.let { out["ztSecret"] = it }
+        return out
+    }
+
+    /**
+     * Restores [raw] (what [exportSecrets] wrote): links are MERGED with the saved ones, the Zero Trust secret is set.
+     * @return how many links were added, whether the secret was restored, and whether saving failed (Keystore).
+     */
+    fun importSecrets(raw: Any?): SecretsRestore {
+        val m = raw as? Map<*, *> ?: return SecretsRestore(0, false, false)
+        var added = 0
+        var failed = false
+        (m["links"] as? String)?.let { text ->
+            val incoming = LinkProfiles.decode(text)
+            val current = loadLinkBook()
+            val merged = LinkBookMerge.merge(current, incoming)
+            added = merged.profiles.size - current.profiles.size
+            if (added > 0 || merged.activeId != current.activeId) {
+                if (!saveLinkBook(merged)) { failed = true; added = 0 }
+            }
+        }
+        var secret = false
+        (m["ztSecret"] as? String)?.takeIf { it.isNotBlank() && it.length <= 4_000 }?.let { setServiceTokenSecret(it); secret = true }
+        return SecretsRestore(added, secret, failed)
+    }
 }
+
+/** What restoring the secrets part did (update41). */
+data class SecretsRestore(val linksAdded: Int, val secretRestored: Boolean, val failed: Boolean)

@@ -680,6 +680,7 @@ class AetherVpnService : VpnService() {
         releaseTun()
         AetherController.setLockdown(null)
         RouteMatcher.clearCache()
+        SleepTimer.cancel(this) // a sleep timer never outlives its connection
         // A startup failure stops the service on purpose and must leave its Error visible;
         // a user-requested stop (or a revoke) always returns to Idle.
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error

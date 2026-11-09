@@ -1973,6 +1973,9 @@ fun fxTests() {
     fxWebTests()
     liveApplyTests()
     fxSpeedTests()
+    exitIpTests()
+    sleepTimerTests()
+    backupTests()
 }
 
 // update37: what applies at once and what asks for a reconnect
@@ -2364,4 +2367,119 @@ private fun fxSpeedTests() {
     val host = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
     check("fx speed: the entry point reads and bounds both", host.contains("MFX_UPSTREAM_CONNS") && host.contains("maxUpstreamConns") && host.contains("MFX_TRANSPORT") &&
         host.contains("v == \"h2\" || v == \"h3\""))
+}
+
+
+// update41: exit address (trace parsing), sleep timer arithmetic, backup file
+private fun exitIpTests() {
+    val trace = "fl=1f1\nh=1.1.1.1\nip=104.28.162.109\nts=1731100000.1\nvisit_scheme=https\nuag=MadShield\ncolo=FRA\nsni=off\nhttp=http/1.1\nloc=DE\ntls=TLSv1.3\nwarp=on\n"
+    val ok = ExitTrace.parse(trace)
+    check("exit: address, country and data center are read", ok != null && ok.ip == "104.28.162.109" && ok.country == "DE" && ok.colo == "FRA" && !ok.isV6)
+    val v6 = ExitTrace.parse("ip=2a09:bac1:1234::7\nloc=nl\ncolo=AMS\n")
+    check("exit: an IPv6 answer is recognised and the country is upper-cased", v6 != null && v6.isV6 && v6.country == "NL")
+    check("exit: no ip line is no answer", ExitTrace.parse("loc=DE\ncolo=FRA\n") == null)
+    check("exit: a bad address is no answer", ExitTrace.parse("ip=999.1.1.1\n") == null && ExitTrace.parse("ip=<script>\n") == null && ExitTrace.parse("ip=\n") == null)
+    check("exit: unknown countries become null", ExitTrace.country("XX") == null && ExitTrace.country("T1") == null && ExitTrace.country("") == null && ExitTrace.country("DEU") == null && ExitTrace.country(null) == null)
+    val withHeaders = "HTTP/1.1 200 OK\r\nAlt-Svc: h3=\":443\"; ma=86400\r\nContent-Type: text/plain\r\n\r\n1b\r\nip=1.2.3.4\nloc=SE\n\r\n0\r\n"
+    val h = ExitTrace.parse(withHeaders)
+    check("exit: header lines and chunk sizes do not confuse the reader", h != null && h.ip == "1.2.3.4" && h.country == "SE")
+    check("exit: the first ip line wins", ExitTrace.parse("ip=1.1.1.1\nip=2.2.2.2\n")?.ip == "1.1.1.1")
+    val src = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/ExitIp.kt").readText()
+    check("exit: the probe names the server by address (no name lookup) and checks its certificate",
+        src.contains("\"1.1.1.1\"") && src.contains("\"2606:4700:4700::1111\"") && src.contains("getDefaultHostnameVerifier().verify") && !src.contains("www.cloudflare.com"))
+}
+
+private fun sleepTimerTests() {
+    val t0 = 1_000_000_000L
+    check("sleep: ends after the chosen minutes", SleepTimerPlan.endAt(t0, 60) == t0 + 3_600_000L)
+    check("sleep: minutes are kept within 1 and the maximum", SleepTimerPlan.endAt(t0, 0) == t0 + 60_000L && SleepTimerPlan.endAt(t0, 100_000) == t0 + SleepTimerPlan.MAX_MINUTES * 60_000L)
+    check("sleep: extend adds 15 minutes to the planned end", SleepTimerPlan.extend(t0 + 600_000L, t0) == t0 + 600_000L + 900_000L)
+    check("sleep: extend after the end counts from now", SleepTimerPlan.extend(t0 - 5_000L, t0) == t0 + 900_000L)
+    check("sleep: extend never passes the maximum", SleepTimerPlan.extend(t0 + SleepTimerPlan.MAX_MINUTES * 60_000L, t0) == t0 + SleepTimerPlan.MAX_MINUTES * 60_000L)
+    check("sleep: time left is never negative", SleepTimerPlan.remainingMs(t0, t0 + 5) == 0L && SleepTimerPlan.remainingMs(t0 + 1000, t0) == 1000L)
+    check("sleep: the time left is shown as hours:minutes, rounded up",
+        SleepTimerPlan.format(3_600_000L) == "1:00" && SleepTimerPlan.format(59_000L) == "0:01" && SleepTimerPlan.format(0L) == "0:00" &&
+        SleepTimerPlan.format(6_300_000L) == "1:45" && SleepTimerPlan.format(-5L) == "0:00" && SleepTimerPlan.format(36_000_000L) == "10:00")
+    check("sleep: a saved end only counts while it is ahead", SleepTimerPlan.stillAhead(t0 + 1, t0) && !SleepTimerPlan.stillAhead(t0, t0) && !SleepTimerPlan.stillAhead(t0 - 1, t0))
+    check("sleep: every preset is within the maximum", SleepTimerPlan.PRESET_MINUTES.all { it in 1..SleepTimerPlan.MAX_MINUTES } && SleepTimerPlan.DEFAULT_MINUTES in SleepTimerPlan.PRESET_MINUTES)
+    val svc = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/SleepTimer.kt").readText()
+    check("sleep: one inexact alarm, no timers or wake locks of ours",
+        svc.contains("setAndAllowWhileIdle") && !svc.contains("setExact") && !svc.contains("WakeLock") && !svc.contains("Handler(") && !svc.contains("Timer("))
+}
+
+private fun backupTests() {
+    fun entries() = listOf(
+        PrefEntry("mode", PrefType.STRING, "VPN"), PrefEntry("kill_switch", PrefType.BOOL, false), PrefEntry("mtu", PrefType.INT, 1380),
+        PrefEntry("direct_rules", PrefType.SET, listOf("a.example", "10.0.0.0/8")), PrefEntry("ui_theme_id", PrefType.STRING, "aurora"),
+        PrefEntry("selected_packages", PrefType.SET, listOf("com.x.y"))
+    )
+    check("backup: settings are sorted into parts by name",
+        BackupKeys.partOf("mode") == BackupPart.SETTINGS && BackupKeys.partOf("dns_resolvers") == BackupPart.SETTINGS &&
+        BackupKeys.partOf("direct_rules") == BackupPart.ROUTING && BackupKeys.partOf("block_rules") == BackupPart.ROUTING &&
+        BackupKeys.partOf("app_selection_mode") == BackupPart.ROUTING && BackupKeys.partOf("selected_packages") == BackupPart.ROUTING &&
+        BackupKeys.partOf("ui_dark_mode") == BackupPart.APPEARANCE && BackupKeys.partOf("storage_max_age_days") == BackupPart.SETTINGS)
+    val encoded = BackupKeys.encode(entries())
+    val back = BackupKeys.decode(MiniJson.parse(MiniJson.write(encoded)))
+    check("backup: entries survive writing and reading, with their types",
+        back.size == 6 && back[0].value == "VPN" && back[1].value == false && back[2].value == 1380 && (back[3].value as List<*>).size == 2 && back[3].type == PrefType.SET)
+    val hostile = MiniJson.parse("""[{"k":"Bad Key!","t":"s","v":"x"},{"k":"mtu","t":"s","v":9},{"k":"dns_resolvers","t":"ss","v":[1,2]},{"k":"mtu","t":"i","v":99999999999},{"k":"x","t":"zz","v":1},{"k":"mode","t":"s","v":"VPN"},"junk",{"k":"direct_rules","t":"ss","v":["ok"]}]""")
+    val clean = BackupKeys.decode(hostile)
+    check("backup: malformed or mistyped entries are dropped, good ones kept", clean.size == 2 && clean[0].key == "mode" && clean[0].value == "VPN" && clean[1].key == "direct_rules")
+    check("backup: a value that is not a list of texts is dropped", BackupKeys.decode(MiniJson.parse("""[{"k":"direct_rules","t":"ss","v":"a"}]""")).isEmpty())
+
+    val usage = "v1\n2026-11-07,1,2,3,4,5,6,7,8,9\n2026-11-08,10,20,30,40,50,60,70,80,90\n"
+    val secrets = linkedMapOf<String, Any?>("links" to LinkProfiles.encode(LinkProfileBook(listOf(LinkProfile("a", "Mine", "vless://u@h:1#x")), "a")), "ztSecret" to "s3cret")
+    val doc = BackupDoc(1_731_100_000_000L, "1.16.0", linkedMapOf(
+        BackupPart.SETTINGS to BackupKeys.encode(entries().filter { BackupKeys.partOf(it.key) == BackupPart.SETTINGS }),
+        BackupPart.USAGE to usage, BackupPart.SECRETS to secrets))
+
+    val plain = BackupFile.write(doc, null)
+    val rp = BackupFile.read(plain, null)
+    check("backup: a plain file reads back with every chosen part",
+        rp is BackupRead.Ok && rp.doc.createdMs == doc.createdMs && rp.doc.appVersion == "1.16.0" && rp.doc.parts.keys == doc.parts.keys &&
+        UsageLedger.parse(rp.doc.parts[BackupPart.USAGE] as String).all().size == 2)
+    check("backup: a plain file is not marked encrypted", !BackupFile.isEncrypted(plain))
+
+    val enc = BackupFile.write(doc, "correct horse", iterations = 1_000)
+    check("backup: an encrypted file shows none of its content", BackupFile.isEncrypted(enc) && !enc.contains("s3cret") && !enc.contains("vless") && !enc.contains("2026-11-08") && !enc.contains("VPN"))
+    check("backup: an encrypted file asks for the password", BackupFile.read(enc, null) is BackupRead.NeedsPassword && BackupFile.read(enc, "") is BackupRead.NeedsPassword)
+    check("backup: the wrong password opens nothing", BackupFile.read(enc, "wrong") is BackupRead.WrongPasswordOrDamaged)
+    val re = BackupFile.read(enc, "correct horse")
+    check("backup: the right password gives the same content",
+        re is BackupRead.Ok && re.doc.parts.keys == doc.parts.keys && (re.doc.parts[BackupPart.SECRETS] as Map<*, *>)["ztSecret"] == "s3cret" &&
+        BackupKeys.decode(re.doc.parts[BackupPart.SETTINGS]).any { it.key == "mode" && it.value == "VPN" })
+    check("backup: two files of the same content differ (fresh salt and nonce)", enc != BackupFile.write(doc, "correct horse", iterations = 1_000))
+    val dataAt = enc.indexOf("\"data\": \"") + 9
+    val tampered = enc.substring(0, dataAt + 5) + (if (enc[dataAt + 5] == 'A') 'B' else 'A') + enc.substring(dataAt + 6)
+    check("backup: a changed file is refused even with the right password", BackupFile.read(tampered, "correct horse") is BackupRead.WrongPasswordOrDamaged)
+    check("backup: an absurd iteration count is refused (no free CPU burn)",
+        BackupFile.read(enc.replace("\"iter\": 1000", "\"iter\": 2000000000"), "correct horse") is BackupRead.Invalid)
+
+    check("backup: other files are refused", BackupFile.read("hello", null) is BackupRead.Invalid && BackupFile.read("{}", null) is BackupRead.Invalid &&
+        BackupFile.read("""{"app":"other","format":1,"parts":{}}""", null) is BackupRead.Invalid &&
+        BackupFile.read("""{"app":"madshield-backup","format":99,"parts":{}}""", null) is BackupRead.Invalid)
+    val newer = BackupFile.read("""{"app":"madshield-backup","format":1,"created":5,"parts":{"settings":[],"hologram":{"x":1}}}""", null)
+    check("backup: a part this version does not know is skipped, the rest still restores", newer is BackupRead.Ok && newer.doc.parts.keys == setOf(BackupPart.SETTINGS))
+    check("backup: a file that is far too big is not even parsed", BackupFile.read("x".repeat(BackupFile.MAX_FILE_BYTES + 1), null) is BackupRead.Invalid)
+
+    val cur = listOf(DayUsage("2026-11-06", wifiUp = 1), DayUsage("2026-11-08", wifiUp = 5))
+    val inc = listOf(DayUsage("2026-11-08", wifiUp = 9), DayUsage("2026-11-09", wifiUp = 2))
+    val merged = UsageMerge.merge(cur, inc)
+    check("backup: usage days of the file replace the same days, others stay, nothing is added twice",
+        merged.map { it.day } == listOf("2026-11-06", "2026-11-08", "2026-11-09") && merged[1].wifiUp == 9L && merged[0].wifiUp == 1L)
+    check("backup: restoring the same usage twice changes nothing", UsageMerge.merge(merged, inc) == merged)
+
+    val have = LinkProfileBook(listOf(LinkProfile("a", "Mine", "vless://one"), LinkProfile("b", "Other", "vless://two")), "b")
+    val inb = LinkProfileBook(listOf(LinkProfile("a", "Mine copy", "vless://three"), LinkProfile("c", "Same as b", "vless://two"), LinkProfile("d", "New", "vless://four")), "a")
+    val m = LinkBookMerge.merge(have, inb)
+    check("backup: restored links are added, a link already saved is not doubled, ids never clash",
+        m.profiles.size == 4 && m.profiles.map { it.id }.toSet().size == 4 && m.profiles.count { it.link == "vless://two" } == 1 && m.profiles.any { it.link == "vless://three" })
+    check("backup: the active link stays what it was", m.activeId == "b")
+    val none = LinkBookMerge.merge(LinkProfileBook(), inb)
+    check("backup: with none active the backup's active link takes over", none.active?.link == "vless://three")
+    check("backup: restoring the same links twice adds nothing", LinkBookMerge.merge(m, inb).profiles.size == m.profiles.size)
+
+    val store = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/SettingsStore.kt").readText()
+    check("backup: a restore writes only keys the app knows, each with its own type", store.contains("backupStringKeys[e.key]") && store.contains("backupSetKeys[e.key]") && store.contains("PrefType.LONG -> Unit"))
+    check("backup: the usage-running check keeps the service's file safe", java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/BackupStore.kt").readText().contains("if (!allowUsage)"))
 }

@@ -342,6 +342,7 @@ class ProxyOnlyService : Service() {
         InsightHub.clear()
         engine.stop()
         RouteMatcher.clearCache()
+        SleepTimer.cancel(this) // a sleep timer never outlives its connection
         val keepError = !userRequestedStop && AetherController.state.value is ConnectionState.Error
         if (!keepError) AetherController.setState(ConnectionState.Idle)
         RingLogBuffer.append("[proxy] service destroyed")

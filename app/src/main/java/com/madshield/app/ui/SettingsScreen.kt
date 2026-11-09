@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DataUsage
 import androidx.compose.material.icons.rounded.Storage
@@ -50,6 +51,7 @@ fun SettingsScreen(
     onOpenConnections: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenStorage: () -> Unit,
+    onOpenBackup: () -> Unit,
     onAskPermission: (PermKind) -> Unit,
     contentPadding: PaddingValues
 ) {
@@ -176,6 +178,7 @@ fun SettingsScreen(
         NavRow(Icons.Rounded.SwapVert, stringResource(R.string.conn_title), stringResource(R.string.conn_nav_sub), onOpenConnections)
         NavRow(Icons.Rounded.DataUsage, stringResource(R.string.usage_title), stringResource(R.string.usage_nav_sub), onOpenUsage)
         NavRow(Icons.Rounded.Storage, stringResource(R.string.storage_title), stringResource(R.string.storage_nav_sub), onOpenStorage)
+        NavRow(Icons.Rounded.Backup, stringResource(R.string.bk_title), stringResource(R.string.bk_nav_sub), onOpenBackup)
         NavRow(Icons.Rounded.Palette, stringResource(R.string.sec_appearance), stringResource(R.string.appearance_nav_sub), onOpenAppearance)
         NavRow(Icons.Rounded.Tune, stringResource(R.string.sec_advanced), stringResource(R.string.advanced_nav_sub), onOpenAdvanced)
         // ---------------------------------------------------------------- privacy
