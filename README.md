@@ -57,6 +57,8 @@ and treats your battery with respect.
 
 *Works on Android 8.0 or newer, on 64-bit (arm64) phones.*
 
+**Foxy says "HTTP 451 / unavailable_in_region"?** Mozilla refuses some regions. A free personal Cloudflare Worker fixes it in about five minutes: [step-by-step guide (فارسی)](tools/guardian-relay/README_FA.md).
+
 ---
 
 <div dir="rtl" align="right">
@@ -99,6 +101,8 @@ and treats your battery with respect.
 ۳. مدشیلد را باز کنید، دکمهٔ بزرگ را بزنید و پیام وی‌پی‌ان را تأیید کنید. تمام!
 
 *روی اندروید ۸ به بالا و گوشی‌های ۶۴ بیتی (arm64) کار می‌کند.*
+
+**Foxy خطای «HTTP 451 / unavailable_in_region» می‌دهد؟** موزیلا بعضی مناطق را رد می‌کند. یک Worker شخصی و رایگان کلافلر در حدود پنج دقیقه مشکل را حل می‌کند: [راهنمای قدم‌به‌قدم](tools/guardian-relay/README_FA.md).
 
 </div>
 

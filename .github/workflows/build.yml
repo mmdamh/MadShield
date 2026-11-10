@@ -983,3 +983,7 @@ jobs:
           prerelease: ${{ github.ref != 'refs/heads/main' }}
           make_latest: ${{ github.ref == 'refs/heads/main' }}
           generate_release_notes: true
+          body: |
+            **Foxy: "HTTP 451 / unavailable_in_region"?** Mozilla refuses some regions. A free personal Cloudflare Worker fixes it: [guide / راهنما (فارسی)](https://github.com/mmdamh/MadShield/blob/main/tools/guardian-relay/README_FA.md)
+
+            **Foxy خطای ۴۵۱ می‌دهد؟** یک Worker شخصی کلافلر مشکل را حل می‌کند: [راهنمای قدم‌به‌قدم](https://github.com/mmdamh/MadShield/blob/main/tools/guardian-relay/README_FA.md)
