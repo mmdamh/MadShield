@@ -1,0 +1,6 @@
+# Only needed if you deploy with the wrangler command line; the dashboard steps in README_FA.md need no file at all.
+name = "madshield-guardian-relay"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Do not put the secret here. Set it with:  npx wrangler secret put RELAY_SECRET

@@ -616,6 +616,11 @@
     <string name="fx_split_record">Two TLS records</string>
     <string name="fx_split_off">Off</string>
     <string name="fx_split_running">A connection is running: the choice applies at the next connection.</string>
+    <string name="fx_relay_title">Guardian relay (your own)</string>
+    <string name="fx_relay_field">Relay address (https://…)</string>
+    <string name="fx_relay_save">Save</string>
+    <string name="fx_relay_bad">Not a usable address: it must start with https:// and name a domain (no IP address, no ? or #).</string>
+    <string name="fx_relay_sub">Only if Foxy fails with \'Guardian does not serve this region\' (HTTP 451): Mozilla refuses the region of your own address. A relay is a small Cloudflare Worker that you deploy yourself (tools/guardian-relay in the source); the account\'s pass requests then leave from its address. The relay sees your Firefox Account access token, so use only your own, never someone else\'s. Leave it empty for the normal direct connection.</string>
     <string name="fx_web_button">Sign in on Mozilla\'s page</string>
     <string name="fx_web_hint">Mozilla\'s bot check refuses a password sent from the app (“HTTP 406”). Its own sign-in page, shown here in a browser engine, passes it. Nothing you type is kept by the app.</string>
     <string name="fx_web_password_toggle">Use email and password instead</string>

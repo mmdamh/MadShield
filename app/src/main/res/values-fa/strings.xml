@@ -614,6 +614,11 @@
     <string name="fx_split_record">دو رکورد TLS</string>
     <string name="fx_split_off">خاموش</string>
     <string name="fx_split_running">اتصالی در حال اجراست: انتخاب از اتصال بعدی اعمال می‌شود.</string>
+    <string name="fx_relay_title">رلهٔ Guardian (شخصی خودت)</string>
+    <string name="fx_relay_field">آدرس رله (https://…)</string>
+    <string name="fx_relay_save">ذخیره</string>
+    <string name="fx_relay_bad">آدرس قابل‌استفاده نیست: باید با https:// شروع شود و نام دامنه داشته باشد (نه IP، نه ? یا #).</string>
+    <string name="fx_relay_sub">فقط وقتی Foxy با «Guardian does not serve this region» (کد ۴۵۱) خطا می‌دهد: موزیلا منطقهٔ آدرس خودت را رد می‌کند. رله یک Worker کوچک کلافلر است که خودت نصب می‌کنی (پوشهٔ tools/guardian-relay در سورس)؛ درخواست‌های pass حساب از آدرس آن می‌روند. رله توکن دسترسی Firefox Account تو را می‌بیند، پس فقط مال خودت را بگذار نه رلهٔ دیگران. خالی بگذار تا اتصال مستقیم عادی باشد.</string>
     <string name="fx_web_button">ورود در صفحه‌ی Mozilla</string>
     <string name="fx_web_hint">بررسی ضدربات Mozilla رمزی را که از برنامه فرستاده شود رد می‌کند («HTTP 406»). صفحه‌ی ورود خودش، که اینجا در موتور مرورگر باز می‌شود، از آن عبور می‌کند. برنامه چیزی از آنچه تایپ می‌کنید نگه نمی‌دارد.</string>
     <string name="fx_web_password_toggle">ورود با ایمیل و رمز</string>

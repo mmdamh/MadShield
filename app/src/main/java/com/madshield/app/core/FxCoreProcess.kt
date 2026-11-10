@@ -65,7 +65,8 @@ class FxCoreProcess(private val context: Context) {
         val helloSplit = FxTricks.helloSplit(context)
         val sessions = FxTricks.sessions(context)
         val transport = FxTricks.transport(context)
-        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit, sessions, transport)
+        val relay = FxTricks.relay(context)
+        val env = FxEnvironment.build(socksPort, apiPort, creds, dns, context.cacheDir.absolutePath, systemDns, helloSplit, sessions, transport, relay)
 
         val pb = ProcessBuilder(bin.absolutePath, "-data-dir", dataDir.absolutePath)
             .directory(dataDir)
@@ -77,7 +78,8 @@ class FxCoreProcess(private val context: Context) {
         // The non-secret part only: the login is never written anywhere.
         RingLogBuffer.append(
             "[fxvpn] starting ${bin.name} socks=127.0.0.1:$socksPort api=127.0.0.1:$apiPort dns=${env["MFX_DNS"] ?: "core default"} " +
-                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored} sessions=$sessions transport=${transport.stored}"
+                "system-dns=${env["MFX_SYSTEM_DNS"]?.split(',')?.size ?: 0} hello-split=${helloSplit.stored} sessions=$sessions transport=${transport.stored}" +
+                (relay?.let { " guardian-relay=${FxRelay.hostOf(it)}" } ?: "") // the host only: the path may hold the relay's secret
         )
         synchronized(tail) { tail.clear() }
         lastExit = null
@@ -300,6 +302,24 @@ object FxTricks {
     fun setTransport(context: Context, v: FxTransport) {
         try { context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().putString("transport", v.stored).apply() }
         catch (_: Exception) { /* not saved: the default applies */ }
+    }
+
+    /** The user's own Guardian relay address (see [FxRelay]); null when none or unusable. */
+    fun relay(context: Context): String? = try {
+        FxRelay.clean(context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString("relay", null))
+    } catch (_: Exception) { null }
+
+    /** Saves the address as given when usable, and forgets it when empty. @return false when it was not usable (nothing saved). */
+    fun setRelay(context: Context, raw: String): Boolean {
+        val v = raw.trim()
+        val clean = FxRelay.clean(v)
+        if (v.isNotEmpty() && clean == null) return false
+        try {
+            val e = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
+            if (clean == null) e.remove("relay") else e.putString("relay", clean)
+            e.apply()
+        } catch (_: Exception) { return false }
+        return true
     }
 
     fun setHelloSplit(context: Context, v: FxHelloSplit) {

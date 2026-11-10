@@ -56,6 +56,8 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
     var split by remember { mutableStateOf(FxTricks.helloSplit(ctx)) }
     var sessions by remember { mutableStateOf(FxTricks.sessions(ctx)) }
     var transport by remember { mutableStateOf(FxTricks.transport(ctx)) }
+    var relayText by remember { mutableStateOf(FxTricks.relay(ctx).orEmpty()) }
+    var relayBad by remember { mutableStateOf(false) }
 
     /** One pass of reading: status and accounts, and the locations once an account exists. */
     suspend fun refresh(withLocations: Boolean) {
@@ -166,6 +168,10 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                     onSessions = { n -> sessions = n; FxTricks.setSessions(ctx, n) },
                     onTransport = { v -> transport = v; FxTricks.setTransport(ctx, v) }
                 )
+                RelayCard(relayText, relayBad, running = connectionRuns, onText = { relayText = it; relayBad = false }) {
+                    if (FxTricks.setRelay(ctx, relayText)) { relayText = FxTricks.relay(ctx).orEmpty(); relayBad = false; restartPageCore() }
+                    else relayBad = true
+                }
             }
 
             when {
@@ -510,6 +516,26 @@ private fun HelloSplitCard(selected: FxHelloSplit, running: Boolean, onPick: (Fx
             onSelect = onPick
         )
         HelperText(stringResource(R.string.fx_split_sub))
+        if (running) HelperText(stringResource(R.string.fx_split_running))
+    }
+}
+
+/**
+ * The user's own Guardian relay (a Cloudflare Worker they deployed from tools/guardian-relay). Empty means Mozilla directly.
+ * Read when a core starts. The relay sees the account's access token: only an address the user controls belongs here.
+ */
+@Composable
+private fun RelayCard(text: String, bad: Boolean, running: Boolean, onText: (String) -> Unit, onSave: () -> Unit) {
+    SectionCard(stringResource(R.string.fx_relay_title)) {
+        OutlinedTextField(
+            value = text, onValueChange = onText, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            label = { Text(stringResource(R.string.fx_relay_field)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+        )
+        if (bad) HelperText(stringResource(R.string.fx_relay_bad), error = true)
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = onSave) { Text(stringResource(R.string.fx_relay_save)) }
+        HelperText(stringResource(R.string.fx_relay_sub))
         if (running) HelperText(stringResource(R.string.fx_split_running))
     }
 }

@@ -18,6 +18,7 @@
 //	MFX_SOCKS_USER, MFX_SOCKS_PASS SOCKS5 login of the proxy
 //	MFX_DNS                        optional, comma-separated resolvers for the core's own lookups (see config dns.servers)
 //	MFX_HELLO_SPLIT                optional: off, sni, first-byte or record (network.hello_split)
+//	MFX_GUARDIAN_RELAY             optional: https address of the user's own Guardian relay (relay.go); never a default
 //	MFX_UPSTREAM_CONNS             optional, 1 to 4: parallel sessions to Mozilla's proxy (proxy.upstream_connections); a
 //	                               network that throttles each connection on its own gives more speed with more of them
 //	MFX_TRANSPORT                  optional: h2 (HTTP/2 over TCP) or h3 (HTTP/3 over QUIC) to Mozilla's proxy (proxy.transport)
@@ -195,6 +196,15 @@ func applyEnv(path string) error {
 		}
 	}
 	// How the data goes to Mozilla's proxy. The app always says both, because the core keeps them in its settings file.
+	// The user's own Guardian relay (relay.go): the account's pass requests go out from its address. Not set: Mozilla's own.
+	if v := strings.TrimSpace(os.Getenv("MFX_GUARDIAN_RELAY")); v != "" {
+		if endpoint, relayErr := parseRelay(v); relayErr == nil {
+			cfg.Network.GuardianEndpoint = endpoint
+			allowRelay(endpoint)
+		} else {
+			fmt.Fprintf(os.Stderr, "[madshield-fx] ignoring MFX_GUARDIAN_RELAY: %v\n", relayErr)
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("MFX_UPSTREAM_CONNS")); v != "" {
 		if n, convErr := strconv.Atoi(v); convErr == nil && n >= 1 && n <= maxUpstreamConns {
 			cfg.Proxy.UpstreamConnections = n

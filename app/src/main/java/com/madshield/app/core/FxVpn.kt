@@ -166,12 +166,40 @@ object FxSessions {
     fun clean(n: Int?): Int = (n ?: DEFAULT).coerceIn(MIN, MAX)
 }
 
+/**
+ * The user's own Guardian relay: the https address of a Cloudflare Worker they deployed (tools/guardian-relay). Mozilla's VPN
+ * service refuses some regions by the address a request comes from; through the relay the account's pass requests leave from
+ * the Worker's address. The relay sees the account's access token, so there is no default and no shared one: nothing is sent
+ * unless the user typed an address. The address may end in a secret path part, so it is never written to the log.
+ */
+object FxRelay {
+    const val MAX_LENGTH = 300
+
+    /** The address to hand to the core, or null for none/unusable (the core then talks to Mozilla directly). */
+    fun clean(raw: String?): String? {
+        val v = raw?.trim().orEmpty().trimEnd('/')
+        if (v.isEmpty() || v.length > MAX_LENGTH) return null
+        if (v.any { it.isWhitespace() || it.isISOControl() || it == '?' || it == '#' || it == '@' || it == '\\' }) return null
+        if (!v.startsWith("https://", ignoreCase = true)) return null
+        val rest = v.substring(8)
+        val host = rest.substringBefore('/').substringBefore(':').lowercase()
+        if (!host.all { it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '-' }) return null // a name, never an IP literal in brackets
+        val labels = host.split('.')
+        if (labels.size < 2 || labels.any { it.isEmpty() || it.startsWith('-') || it.endsWith('-') }) return null
+        if (host.all { it in '0'..'9' || it == '.' }) return null // an IPv4 address
+        return v
+    }
+
+    /** Only the host, for the log: the path may hold the secret. */
+    fun hostOf(clean: String): String = clean.substring(8).substringBefore('/').substringBefore(':')
+}
+
 /** The environment of the core's process. Built here (pure) so a test sees exactly what is handed over. */
 object FxEnvironment {
     fun build(
         socksPort: Int, apiPort: Int, creds: FxCredentials, dns: List<String>, tmpDir: String,
         systemDns: List<String> = emptyList(), helloSplit: FxHelloSplit = FxHelloSplit.DEFAULT,
-        sessions: Int = FxSessions.DEFAULT, transport: FxTransport = FxTransport.DEFAULT
+        sessions: Int = FxSessions.DEFAULT, transport: FxTransport = FxTransport.DEFAULT, guardianRelay: String? = null
     ): Map<String, String> {
         require(socksPort in 1024..65535 && apiPort in 1024..65535 && socksPort != apiPort) { "bad ports" }
         val env = linkedMapOf(
@@ -192,6 +220,7 @@ object FxEnvironment {
         env["MFX_HELLO_SPLIT"] = helloSplit.stored // always sent: the core keeps its setting in a file, so "off" must be said too
         env["MFX_UPSTREAM_CONNS"] = FxSessions.clean(sessions).toString() // also always sent, for the same reason
         env["MFX_TRANSPORT"] = transport.stored
+        FxRelay.clean(guardianRelay)?.let { env["MFX_GUARDIAN_RELAY"] = it } // only the user's own address, never a default
         return env
     }
 
@@ -458,15 +487,4 @@ object FxProgress {
     fun fromTest(t: FxTestResult): FxVerdict =
         if (t.ok) FxVerdict.Ready else FxVerdict.Failed(t.errorCode.ifEmpty { "other" }, t.error)
 
-    /**
-     * A failed connection test worth testing again while the connect time lasts. The core's test has a fixed 15 s limit and the
-     * first one also runs the wake (server list, pass, Fastly's challenge); on a slow network that ends it half done, while the
-     * core keeps what it earned (the solved cookie, the account session). Restarting the core throws that away, so the wait
-     * tries again instead. Not retried: failures that testing again cannot change.
-     */
-    fun retryable(code: String): Boolean =
-        !FxErrors.isLasting(code) && code !in setOf("inside_vpn", "proxy_port_in_use", "location_refused", "upstream_proxy")
-
-    /** Pause between two tests: the core waits ~10 s after a failed connect before it tries Mozilla again. */
-    const val RETEST_PAUSE_MS = 3_000L
 }

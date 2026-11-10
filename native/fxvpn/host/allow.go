@@ -37,6 +37,9 @@ func hostAllowed(name string) bool {
 	if h == "localhost" {
 		return true
 	}
+	if rh, _ := relayHost.Load().(string); rh != "" && h == rh {
+		return true // the user's own Guardian relay, exactly this host (relay.go)
+	}
 	for _, d := range allowedDomains {
 		if h == d || strings.HasSuffix(h, "."+d) {
 			return true

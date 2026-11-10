@@ -46,6 +46,8 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Guardian relay Worker tests
+        run: node tools/guardian-relay/worker.test.mjs
       - name: Install kotlinc 1.9.24
         run: |
           set -e
