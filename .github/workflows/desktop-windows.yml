@@ -253,7 +253,7 @@ jobs:
       # stops both; a hidden watchdog kills sing-box after 150 s whatever happens, so the job cannot lose the network.
       - name: Run the phase 0 test
         shell: pwsh
-        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -Carrier ${{ matrix.carrier }}
+        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -Carrier ${{ matrix.carrier }} -LogLevel debug -WorkDir "$env:RUNNER_TEMP/madshield-phase0"
 
       - name: Pack the kit (for a manual test on a real PC)
         if: matrix.carrier == 'h2'

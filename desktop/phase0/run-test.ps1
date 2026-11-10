@@ -20,6 +20,7 @@ param(
     [ValidateSet('h2', 'h3')][string]$Carrier = 'h2',
     [string]$WorkDir = (Join-Path $env:TEMP 'madshield-phase0'),
     [switch]$NoStrict,
+    [ValidateSet('info', 'debug')][string]$LogLevel = 'info',
     [switch]$CheckOnly,
     [switch]$Cleanup
 )
@@ -90,7 +91,7 @@ $strict = if ($NoStrict) { 'false' } else { 'true' }
 $engineJson = ($engines | ForEach-Object { '"' + $_ + '"' }) -join ', '
 $json = @"
 {
-  "log": { "level": "info", "timestamp": true },
+  "log": { "level": "$LogLevel", "timestamp": true },
   "dns": {
     "servers": [
       { "type": "tcp", "tag": "dns-remote", "server": "1.1.1.1", "detour": "warp" },
@@ -234,6 +235,11 @@ try {
     try { $whoami = (Resolve-DnsName -Name 'whoami.akamai.net' -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress } catch { }
     Add-Result 'DNS egress address (information only: should not be this PC''s ISP resolver)' $true "recursive resolver seen by the authoritative server: $whoami" $false
 
+    Write-Host '---- UDP sockets of aether'
+    Get-NetUDPEndpoint -OwningProcess $aether.Id -ErrorAction SilentlyContinue | Format-Table LocalAddress, LocalPort | Out-String | Write-Host
+    Write-Host '---- IPv4 routes'
+    route print -4 | Select-Object -First 45 | ForEach-Object { Write-Host $_ }
+
     $alive = (-not $aether.HasExited) -and (-not $sing.HasExited)
     Add-Result 'both processes are still running at the end' $alive ("aether exited=" + $aether.HasExited + ' sing-box exited=' + $sing.HasExited)
 }
@@ -246,6 +252,11 @@ finally {
     Stop-Mine $aether
     Stop-Mine $watchdog
     Show-Tail (Join-Path $WorkDir 'singbox.err.log') 40
+    $sbLog = Join-Path $WorkDir 'singbox.err.log'
+    if (Test-Path $sbLog) {
+        Write-Host '---- sing-box lines that mention an engine process (first 40)'
+        Select-String -Path $sbLog -Pattern 'aether|psiphon|lyrebird|madshield-fx' | Select-Object -First 40 | ForEach-Object { Write-Host $_.Line }
+    }
     Show-Tail (Join-Path $WorkDir 'singbox.out.log') 20
     Show-Tail (Join-Path $WorkDir 'aether.err.log') 40
     Show-Tail (Join-Path $WorkDir 'aether.out.log') 40
