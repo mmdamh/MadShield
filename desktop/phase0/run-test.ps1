@@ -121,6 +121,7 @@ $json = @"
   ],
   "route": {
     "auto_detect_interface": true,
+    "default_domain_resolver": "dns-direct",
     "rules": [
       { "process_name": [ $engineJson ], "action": "route", "outbound": "direct" },
       { "action": "sniff" },
