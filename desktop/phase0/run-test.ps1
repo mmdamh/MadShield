@@ -206,8 +206,18 @@ try {
     if (-not $tunUp) { throw 'the TUN did not start' }
 
     # ---- 6. checks with the tunnel up -----------------------------------------------------------------------------------
-    $trace = Invoke-Curl @('-s', '--max-time', '25', '--noproxy', '*', 'https://www.cloudflare.com/cdn-cgi/trace')
-    $viaWarp = ($trace -match 'warp=(on|plus)')
+    # Bringing the TUN up changes the routes under Aether's already open connection. A QUIC (h3) connection does not
+    # survive that: Aether notices, reconnects directly (its process is routed to "direct") and is back within seconds.
+    # So: poll until the system path works, and report how long it took (the app has to expect the same blip).
+    $trace = ''
+    $viaWarp = $false
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 45) {
+        $trace = Invoke-Curl @('-s', '--max-time', '8', '--noproxy', '*', 'https://www.cloudflare.com/cdn-cgi/trace')
+        if ($trace -match 'warp=(on|plus)') { $viaWarp = $true; break }
+        Start-Sleep -Seconds 2
+    }
+    Add-Result 'time until the system path works after the TUN came up' $true ('{0:N0} s' -f $sw.Elapsed.TotalSeconds) $false
     $tunIp = if ($trace -match '(?m)^ip=(.+)$') { $Matches[1].Trim() } else { '?' }
     Add-Result 'a program that knows nothing about the tunnel goes through WARP' $viaWarp "ip=$tunIp (before: $directIp)"
 
