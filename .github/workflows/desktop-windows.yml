@@ -223,8 +223,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        carrier: [h2, h3]
-        order: [tun-first, engine-first]
+        # Owner decision (10 Nov 2026): the desktop version uses HTTP/2 only; h3 is dropped. The h3 results of the
+        # first runs are in claude/MadShield_update45.md.
+        carrier: [h2]
+        order: [tun-first]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
