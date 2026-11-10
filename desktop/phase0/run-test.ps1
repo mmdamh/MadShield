@@ -20,6 +20,7 @@ param(
     [ValidateSet('h2', 'h3')][string]$Carrier = 'h2',
     [string]$WorkDir = (Join-Path $env:TEMP 'madshield-phase0'),
     [switch]$NoStrict,
+    [ValidateSet('engine-first', 'tun-first')][string]$Order = 'tun-first',
     [ValidateSet('info', 'debug')][string]$LogLevel = 'info',
     [switch]$CheckOnly,
     [switch]$Cleanup
@@ -153,57 +154,77 @@ $aether = $null
 $sing = $null
 $watchdog = $null
 try {
-    # ---- 3. Aether alone, without the tunnel ---------------------------------------------------------------------------
-    Get-ChildItem Env: | Where-Object { $_.Name -like 'AETHER_*' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
-    $env:AETHER_PROTOCOL = 'masque'
-    $env:AETHER_SCAN = 'turbo'
-    $env:AETHER_IP = 'v4'
-    $env:AETHER_NOIZE = 'balanced'
-    $env:AETHER_LOG_LEVEL = 'info'
-    $env:AETHER_SOCKS = "127.0.0.1:$socksPort"
-    $env:AETHER_CONFIG = (Join-Path $WorkDir 'aether.toml')
-    $env:AETHER_QUICK_RECONNECT = '1'
-    $env:AETHER_MASQUE_HTTP2 = $(if ($Carrier -eq 'h2') { '1' } else { '0' })
-    $env:AETHER_MASQUE_MTU = '1280'
-    $emptyIn = Join-Path $WorkDir 'stdin.txt'
-    New-Item -ItemType File -Force -Path $emptyIn | Out-Null
-    Write-Host "Starting aether ($Carrier) ..."
-    $aether = Start-Process -FilePath $aetherExe -WorkingDirectory $Kit -PassThru -NoNewWindow `
-        -RedirectStandardInput $emptyIn `
-        -RedirectStandardOutput (Join-Path $WorkDir 'aether.out.log') -RedirectStandardError (Join-Path $WorkDir 'aether.err.log')
-
-    $ready = $false
-    $socksTrace = ''
-    $deadline = (Get-Date).AddSeconds(120)
-    while ((Get-Date) -lt $deadline -and -not $aether.HasExited) {
-        $socksTrace = Invoke-Curl @('-s', '--max-time', '10', '--socks5-hostname', "127.0.0.1:$socksPort", 'https://www.cloudflare.com/cdn-cgi/trace')
-        if ($socksTrace -match 'warp=(on|plus)') { $ready = $true; break }
-        Start-Sleep -Seconds 3
-    }
-    Add-Result 'aether brings the tunnel up (SOCKS reaches WARP)' $ready ($(if ($ready) { 'warp=on through 127.0.0.1:' + $socksPort } else { 'no warp=on within 120 s (aether exited: ' + $aether.HasExited + ')' }))
-    if (-not $ready) { throw 'aether did not come up' }
-
+    # ---- 3. what the PC looks like before anything runs -----------------------------------------------------------------
     $directTrace = Invoke-Curl @('-s', '--max-time', '15', '--noproxy', '*', 'https://www.cloudflare.com/cdn-cgi/trace')
     $directIp = if ($directTrace -match '(?m)^ip=(.+)$') { $Matches[1].Trim() } else { '?' }
     $directWarp = if ($directTrace -match '(?m)^warp=(.+)$') { $Matches[1].Trim() } else { '?' }
-    Add-Result 'before the tunnel: direct traffic is NOT through WARP' ($directWarp -eq 'off') "ip=$directIp warp=$directWarp" $false
+    Add-Result 'before anything runs: direct traffic is NOT through WARP' ($directWarp -eq 'off') "ip=$directIp warp=$directWarp" $false
 
     # ---- 4. watchdog: kills sing-box whatever happens to this script --------------------------------------------------
-    $wd = "Start-Sleep -Seconds 150; Get-Process -Name sing-box -ErrorAction SilentlyContinue | Stop-Process -Force"
+    $wd = "Start-Sleep -Seconds 300; Get-Process -Name sing-box -ErrorAction SilentlyContinue | Stop-Process -Force"
     $watchdog = Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-WindowStyle', 'Hidden', '-Command', $wd -PassThru -WindowStyle Hidden
 
-    # ---- 5. the TUN -----------------------------------------------------------------------------------------------------
-    Write-Host 'Starting sing-box TUN ...'
-    $sing = Start-Process -FilePath $singExe -ArgumentList 'run', '-c', $cfg -WorkingDirectory $WorkDir -PassThru -NoNewWindow `
-        -RedirectStandardOutput (Join-Path $WorkDir 'singbox.out.log') -RedirectStandardError (Join-Path $WorkDir 'singbox.err.log')
-    $tunUp = $false
-    for ($i = 0; $i -lt 30 -and -not $sing.HasExited; $i++) {
-        Start-Sleep -Seconds 1
-        if (Get-NetAdapter -Name $tunName -ErrorAction SilentlyContinue) { $tunUp = $true; break }
+    function Start-Tun {
+        Write-Host 'Starting sing-box TUN ...'
+        $p = Start-Process -FilePath $singExe -ArgumentList 'run', '-c', $cfg -WorkingDirectory $WorkDir -PassThru -NoNewWindow `
+            -RedirectStandardOutput (Join-Path $WorkDir 'singbox.out.log') -RedirectStandardError (Join-Path $WorkDir 'singbox.err.log')
+        $up = $false
+        for ($i = 0; $i -lt 30 -and -not $p.HasExited; $i++) {
+            Start-Sleep -Seconds 1
+            if (Get-NetAdapter -Name $tunName -ErrorAction SilentlyContinue) { $up = $true; break }
+        }
+        if ($up) { Start-Sleep -Seconds 4 }
+        return @{ Proc = $p; Up = $up }
     }
-    if ($tunUp) { Start-Sleep -Seconds 4 }
-    Add-Result 'the TUN adapter appears' $tunUp ($(if ($tunUp) { "adapter $tunName is up" } else { 'no adapter within 30 s (sing-box exited: ' + $sing.HasExited + ')' }))
-    if (-not $tunUp) { throw 'the TUN did not start' }
+
+    function Start-Aether {
+        Get-ChildItem Env: | Where-Object { $_.Name -like 'AETHER_*' } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
+        $env:AETHER_PROTOCOL = 'masque'
+        $env:AETHER_SCAN = 'turbo'
+        $env:AETHER_IP = 'v4'
+        $env:AETHER_NOIZE = 'balanced'
+        $env:AETHER_LOG_LEVEL = 'info'
+        $env:AETHER_SOCKS = "127.0.0.1:$socksPort"
+        $env:AETHER_CONFIG = (Join-Path $WorkDir 'aether.toml')
+        $env:AETHER_QUICK_RECONNECT = '1'
+        $env:AETHER_MASQUE_HTTP2 = $(if ($Carrier -eq 'h2') { '1' } else { '0' })
+        $env:AETHER_MASQUE_MTU = '1280'
+        $emptyIn = Join-Path $WorkDir 'stdin.txt'
+        New-Item -ItemType File -Force -Path $emptyIn | Out-Null
+        Write-Host "Starting aether ($Carrier) ..."
+        $p = Start-Process -FilePath $aetherExe -WorkingDirectory $Kit -PassThru -NoNewWindow `
+            -RedirectStandardInput $emptyIn `
+            -RedirectStandardOutput (Join-Path $WorkDir 'aether.out.log') -RedirectStandardError (Join-Path $WorkDir 'aether.err.log')
+        $ok = $false
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
+            $t = Invoke-Curl @('-s', '--max-time', '10', '--socks5-hostname', "127.0.0.1:$socksPort", 'https://www.cloudflare.com/cdn-cgi/trace')
+            if ($t -match 'warp=(on|plus)') { $ok = $true; break }
+            Start-Sleep -Seconds 3
+        }
+        return @{ Proc = $p; Ok = $ok }
+    }
+
+    # ---- 5. start in the chosen order ------------------------------------------------------------------------------------
+    # engine-first: aether up, then the TUN (its open connection sees the routes change underneath it).
+    # tun-first:    the TUN up (everything fails closed, aether's own process is routed direct), then aether.
+    Write-Host "Order: $Order"
+    if ($Order -eq 'engine-first') {
+        $a = Start-Aether; $aether = $a.Proc
+        Add-Result 'aether brings the tunnel up (SOCKS reaches WARP)' $a.Ok ($(if ($a.Ok) { 'warp=on through 127.0.0.1:' + $socksPort } else { 'no warp=on within 120 s' }))
+        if (-not $a.Ok) { throw 'aether did not come up' }
+        $t = Start-Tun; $sing = $t.Proc
+        Add-Result 'the TUN adapter appears' $t.Up ($(if ($t.Up) { "adapter $tunName is up" } else { 'no adapter within 30 s (sing-box exited: ' + $sing.HasExited + ')' }))
+        if (-not $t.Up) { throw 'the TUN did not start' }
+    }
+    else {
+        $t = Start-Tun; $sing = $t.Proc
+        Add-Result 'the TUN adapter appears' $t.Up ($(if ($t.Up) { "adapter $tunName is up" } else { 'no adapter within 30 s (sing-box exited: ' + $sing.HasExited + ')' }))
+        if (-not $t.Up) { throw 'the TUN did not start' }
+        $a = Start-Aether; $aether = $a.Proc
+        Add-Result 'aether brings the tunnel up with the TUN already running' $a.Ok ($(if ($a.Ok) { 'warp=on through 127.0.0.1:' + $socksPort } else { 'no warp=on within 120 s' }))
+        if (-not $a.Ok) { throw 'aether did not come up' }
+    }
 
     # ---- 6. checks with the tunnel up -----------------------------------------------------------------------------------
     # Bringing the TUN up changes the routes under Aether's already open connection. A QUIC (h3) connection does not
@@ -275,7 +296,7 @@ finally {
 # ---- 7. summary -------------------------------------------------------------------------------------------------------
 $failed = @($results | Where-Object { $_.Tag -eq 'FAIL' })
 $md = New-Object System.Text.StringBuilder
-[void]$md.AppendLine("## MadShield desktop phase 0 ($Carrier, strict_route=$strict)")
+[void]$md.AppendLine("## MadShield desktop phase 0 ($Carrier, $Order, strict_route=$strict)")
 foreach ($r in $results) { [void]$md.AppendLine(("- **{0}** {1}: {2}" -f $r.Tag, $r.Name, $r.Detail)) }
 [void]$md.AppendLine(("Result: {0}" -f $(if ($failed.Count -eq 0) { 'ALL REQUIRED CHECKS PASSED' } else { "$($failed.Count) required check(s) failed" })))
 [System.IO.File]::WriteAllText((Join-Path $WorkDir 'result.md'), $md.ToString(), (New-Object System.Text.UTF8Encoding($false)))

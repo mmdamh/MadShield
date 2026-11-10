@@ -216,7 +216,7 @@ jobs:
           retention-days: 7
 
   phase0-test:
-    name: Phase 0 TUN test on Windows (${{ matrix.carrier }})
+    name: Phase 0 TUN test on Windows (${{ matrix.carrier }}, ${{ matrix.order }})
     needs: [aether-windows, singbox-windows, fxvpn-windows]
     runs-on: windows-latest
     timeout-minutes: 20
@@ -224,6 +224,7 @@ jobs:
       fail-fast: false
       matrix:
         carrier: [h2, h3]
+        order: [tun-first, engine-first]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -253,15 +254,15 @@ jobs:
       # stops both; a hidden watchdog kills sing-box after 150 s whatever happens, so the job cannot lose the network.
       - name: Run the phase 0 test
         shell: pwsh
-        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -Carrier ${{ matrix.carrier }} -LogLevel debug -WorkDir "$env:RUNNER_TEMP/madshield-phase0"
+        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -Carrier ${{ matrix.carrier }} -Order ${{ matrix.order }} -LogLevel debug -WorkDir "$env:RUNNER_TEMP/madshield-phase0"
 
       - name: Pack the kit (for a manual test on a real PC)
-        if: matrix.carrier == 'h2'
+        if: matrix.carrier == 'h2' && matrix.order == 'tun-first'
         shell: pwsh
         run: Compress-Archive -Path kit/* -DestinationPath madshield-desktop-phase0.zip
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: matrix.carrier == 'h2'
+        if: matrix.carrier == 'h2' && matrix.order == 'tun-first'
         with:
           name: madshield-desktop-phase0
           path: madshield-desktop-phase0.zip
@@ -271,7 +272,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: phase0-logs-${{ matrix.carrier }}
+          name: phase0-logs-${{ matrix.carrier }}-${{ matrix.order }}
           path: ${{ runner.temp }}/madshield-phase0
           if-no-files-found: ignore
           retention-days: 7
