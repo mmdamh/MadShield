@@ -1,0 +1,277 @@
+name: Desktop (Windows) build and phase 0 test
+
+# The Windows desktop version of MadShield. This workflow is separate from build.yml on purpose: build.yml publishes an
+# Android release on every push to main or test/**, and desktop work must never do that. It runs only on desktop/**
+# branches (or by hand) and publishes nothing: the result is a workflow artifact.
+#
+# Phase 0 question: can sing-box's TUN carry the whole system through Aether without a traffic loop? The last job
+# answers it on a real (administrator) Windows runner, with a watchdog so the runner cannot be cut off for good.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["desktop/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  aether-windows:
+    name: Aether + Tor + Psiphon (windows x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch aether-core at the pinned commit
+        shell: bash
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/aether-core.pin)"
+          rm -rf native/aether-core
+          mkdir -p native/aether-core
+          git -C native/aether-core init -q
+          git -C native/aether-core fetch -q --depth 1 https://github.com/CluvexStudio/Aether "$pin"
+          git -C native/aether-core checkout -q FETCH_HEAD
+          test "$(git -C native/aether-core rev-parse HEAD)" = "$pin"
+          echo "aether-core @ $pin"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: 1.98.1
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Go (BoringSSL build and the Go helpers)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22"
+          cache: false
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
+        with:
+          cmakeVersion: 4.4.4
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      # Same steps as upstream's own Windows release job (aether/.github/workflows/release.yml at the pin).
+      - name: Build pluggable transports (Tor) and Psiphon
+        shell: bash
+        working-directory: native/aether-core/aether
+        run: |
+          set -e
+          bash ../pt-build.sh windows amd64 "$PWD/pt" "" "$PWD/LICENSES"
+          bash ../psiphon-build.sh windows amd64 "$PWD/pt" "" "$PWD/LICENSES"
+          ls -l pt
+
+      - name: Build aether
+        working-directory: native/aether-core/aether
+        run: cargo build --release --features tor --target x86_64-pc-windows-msvc
+
+      - name: Collect licenses and package
+        shell: bash
+        working-directory: native/aether-core/aether
+        run: |
+          set -e
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python ../third-party-notices.py --target x86_64-pc-windows-msvc --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+          out="$GITHUB_WORKSPACE/aether-win"
+          mkdir -p "$out"
+          cp target/x86_64-pc-windows-msvc/release/aether.exe "$out/"
+          cp -R pt "$out/pt"
+          cp -R LICENSES "$out/LICENSES"
+          ls -lR "$out" | head -40
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aether-windows
+          path: aether-win
+          if-no-files-found: error
+          retention-days: 7
+
+  singbox-windows:
+    name: sing-box (windows x86_64, TUN)
+    runs-on: ubuntu-24.04
+    env:
+      SINGBOX_VERSION: "1.14.3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch sing-box at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/singbox.pin)"
+          rm -rf native/sing-box
+          mkdir -p native/sing-box
+          git -C native/sing-box init -q
+          git -C native/sing-box fetch -q --depth 1 https://github.com/SagerNet/sing-box "$pin"
+          git -C native/sing-box checkout -q FETCH_HEAD
+          test "$(git -C native/sing-box rev-parse HEAD)" = "$pin"
+          echo "sing-box @ $pin"
+
+      # The Android patches (no netlink, TUN fd from the app) are NOT applied: Windows has neither problem and the
+      # binary must keep upstream's behaviour there.
+      - name: Install Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Build sing-box.exe
+        working-directory: native/sing-box
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          set -e
+          go build -v -trimpath -o "$GITHUB_WORKSPACE/sing-box.exe" \
+            -tags "with_utls,badlinkname,tfogo_checklinkname0" \
+            -ldflags "-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' $(cat release/LDFLAGS) -s -w -buildid=" \
+            ./cmd/sing-box
+          ls -l "$GITHUB_WORKSPACE/sing-box.exe"
+          file "$GITHUB_WORKSPACE/sing-box.exe"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: singbox-windows
+          path: sing-box.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  fxvpn-windows:
+    name: Firefox VPN core (windows x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Fetch firefox-vpn-client at the pinned commit
+        run: |
+          set -e
+          pin="$(tr -d '[:space:]' < native/fxvpn.pin)"
+          rm -rf native/firefox-vpn-client
+          mkdir -p native/firefox-vpn-client
+          git -C native/firefox-vpn-client init -q
+          git -C native/firefox-vpn-client fetch -q --depth 1 https://github.com/armanlife/firefox-vpn-client "$pin"
+          git -C native/firefox-vpn-client checkout -q FETCH_HEAD
+          test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
+          echo "firefox-vpn-client @ $pin"
+
+      - name: Install Go (the version the core's go.mod asks for)
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: native/firefox-vpn-client/core/go.mod
+          cache: false
+
+      - name: Apply the MadShield patches to the core
+        run: |
+          set -e
+          for p in native/fxvpn/patches/*.patch; do
+            git -C native/firefox-vpn-client apply --check "$GITHUB_WORKSPACE/$p"
+            git -C native/firefox-vpn-client apply "$GITHUB_WORKSPACE/$p"
+            echo "applied $p"
+          done
+
+      - name: Raise two dependencies to their fixed versions
+        working-directory: native/firefox-vpn-client/core
+        run: |
+          set -e
+          go get github.com/klauspost/compress@v1.20.2 github.com/quic-go/quic-go@v0.59.1
+          go mod verify
+
+      - name: Add the MadShield entry point to the core
+        run: |
+          set -e
+          dst=native/firefox-vpn-client/core/cmd/madshield-fx
+          mkdir -p "$dst"
+          cp native/fxvpn/host/*.go "$dst/"
+          cp native/firefox-vpn-client/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
+
+      - name: Check and build madshield-fx.exe
+        working-directory: native/firefox-vpn-client/core
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          # vet and tests on the build machine (Linux), as in build.yml; then vet and cross-build for Windows
+          GOOS=linux GOARCH=amd64 go vet ./cmd/madshield-fx
+          GOOS=linux GOARCH=amd64 go test ./cmd/madshield-fx
+          GOOS=windows GOARCH=amd64 go vet ./cmd/madshield-fx
+          GOOS=windows GOARCH=amd64 go build -v -trimpath -o "$GITHUB_WORKSPACE/madshield-fx.exe" -ldflags "-s -w -buildid=" ./cmd/madshield-fx
+          ls -l "$GITHUB_WORKSPACE/madshield-fx.exe"
+          file "$GITHUB_WORKSPACE/madshield-fx.exe"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fxvpn-windows
+          path: madshield-fx.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  phase0-test:
+    name: Phase 0 TUN test on Windows (${{ matrix.carrier }})
+    needs: [aether-windows, singbox-windows, fxvpn-windows]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        carrier: [h2, h3]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: kit-parts
+
+      - name: Assemble the kit
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path kit | Out-Null
+          Copy-Item -Recurse -Force kit-parts/aether-windows/* kit/
+          Copy-Item -Force kit-parts/singbox-windows/sing-box.exe kit/
+          Copy-Item -Force kit-parts/fxvpn-windows/madshield-fx.exe kit/
+          New-Item -ItemType Directory -Force -Path kit/phase0 | Out-Null
+          Copy-Item -Force desktop/phase0/* kit/phase0/
+          Get-ChildItem kit -Recurse | Select-Object -First 40 FullName, Length | Format-Table -AutoSize
+          & kit/sing-box.exe version
+
+      - name: sing-box can read the TUN configuration
+        shell: pwsh
+        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -CheckOnly
+
+      # The runner is an administrator Windows VM. The script starts aether, then the TUN, runs the checks, and
+      # stops both; a hidden watchdog kills sing-box after 150 s whatever happens, so the job cannot lose the network.
+      - name: Run the phase 0 test
+        shell: pwsh
+        run: ./kit/phase0/run-test.ps1 -Kit "$PWD/kit" -Carrier ${{ matrix.carrier }}
+
+      - name: Pack the kit (for a manual test on a real PC)
+        if: matrix.carrier == 'h2'
+        shell: pwsh
+        run: Compress-Archive -Path kit/* -DestinationPath madshield-desktop-phase0.zip
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: matrix.carrier == 'h2'
+        with:
+          name: madshield-desktop-phase0
+          path: madshield-desktop-phase0.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: phase0-logs-${{ matrix.carrier }}
+          path: ${{ runner.temp }}/madshield-phase0
+          if-no-files-found: ignore
+          retention-days: 7

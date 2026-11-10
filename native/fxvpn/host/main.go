@@ -40,6 +40,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -269,6 +270,10 @@ func port(name string) (int, error) {
 // useAndroidRoots points Go's certificate verification at the roots Android trusts plus extraRoots. A static Go binary
 // on Android finds no system store of its own. Go reads these variables once, at the first verification.
 func useAndroidRoots(dataDir string) error {
+	// Windows (the desktop build) has a system store of its own that Go reads by itself, and no Android folders.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	file := filepath.Join(dataDir, "extra-roots.pem")
 	if err := os.WriteFile(file, extraRoots, 0o600); err != nil {
 		return err
