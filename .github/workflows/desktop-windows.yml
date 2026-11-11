@@ -344,6 +344,31 @@ jobs:
         shell: pwsh
         run: gradle -p desktop createDistributable --no-daemon --stacktrace
 
+      # The same self-test, run by the PACKAGED program (MadShield.exe, its own Java runtime, engines in app\resources):
+      # this is what a user will run, and it proves the packaged program finds its engines.
+      - name: Self-test of the packaged program
+        shell: pwsh
+        run: |
+          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 420; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--selftest' -Wait -PassThru
+          Get-Content "$env:TEMP/madshield-selftest.txt"
+          if ($p.ExitCode -ne 0) { throw "packaged self-test exit code $($p.ExitCode)" }
+
+      # The window itself: the packaged program starts (administrator already), shows its window and stays alive.
+      - name: Start the packaged program (window smoke test)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          Start-Sleep 20
+          $p.Refresh()
+          if ($p.HasExited) { throw "the program exited with code $($p.ExitCode)" }
+          Write-Host "alive after 20 s; window title: '$($p.MainWindowTitle)'"
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep 3
+          Get-Process sing-box,aether,madshield-fx -ErrorAction SilentlyContinue | ForEach-Object { throw "engine left running: $($_.Name)" }
+
       - name: Zip and checksum
         shell: pwsh
         run: |

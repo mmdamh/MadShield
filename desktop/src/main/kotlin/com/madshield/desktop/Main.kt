@@ -11,7 +11,18 @@ import com.madshield.app.util.RingLogBuffer
 import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
-    if ("--selftest" in args) exitProcess(SelfTest.run(args))
+    if ("--selftest" in args) {
+        // The packaged app has no console: the report is also written to a file CI (or a person) can read.
+        val report = java.io.File(System.getenv("TEMP") ?: ".", "madshield-selftest.txt")
+        val console = System.out
+        val file = java.io.PrintStream(java.io.FileOutputStream(report), true, "UTF-8")
+        System.setOut(java.io.PrintStream(object : java.io.OutputStream() {
+            override fun write(b: Int) { console.write(b); file.write(b) }
+            override fun write(b: ByteArray, off: Int, len: Int) { console.write(b, off, len); file.write(b, off, len) }
+            override fun flush() { console.flush(); file.flush() }
+        }, true, "UTF-8"))
+        exitProcess(SelfTest.run(args))
+    }
 
     // The tunnel adapter and its routes need administrator rights: ask once, through UAC, and start again elevated.
     if (!Elevation.isAdmin() && "--no-elevate" !in args) {
