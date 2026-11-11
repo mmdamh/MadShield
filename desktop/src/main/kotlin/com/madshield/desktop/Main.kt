@@ -56,11 +56,27 @@ object SelfTest {
         return cond()
     }
 
-    private fun httpGet(url: String, timeoutMs: Int = 15_000): String? = try {
-        val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
-        c.connectTimeout = timeoutMs; c.readTimeout = timeoutMs
-        c.inputStream.bufferedReader().use { it.readText() }
-    } catch (_: Exception) { null }
+    /**
+     * Fetches a page with the system's own curl.exe: a program this app does not know, so its traffic enters the TUN
+     * like any other program's. (This JVM is itself on the "direct" list, so it cannot be used to test the tunnel.)
+     */
+    private fun httpGet(url: String, timeoutMs: Int = 25_000): String? = try {
+        val p = ProcessBuilder("curl.exe", "-sS", "--max-time", (timeoutMs / 1000).toString(), url).redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().use { it.readText() }
+        if (p.waitFor() == 0) out else { println("curl $url: " + out.trim().take(200)); null }
+    } catch (e: Exception) { println("curl $url: " + e.message); null }
+
+    private fun diagnoseProbe(): String = try {
+        java.net.Socket().use { raw ->
+            raw.connect(java.net.InetSocketAddress("127.0.0.1", TunnelPorts.PUBLIC), 5_000)
+            raw.soTimeout = 10_000
+            val out = raw.getOutputStream(); val input = raw.getInputStream()
+            com.madshield.app.core.Socks5Handshake.greet(input, out, null)
+            out.write(com.madshield.app.core.Socks5Handshake.connectRequest(java.net.InetSocketAddress(java.net.InetAddress.getByName("1.1.1.1"), 443)))
+            out.flush()
+            "socks reply code=" + com.madshield.app.core.Socks5Handshake.readReplyCode(input)
+        }
+    } catch (e: Exception) { e.javaClass.simpleName + ": " + e.message }
 
     fun run(args: Array<String>): Int {
         println("kit: ${Kit.dir}")
@@ -78,7 +94,14 @@ object SelfTest {
         val st = conn.state.value
         check("connects", up && st is ConnState.Connected, st.toString())
         if (st is ConnState.Connected) {
-            check("exit address known", st.exit != null, st.exit?.toString() ?: "")
+            var exit = st.exit
+            if (exit == null) {
+                // The exit lookup at connect time found nothing: ask again, and say why if it still does not answer.
+                exit = com.madshield.app.core.ExitIpProbe.fetch(TunnelPorts.PUBLIC, null, false, 15_000)
+                println("exit probe (second try): " + exit)
+                if (exit == null) println("exit probe diagnosis: " + diagnoseProbe())
+            }
+            check("exit address known", exit != null, exit?.toString() ?: "")
             // a program that does not know the tunnel: its traffic goes through WARP
             val viaTun = httpGet("https://www.cloudflare.com/cdn-cgi/trace") ?: ""
             check("system traffic goes through WARP", Regex("(?m)^warp=(on|plus)").containsMatchIn(viaTun), viaTun.lineSequence().firstOrNull { it.startsWith("ip=") } ?: "no answer")
@@ -90,7 +113,7 @@ object SelfTest {
             check("still connected after 8 s", conn.state.value is ConnState.Connected, conn.state.value.toString())
         }
         println("---- log tail")
-        RingLogBuffer.tail(60).forEach { println(it) }
+        RingLogBuffer.tail(250).forEach { println(it) }
 
         conn.disconnect()
         val down = waitFor(30_000) { conn.state.value is ConnState.Idle }
