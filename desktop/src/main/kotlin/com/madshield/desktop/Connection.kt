@@ -7,7 +7,6 @@ import com.madshield.app.core.EngineConfig
 import com.madshield.app.core.EngineEnvironment
 import com.madshield.app.core.EngineKind
 import com.madshield.app.core.ExitInfo
-import com.madshield.app.core.ExitIpProbe
 import com.madshield.app.core.FrontPlan
 import com.madshield.app.core.FxClient
 import com.madshield.app.core.FxErrors
@@ -283,7 +282,7 @@ class Connection {
 
         // 3. the TUN, before any engine connection exists
         step("tun")
-        val tunJson = TunConfig.render(TunnelPorts.PUBLIC, mapped, Own.processNames, mtu = cfg.effectiveMtu)
+        val tunJson = TunConfig.render(TunnelPorts.PUBLIC, mapped, Own.processNames, mtu = cfg.effectiveMtu, extraDirectDomains = listOfNotNull(link?.server))
         val runDir = DataDir.sub("run")
         val tunFile = File(runDir, "tun.json")
         try { tunFile.writeText(tunJson, Charsets.UTF_8) } catch (e: IOException) { return Failure("Could not write the tunnel configuration: ${e.message}", false) }
@@ -380,7 +379,9 @@ class Connection {
     }
 
     private fun connected(): Failure? {
-        val exit = try { ExitIpProbe.fetch(TunnelPorts.PUBLIC, null, false) } catch (_: Exception) { null }
+        val probe = DesktopExitProbe.run(TunnelPorts.PUBLIC)
+        val exit = probe.info
+        if (exit == null) RingLogBuffer.append("[app] exit lookup: $probe")
         _state.value = ConnState.Connected(exit, System.currentTimeMillis())
         RingLogBuffer.append("[app] connected" + (exit?.let { " (exit ${it.country ?: "?"})" } ?: ""))
         return null

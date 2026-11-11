@@ -25,10 +25,30 @@ object TunConfig {
     private const val DNS_REMOTE = "dns-remote"
     private const val DNS_DIRECT = "dns-direct"
 
-    fun render(socksPort: Int, mappedDns: Boolean, directProcesses: List<String>, mtu: Int = 1400, strictRoute: Boolean = true): String {
+    /**
+     * Names the engines must resolve BEFORE any tunnel exists. Windows sends every program's DNS question through its
+     * own DNS Client service (svchost), not through the program, so the "this process goes direct" rule does not cover
+     * it: without these names answered directly, the question is hijacked, sent into the tunnel, and refused because
+     * the engine that would carry it is waiting for this very answer. (Seen in CI: Aether lost ~25 s to
+     * "No such host is known" before its fallback addresses worked.) Only the engines' own service names, never
+     * anything a user program asks.
+     */
+    val BOOTSTRAP_DOMAINS = listOf(
+        "cloudflareclient.com", "cloudflare.com", "cloudflareaccess.com", "cloudflare-dns.com",
+        "mozilla.org", "mozilla.com", "mozilla.net", "firefox.com", "mozaws.net", "mozgcp.net"
+    )
+
+    fun render(
+        socksPort: Int, mappedDns: Boolean, directProcesses: List<String>, mtu: Int = 1400, strictRoute: Boolean = true,
+        extraDirectDomains: List<String> = emptyList()
+    ): String {
         require(socksPort in 1..65535) { "bad port" }
         require(mtu in 576..65535) { "bad mtu" }
         val direct = linkedMapOf<String, Any?>("process_name" to directProcesses, "action" to "route", "server" to DNS_DIRECT)
+        val bootstrap = linkedMapOf<String, Any?>(
+            "domain_suffix" to (BOOTSTRAP_DOMAINS + extraDirectDomains.filter { it.isNotBlank() && !it.contains(':') && it.any { c -> c.isLetter() } }).distinct(),
+            "action" to "route", "server" to DNS_DIRECT
+        )
 
         val dns = linkedMapOf<String, Any?>()
         if (mappedDns) {
@@ -39,6 +59,7 @@ object TunConfig {
             )
             dns["rules"] = listOf(
                 direct,
+                bootstrap,
                 linkedMapOf<String, Any?>("query_type" to listOf("A"), "action" to "route", "server" to FAKEIP),
                 linkedMapOf<String, Any?>("action" to "predefined", "rcode" to "NOERROR")
             )
@@ -48,7 +69,7 @@ object TunConfig {
                 linkedMapOf<String, Any?>("type" to "tcp", "tag" to DNS_REMOTE, "server" to "1.1.1.1", "detour" to UPSTREAM),
                 linkedMapOf<String, Any?>("type" to "udp", "tag" to DNS_DIRECT, "server" to "1.1.1.1")
             )
-            dns["rules"] = listOf(direct)
+            dns["rules"] = listOf(direct, bootstrap)
             dns["final"] = DNS_REMOTE
         }
         dns["strategy"] = "ipv4_only"
