@@ -369,13 +369,17 @@ jobs:
           Start-Sleep 3
           Get-Process sing-box,aether,madshield-fx -ErrorAction SilentlyContinue | ForEach-Object { throw "engine left running: $($_.Name)" }
 
-      # Pictures of the real window (Persian and English, three pages, and connected with live data), to be looked at.
+      # Pictures of the real screens (drawn off-screen by the packaged program: Persian and English, every page, and
+      # connected with live data), to be looked at.
       - name: Screenshots of the packaged program
         shell: pwsh
         run: |
           $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
-          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 600; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
-          ./desktop/ci/screenshots.ps1 -Exe $exe.FullName -OutDir "$PWD/screenshots"
+          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 540; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
+          Remove-Item "$env:LOCALAPPDATA/MadShield/settings.json" -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--shots=$PWD/screenshots" -Wait -PassThru
+          Write-Host "exit code $($p.ExitCode)"
+          Get-ChildItem screenshots | Select-Object Name, Length | Format-Table -AutoSize
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

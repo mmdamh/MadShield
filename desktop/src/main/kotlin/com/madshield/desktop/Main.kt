@@ -11,6 +11,7 @@ import com.madshield.app.util.RingLogBuffer
 import kotlin.system.exitProcess
 
 fun main(args: Array<String>) {
+    args.firstOrNull { it.startsWith("--shots=") }?.let { exitProcess(Shots.run(java.io.File(it.substringAfter('=')))) }
     if ("--selftest" in args) {
         // The packaged app has no console: the report is also written to a file CI (or a person) can read.
         val report = java.io.File(System.getenv("TEMP") ?: ".", "madshield-selftest.txt")
