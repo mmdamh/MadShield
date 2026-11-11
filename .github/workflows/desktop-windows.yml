@@ -1,4 +1,4 @@
-name: Desktop (Windows) build and phase 0 test
+name: Desktop (Windows) build, self-test and package
 
 # The Windows desktop version of MadShield. This workflow is separate from build.yml on purpose: build.yml publishes an
 # Android release on every push to main or test/**, and desktop work must never do that. It runs only on desktop/**
@@ -278,3 +278,71 @@ jobs:
           path: ${{ runner.temp }}/madshield-phase0
           if-no-files-found: ignore
           retention-days: 7
+
+  desktop-app:
+    name: Desktop app (compile, self-test through the TUN, package)
+    needs: [aether-windows, singbox-windows, fxvpn-windows]
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: "8.9"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: kit-parts
+
+      - name: Put the engine programs where the app looks for them
+        shell: pwsh
+        run: |
+          $kit = "desktop/engines-pack/windows-x64"
+          New-Item -ItemType Directory -Force -Path $kit | Out-Null
+          Copy-Item -Recurse -Force kit-parts/aether-windows/* $kit/
+          Copy-Item -Force kit-parts/singbox-windows/sing-box.exe $kit/
+          Copy-Item -Force kit-parts/fxvpn-windows/madshield-fx.exe $kit/
+          Get-ChildItem $kit -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - name: Compile
+        shell: pwsh
+        run: gradle -p desktop compileKotlin --no-daemon --stacktrace
+
+      # The runner is an administrator VM. The self-test connects through the real TUN and then disconnects; a hidden
+      # watchdog kills the engine programs after 7 minutes whatever happens, so the job cannot lose the network.
+      - name: Self-test (connect with WARP over HTTP/2 through the TUN)
+        shell: pwsh
+        run: |
+          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 420; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
+          gradle -p desktop selftest --no-daemon --stacktrace
+
+      - name: Package (portable folder)
+        shell: pwsh
+        run: gradle -p desktop createDistributable --no-daemon --stacktrace
+
+      - name: Zip and checksum
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem desktop/build/compose/binaries/main/app -Directory | Select-Object -First 1
+          Write-Host "app folder: $($app.FullName)"
+          Get-ChildItem $app.FullName -Recurse -File | Where-Object { $_.Name -match 'aether|sing-box|madshield-fx|MadShield\.exe' } | Select-Object FullName, Length | Format-Table -AutoSize
+          Compress-Archive -Path "$($app.FullName)/*" -DestinationPath MadShield-desktop-windows-x64.zip
+          (Get-FileHash MadShield-desktop-windows-x64.zip -Algorithm SHA256).Hash.ToLower() + "  MadShield-desktop-windows-x64.zip" | Out-File -Encoding ascii MadShield-desktop-windows-x64.zip.sha256
+          Get-Content MadShield-desktop-windows-x64.zip.sha256
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: madshield-desktop-windows-x64
+          path: |
+            MadShield-desktop-windows-x64.zip
+            MadShield-desktop-windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
