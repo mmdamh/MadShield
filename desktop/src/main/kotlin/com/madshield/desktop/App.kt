@@ -231,7 +231,7 @@ private fun HomeScreen(conn: Connection, settings: DesktopSettings) {
 // ----------------------------------------------------------------------------------------------------------- Engine
 
 @Composable
-fun <T> Choice(label: String, current: T, options: List<T>, text: (T) -> String, onPick: (T) -> Unit) {
+fun <T> Choice(label: String, current: T, options: List<T>, text: @Composable (T) -> String, onPick: (T) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Column(Modifier.padding(vertical = 6.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)

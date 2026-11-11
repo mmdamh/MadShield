@@ -40,7 +40,8 @@ object Elevation {
     } catch (_: Exception) { false }
 
     /** Starts the same program again through the UAC prompt. True when the request was made (the caller then exits). */
-    fun relaunch(args: Array<String>): Boolean = try {
+    fun relaunch(args: Array<String>): Boolean {
+    return try {
         val info = ProcessHandle.current().info()
         val cmd = info.command().orElse(null) ?: return false
         val all = info.arguments().orElse(emptyArray()).toList() + args
@@ -50,6 +51,7 @@ object Elevation {
         ProcessBuilder("powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script).start()
         true
     } catch (_: Exception) { false }
+    }
 }
 
 /**

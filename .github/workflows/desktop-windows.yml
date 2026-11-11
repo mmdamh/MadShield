@@ -24,7 +24,16 @@ jobs:
         with:
           persist-credentials: false
 
+      # The Aether build takes about 30 minutes; the result depends only on the pinned commit and these build steps.
+      - name: Restore the finished build
+        id: aethercache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: aether-win
+          key: aether-win-${{ hashFiles('native/aether-core.pin') }}-v1
+
       - name: Fetch aether-core at the pinned commit
+        if: steps.aethercache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -e
@@ -38,27 +47,32 @@ jobs:
           echo "aether-core @ $pin"
 
       - name: Install Rust toolchain
+        if: steps.aethercache.outputs.cache-hit != 'true'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
           toolchain: 1.98.1
           targets: x86_64-pc-windows-msvc
 
       - name: Install Go (BoringSSL build and the Go helpers)
+        if: steps.aethercache.outputs.cache-hit != 'true'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.22"
           cache: false
 
       - name: Install CMake and Ninja
+        if: steps.aethercache.outputs.cache-hit != 'true'
         uses: lukka/get-cmake@a89e43e22a96abafcd7a62db652a65ecd33052c9 # v4.4.4
         with:
           cmakeVersion: 4.4.4
 
       - name: Install NASM
+        if: steps.aethercache.outputs.cache-hit != 'true'
         uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
 
       # Same steps as upstream's own Windows release job (aether/.github/workflows/release.yml at the pin).
       - name: Build pluggable transports (Tor) and Psiphon
+        if: steps.aethercache.outputs.cache-hit != 'true'
         shell: bash
         working-directory: native/aether-core/aether
         run: |
@@ -68,10 +82,12 @@ jobs:
           ls -l pt
 
       - name: Build aether
+        if: steps.aethercache.outputs.cache-hit != 'true'
         working-directory: native/aether-core/aether
         run: cargo build --release --features tor --target x86_64-pc-windows-msvc
 
       - name: Collect licenses and package
+        if: steps.aethercache.outputs.cache-hit != 'true'
         shell: bash
         working-directory: native/aether-core/aether
         run: |
