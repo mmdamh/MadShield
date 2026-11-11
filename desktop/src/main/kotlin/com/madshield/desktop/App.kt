@@ -67,9 +67,9 @@ private enum class Page(val key: String) {
 }
 
 @Composable
-fun App(conn: Connection, initial: DesktopSettings) {
+fun App(conn: Connection, initial: DesktopSettings, startPage: String = "") {
     var settings by remember { mutableStateOf(initial) }
-    var page by remember { mutableStateOf(Page.HOME) }
+    var page by remember { mutableStateOf(Page.entries.firstOrNull { it.name.equals(startPage, true) } ?: Page.HOME) }
     fun update(new: DesktopSettings) { settings = new; SettingsStore.save(new) }
 
     val dark = androidx.compose.foundation.isSystemInDarkTheme()

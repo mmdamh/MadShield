@@ -34,7 +34,10 @@ fun main(args: Array<String>) {
     if (settings.connectOnStart) conn.connect(settings)
 
     application {
-        val state: WindowState = rememberWindowState(width = 1120.dp, height = 740.dp)
+        val state: WindowState = rememberWindowState(
+            width = minOf(1120, java.awt.Toolkit.getDefaultToolkit().screenSize.width - 40).dp,
+            height = minOf(740, java.awt.Toolkit.getDefaultToolkit().screenSize.height - 80).dp
+        )
         Window(
             onCloseRequest = {
                 conn.shutdownBlocking()
@@ -44,8 +47,8 @@ fun main(args: Array<String>) {
             title = "MadShield",
             state = state
         ) {
-            androidx.compose.runtime.LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(940, 640) }
-            App(conn, settings)
+            androidx.compose.runtime.LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(900, 600) }
+            App(conn, settings, args.firstOrNull { it.startsWith("--page=") }?.substringAfter('=') ?: "")
         }
     }
 }

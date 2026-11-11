@@ -369,6 +369,22 @@ jobs:
           Start-Sleep 3
           Get-Process sing-box,aether,madshield-fx -ErrorAction SilentlyContinue | ForEach-Object { throw "engine left running: $($_.Name)" }
 
+      # Pictures of the real window (Persian and English, three pages, and connected with live data), to be looked at.
+      - name: Screenshots of the packaged program
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
+          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 600; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
+          ./desktop/ci/screenshots.ps1 -Exe $exe.FullName -OutDir "$PWD/screenshots"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: madshield-desktop-screenshots
+          path: screenshots
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Zip and checksum
         shell: pwsh
         run: |
