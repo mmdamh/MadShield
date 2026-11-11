@@ -34,7 +34,7 @@ fun main(args: Array<String>) {
     if (settings.connectOnStart) conn.connect(settings)
 
     application {
-        val state: WindowState = rememberWindowState(width = 980.dp, height = 680.dp)
+        val state: WindowState = rememberWindowState(width = 1120.dp, height = 740.dp)
         Window(
             onCloseRequest = {
                 conn.shutdownBlocking()
@@ -44,6 +44,7 @@ fun main(args: Array<String>) {
             title = "MadShield",
             state = state
         ) {
+            androidx.compose.runtime.LaunchedEffect(Unit) { window.minimumSize = java.awt.Dimension(940, 640) }
             App(conn, settings)
         }
     }

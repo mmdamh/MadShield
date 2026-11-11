@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -76,14 +75,14 @@ fun FoxyScreen(conn: Connection, settings: DesktopSettings, update: (DesktopSett
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(t("foxy.title"), style = MaterialTheme.typography.headlineSmall)
+        PageHeader(t("foxy.title"))
         if (status.isNotEmpty()) Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant)
         error?.let { Text(t("foxy.error") + ": " + it, color = MaterialTheme.colorScheme.error) }
 
         Text(t("foxy.account"), style = MaterialTheme.typography.titleMedium)
         if (accounts.isEmpty() && status.isEmpty()) Text(t("foxy.none"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         for (a in accounts) {
-            Card(Modifier.fillMaxWidth()) {
+            Panel(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(a.email, style = MaterialTheme.typography.titleSmall)
                     Text(a.status, color = MaterialTheme.colorScheme.onSurfaceVariant)
