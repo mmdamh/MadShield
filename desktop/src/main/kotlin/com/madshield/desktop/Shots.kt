@@ -49,6 +49,7 @@ object Shots {
         conn.disconnect()
         val down = System.currentTimeMillis() + 30_000
         while (System.currentTimeMillis() < down && conn.state.value !is ConnState.Idle) Thread.sleep(500)
+        conn.shutdownBlocking()
         FoxyCore.stop()
         return 0
     }

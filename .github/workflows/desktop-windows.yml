@@ -9,6 +9,11 @@ name: Desktop (Windows) build, self-test and package
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish the packaged program as a GitHub pre-release with this tag (for example desktop-v1.0.0). Empty = no release."
+        required: false
+        default: ""
   push:
     branches: ["desktop/**"]
 
@@ -299,7 +304,9 @@ jobs:
     name: Desktop app (compile, self-test through the TUN, package)
     needs: [aether-windows, singbox-windows, fxvpn-windows]
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -348,6 +355,7 @@ jobs:
       # this is what a user will run, and it proves the packaged program finds its engines.
       - name: Self-test of the packaged program
         shell: pwsh
+        timeout-minutes: 10
         run: |
           Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 420; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
           $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
@@ -358,6 +366,7 @@ jobs:
       # The window itself: the packaged program starts (administrator already), shows its window and stays alive.
       - name: Start the packaged program (window smoke test)
         shell: pwsh
+        timeout-minutes: 3
         run: |
           $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
           $p = Start-Process -FilePath $exe.FullName -PassThru
@@ -368,26 +377,6 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Start-Sleep 3
           Get-Process sing-box,aether,madshield-fx -ErrorAction SilentlyContinue | ForEach-Object { throw "engine left running: $($_.Name)" }
-
-      # Pictures of the real screens (drawn off-screen by the packaged program: Persian and English, every page, and
-      # connected with live data), to be looked at.
-      - name: Screenshots of the packaged program
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
-          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 540; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
-          Remove-Item "$env:LOCALAPPDATA/MadShield/settings.json" -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--shots=$PWD/screenshots" -Wait -PassThru
-          Write-Host "exit code $($p.ExitCode)"
-          Get-ChildItem screenshots | Select-Object Name, Length | Format-Table -AutoSize
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: madshield-desktop-screenshots
-          path: screenshots
-          if-no-files-found: warn
-          retention-days: 7
 
       - name: Zip and checksum
         shell: pwsh
@@ -407,3 +396,50 @@ jobs:
             MadShield-desktop-windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish the release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          $notes = Get-Content desktop/release-notes.md -Raw
+          $sha = (Get-Content MadShield-desktop-windows-x64.zip.sha256).Split(' ')[0]
+          $notes = $notes.Replace('{{SHA256}}', $sha)
+          Set-Content -Path release-notes.md -Value $notes -Encoding UTF8
+          gh release create $env:TAG MadShield-desktop-windows-x64.zip MadShield-desktop-windows-x64.zip.sha256 `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --prerelease `
+            --title "MadShield for Windows $($env:TAG -replace '^desktop-','')" --notes-file release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
+
+      # Last on purpose: pictures for the design review. They connect for real, so they must never stand between the
+      # package and its upload; the clean-up step puts the network back whatever happened.
+      # Pictures of the real screens (drawn off-screen by the packaged program: Persian and English, every page, and
+      # connected with live data), to be looked at.
+      - name: Screenshots of the packaged program
+        continue-on-error: true
+        timeout-minutes: 9
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter MadShield.exe | Select-Object -First 1
+          Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-Command','Start-Sleep 540; Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird -ErrorAction SilentlyContinue | Stop-Process -Force'
+          Remove-Item "$env:LOCALAPPDATA/MadShield/settings.json" -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--shots=$PWD/screenshots" -Wait -PassThru
+          Write-Host "exit code $($p.ExitCode)"
+          Get-ChildItem screenshots | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Clean up engine programs
+        if: always()
+        shell: pwsh
+        run: Get-Process sing-box,aether,madshield-fx,psiphon-tunnel-core,lyrebird,MadShield -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        continue-on-error: true
+        if: always()
+        with:
+          name: madshield-desktop-screenshots
+          path: screenshots
+          if-no-files-found: warn
+          retention-days: 7
+
