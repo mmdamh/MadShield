@@ -579,7 +579,6 @@
     <string name="fx_signed_in_as">Signed in as %1$s</string>
     <string name="fx_account_status">Status: %1$s</string>
     <string name="fx_quota">Data this month</string>
-    <string name="fx_quota_left">%1$s left of %2$s this month</string>
     <string name="fx_quota_used">%1$s of %2$s used</string>
     <string name="fx_quota_unlimited">No data limit</string>
     <string name="fx_quota_unknown">Data left is not known yet</string>

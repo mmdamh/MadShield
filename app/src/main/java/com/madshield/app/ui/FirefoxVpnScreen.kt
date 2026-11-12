@@ -367,10 +367,6 @@ private fun AccountCard(account: FxAccount, status: FxStatus?, onRemove: () -> U
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    stringResource(R.string.fx_quota_left, fmtBytes(account.remainingBytes.coerceIn(0L, account.limitBytes)), fmtBytes(account.limitBytes)),
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text(
                     stringResource(R.string.fx_quota_used, fmtBytes(account.usedBytes), fmtBytes(account.limitBytes)),
                     style = MaterialTheme.typography.bodyMedium
                 )
