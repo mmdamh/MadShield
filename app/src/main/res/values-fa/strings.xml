@@ -577,6 +577,7 @@
     <string name="fx_signed_in_as">وارد شده با %1$s</string>
     <string name="fx_account_status">وضعیت: %1$s</string>
     <string name="fx_quota">حجم این ماه</string>
+    <string name="fx_quota_left">%1$s از %2$s این ماه باقی مانده</string>
     <string name="fx_quota_used">%1$s از %2$s مصرف شده</string>
     <string name="fx_quota_unlimited">بدون محدودیت حجم</string>
     <string name="fx_quota_unknown">حجم باقی‌مانده هنوز معلوم نیست</string>
