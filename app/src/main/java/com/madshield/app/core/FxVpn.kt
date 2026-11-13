@@ -308,6 +308,29 @@ data class FxSignIn(
     val accountId: String
 )
 
+/**
+ * The core's renewal of an account's access token while a person answers Fastly's image CAPTCHA (patch 0003):
+ * [state] is idle, running, captcha (a picture waits in [image], named [id]), done or failed.
+ */
+data class FxReauth(val state: String, val id: String, val image: String, val error: String, val renewed: Boolean) {
+    val waitingCaptcha: Boolean get() = state == "captcha" && id.isNotEmpty() && image.isNotEmpty()
+    val finished: Boolean get() = state == "done" || state == "failed"
+}
+
+/**
+ * While a person answers a CAPTCHA the connection must not restart the core under them (every restart ends the renewal
+ * in it). The health loop of the VPN asks [active] and waits. The hold ends by itself after [HOLD_MS], whatever happens to
+ * the page that took it, so a closed page can never keep the connection from recovering.
+ */
+object FxReauthGate {
+    const val HOLD_MS = 5 * 60_000L
+    @Volatile private var until = 0L
+
+    fun hold(nowMs: Long = System.currentTimeMillis()) { until = nowMs + HOLD_MS }
+    fun release() { until = 0L }
+    fun active(nowMs: Long = System.currentTimeMillis()): Boolean = nowMs < until
+}
+
 data class FxLocation(
     val code: String,
     val name: String,
@@ -410,6 +433,13 @@ object FxJson {
         )
     }
 
+    fun reauth(text: String): FxReauth? {
+        val m = MiniJson.parseObject(text) ?: return null
+        val state = str(m, "state")
+        if (state.isEmpty()) return null
+        return FxReauth(state, str(m, "id"), str(m, "image"), str(m, "error"), bool(m, "renewed"))
+    }
+
     fun locations(text: String): List<FxLocation>? {
         val root = MiniJson.parseObject(text) ?: return null
         val list = root["locations"] as? List<*> ?: return emptyList()
@@ -445,6 +475,7 @@ sealed interface FxVerdict {
 object FxErrors {
     /** The code the sign-in / account / failure fields use, as one line for the log and the Error card (English). */
     fun english(code: String, detail: String = ""): String {
+        if (isCaptcha(detail)) return CAPTCHA_TEXT
         val base = when (code) {
             "no_accounts" -> "Foxy has no account yet: open Foxy and sign in with your Firefox Account"
             "no_usable_account" -> "The Firefox Account cannot be used now (quota used up, sign-in expired, or no VPN entitlement): open Foxy to see why"
@@ -466,6 +497,11 @@ object FxErrors {
         val d = detail.trim().take(160)
         return if (d.isNotEmpty() && !base.contains(d)) "$base [$d]" else base
     }
+
+    /** Fastly's image CAPTCHA, which the core cannot answer on its own while it renews the account's sign-in in the background. */
+    fun isCaptcha(text: String): Boolean = text.contains("image CAPTCHA", ignoreCase = true)
+
+    const val CAPTCHA_TEXT = "Fastly asks for a CAPTCHA before the account's sign-in can be renewed: open Foxy and tap \"Renew sign-in\""
 
     /** A failure that retrying will not fix: the connect loop must not keep hammering Mozilla for these. */
     fun isLasting(code: String): Boolean = code in setOf("no_accounts", "no_usable_account", "no_account", "sign_in", "quota", "not_entitled", "region")

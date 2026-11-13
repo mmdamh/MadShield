@@ -51,6 +51,7 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
     var webSignIn by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
+    var renewing by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
     val inBuild = remember { FxRuntime.isInBuild(ctx) }
     var split by remember { mutableStateOf(FxTricks.helloSplit(ctx)) }
@@ -219,7 +220,7 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
                             }
                         )
                     } else {
-                        AccountCard(account, status, onRemove = { confirmRemove = true })
+                        AccountCard(account, status, onRenew = { renewing = true }, onRemove = { confirmRemove = true })
                         if (FxRuntime.endpoint != null && !FxSession.ownsCore) HelperText(stringResource(R.string.fx_vpn_running_note))
                     }
                 }
@@ -233,6 +234,15 @@ fun FirefoxVpnScreen(onBack: () -> Unit) {
             client = { FxSession.ensure(ctx).client() },
             onDone = { webSignIn = false; scope.launch { try { refresh(withLocations = true) } catch (e: Exception) { signInError = e.message ?: e.javaClass.simpleName } } },
             onClose = { webSignIn = false }
+        )
+    }
+    if (renewing) {
+        val id = accounts.firstOrNull()?.id
+        if (id == null) renewing = false
+        else FxRenewDialog(
+            accountId = id,
+            client = { FxSession.ensure(ctx).client() },
+            onClose = { renewing = false; scope.launch { try { refresh(withLocations = false) } catch (_: Exception) { } } }
         )
     }
     if (confirmRemove) {
@@ -351,7 +361,7 @@ private fun SignInCard(
 // ------------------------------------------------------------------------------------------------ account
 
 @Composable
-private fun AccountCard(account: FxAccount, status: FxStatus?, onRemove: () -> Unit) {
+private fun AccountCard(account: FxAccount, status: FxStatus?, onRenew: () -> Unit, onRemove: () -> Unit) {
     SectionCard(stringResource(R.string.fx_account)) {
         Text(stringResource(R.string.fx_signed_in_as, account.email), style = MaterialTheme.typography.titleSmall)
         if (account.status.isNotEmpty()) HelperText(stringResource(R.string.fx_account_status, account.status))
@@ -380,6 +390,8 @@ private fun AccountCard(account: FxAccount, status: FxStatus?, onRemove: () -> U
             }
         }
         Spacer(Modifier.height(8.dp))
+        FilledTonalButton(onClick = onRenew) { Text(stringResource(R.string.fx_renew_button)) }
+        HelperText(stringResource(R.string.fx_renew_hint))
         TextButton(onClick = onRemove) { Text(stringResource(R.string.fx_remove), color = MaterialTheme.colorScheme.error) }
     }
 }

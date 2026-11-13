@@ -1,0 +1,385 @@
+diff --git a/core/internal/proxy/madshield_reauth.go b/core/internal/proxy/madshield_reauth.go
+new file mode 100644
+index 0000000..79a7146
+--- /dev/null
++++ b/core/internal/proxy/madshield_reauth.go
+@@ -0,0 +1,36 @@
++package proxy
++
++import (
++	"context"
++	"fmt"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/accounts"
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++)
++
++// RenewAccessToken makes the account's access token fresh (MadShield: an account page asked for it, and a person is
++// waiting to answer Fastly's image CAPTCHA, so the usual 15 s limit of a background refresh does not apply: ctx sets
++// the time). It reports whether a refresh was needed; a token that is still good is left alone. The new tokens are
++// saved like those of any refresh.
++func (p *AccountPool) RenewAccessToken(ctx context.Context, acc accounts.Account) (bool, error) {
++	auth, err := p.AuthFor(acc)
++	if err != nil {
++		return false, err
++	}
++	if auth.accessTokenValid(time.Now()) {
++		return false, nil
++	}
++	if auth.Token == nil || auth.Token.RefreshToken == "" {
++		return false, fmt.Errorf("%w: no refresh token stored", fxa.ErrReauthRequired)
++	}
++	token, err := fxa.RefreshToken(ctx, auth.Token.RefreshToken)
++	if err != nil {
++		return false, err
++	}
++	renewed := &runtimeAuth{Token: token, ObtainedAt: time.Now(), persist: auth.persist, accountID: auth.accountID}
++	if err := renewed.save(); err != nil {
++		return true, fmt.Errorf("saving the renewed tokens: %w", err)
++	}
++	return true, nil
++}
+diff --git a/core/internal/service/dashboard.go b/core/internal/service/dashboard.go
+index 0947681..783f1e2 100644
+--- a/core/internal/service/dashboard.go
++++ b/core/internal/service/dashboard.go
+@@ -223,6 +223,10 @@ func (s *dashboardServer) handler() http.Handler {
+ 
+ 	mux.HandleFunc("POST /api/signin", s.handleSignInStart)
+ 	mux.HandleFunc("POST /api/ms/signin-browser", s.handleBrowserSignIn)
++	mux.HandleFunc("POST /api/ms/reauth", s.handleReauthStart)
++	mux.HandleFunc("GET /api/ms/reauth", s.handleReauthGet)
++	mux.HandleFunc("POST /api/ms/reauth/answer", s.handleReauthAnswer)
++	mux.HandleFunc("DELETE /api/ms/reauth", s.handleReauthCancel)
+ 	mux.HandleFunc("GET /api/signin/{id}", s.handleSignInGet)
+ 	mux.HandleFunc("POST /api/signin/{id}", s.handleSignInAnswer)
+ 	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
+diff --git a/core/internal/service/madshield_reauth.go b/core/internal/service/madshield_reauth.go
+new file mode 100644
+index 0000000..3194ae1
+--- /dev/null
++++ b/core/internal/service/madshield_reauth.go
+@@ -0,0 +1,180 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"sync"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
++)
++
++// MadShield: renewing an account's access token while a person answers Fastly's image CAPTCHA.
++//
++// When the access token has expired, the next connection renews it in the background, which Fastly may answer with an
++// image CAPTCHA that nobody is there to read ("Fastly requires an image CAPTCHA; sign in from the dashboard"). This is
++// the same question the sign-in asks, with the same pictures, but for an account that is already added: the app starts a
++// renewal (POST /api/ms/reauth), shows the picture the daemon offers (GET /api/ms/reauth) and sends the characters back
++// (POST /api/ms/reauth/answer). Nothing is kept: the picture and the answer live only in memory while the renewal runs.
++
++const (
++	reauthIdle      = "idle"
++	reauthRunning   = "running"
++	reauthCaptcha   = "captcha"
++	reauthDone      = "done"
++	reauthFailed    = "failed"
++	reauthTimeLimit = 4 * time.Minute
++)
++
++// reauthView is what the API shows of the renewal.
++type reauthView struct {
++	State   string `json:"state"`
++	ID      string `json:"id"`      // names the picture in Image, to be sent back with the answer
++	Image   string `json:"image"`   // a data: URL while State is "captcha", else ""
++	Error   string `json:"error"`   // why it failed
++	Renewed bool   `json:"renewed"` // done: the token was renewed (false: it was still good)
++}
++
++type reauthJob struct {
++	mu     sync.Mutex
++	view   reauthView
++	seq    int
++	answer chan string
++	cancel context.CancelFunc
++}
++
++// msReauth is the one renewal of this process; a second start while it runs joins it.
++var msReauth = &reauthJob{view: reauthView{State: reauthIdle}}
++
++// reauthRun does the renewal; solve is the CAPTCHA question to give to the context it uses.
++type reauthRun func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error)
++
++func (j *reauthJob) snapshot() reauthView {
++	j.mu.Lock()
++	defer j.mu.Unlock()
++	return j.view
++}
++
++// start begins a renewal (or returns the one in progress).
++func (j *reauthJob) start(run reauthRun) reauthView {
++	j.mu.Lock()
++	defer j.mu.Unlock()
++	if j.view.State == reauthRunning || j.view.State == reauthCaptcha {
++		return j.view
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), reauthTimeLimit)
++	j.cancel = cancel
++	j.answer = nil
++	j.view = reauthView{State: reauthRunning}
++	started := j.view
++	go func() {
++		defer cancel()
++		renewed, err := run(ctx, j.solve)
++		j.finish(renewed, err)
++	}()
++	return started
++}
++
++func (j *reauthJob) finish(renewed bool, err error) {
++	j.mu.Lock()
++	defer j.mu.Unlock()
++	j.answer = nil
++	j.view.ID, j.view.Image = "", ""
++	if err != nil {
++		j.view.State = reauthFailed
++		j.view.Error = fxa.Message(err)
++		if errors.Is(err, context.DeadlineExceeded) {
++			j.view.Error = "no answer in time"
++		}
++		logx.Warn("renewing the sign-in failed err=%s", logx.Err(err))
++		return
++	}
++	j.view.State, j.view.Error, j.view.Renewed = reauthDone, "", renewed
++	logx.Info("the account's sign-in was renewed renewed=%v", renewed)
++}
++
++// solve is the CaptchaSolver of the renewal: shows the picture and waits for the characters.
++func (j *reauthJob) solve(ctx context.Context, image string) (string, error) {
++	j.mu.Lock()
++	j.seq++
++	ch := make(chan string, 1)
++	j.answer = ch
++	j.view.State, j.view.ID, j.view.Image = reauthCaptcha, fmt.Sprintf("c%d", j.seq), image
++	j.mu.Unlock()
++	select {
++	case text := <-ch:
++		j.mu.Lock()
++		j.view.State, j.view.ID, j.view.Image = reauthRunning, "", ""
++		j.mu.Unlock()
++		return text, nil
++	case <-ctx.Done():
++		return "", ctx.Err()
++	}
++}
++
++// deliver gives the characters read from the picture named id.
++func (j *reauthJob) deliver(id, text string) error {
++	j.mu.Lock()
++	defer j.mu.Unlock()
++	if j.view.State != reauthCaptcha || j.answer == nil || id == "" || id != j.view.ID {
++		return errors.New("no CAPTCHA is waiting for that answer")
++	}
++	j.answer <- text // buffered, one answer per picture
++	j.answer = nil
++	return nil
++}
++
++// stop ends a renewal that is waiting or running.
++func (j *reauthJob) stop() {
++	j.mu.Lock()
++	cancel := j.cancel
++	j.mu.Unlock()
++	if cancel != nil {
++		cancel()
++	}
++}
++
++func (s *dashboardServer) handleReauthStart(w http.ResponseWriter, r *http.Request) {
++	var in struct {
++		AccountID string `json:"account_id"`
++	}
++	if !readJSON(w, r, &in) {
++		return
++	}
++	acc, err := s.d.store.Get(in.AccountID)
++	if err != nil {
++		writeError(w, http.StatusNotFound, "unknown account")
++		return
++	}
++	view := msReauth.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
++		return s.d.pool.RenewAccessToken(fxa.WithCaptchaSolver(ctx, solve), acc)
++	})
++	writeJSON(w, http.StatusAccepted, view)
++}
++
++func (s *dashboardServer) handleReauthGet(w http.ResponseWriter, _ *http.Request) {
++	writeJSON(w, http.StatusOK, msReauth.snapshot())
++}
++
++func (s *dashboardServer) handleReauthAnswer(w http.ResponseWriter, r *http.Request) {
++	var in struct {
++		ID     string `json:"id"`
++		Answer string `json:"answer"`
++	}
++	if !readJSON(w, r, &in) {
++		return
++	}
++	if err := msReauth.deliver(in.ID, in.Answer); err != nil {
++		writeError(w, http.StatusConflict, err.Error())
++		return
++	}
++	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
++}
++
++func (s *dashboardServer) handleReauthCancel(w http.ResponseWriter, _ *http.Request) {
++	msReauth.stop()
++	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
++}
+diff --git a/core/internal/service/madshield_reauth_test.go b/core/internal/service/madshield_reauth_test.go
+new file mode 100644
+index 0000000..28b8179
+--- /dev/null
++++ b/core/internal/service/madshield_reauth_test.go
+@@ -0,0 +1,136 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++)
++
++func waitReauth(t *testing.T, j *reauthJob, state string) reauthView {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		if v := j.snapshot(); v.State == state {
++			return v
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	t.Fatalf("state %q not reached, now %+v", state, j.snapshot())
++	return reauthView{}
++}
++
++func newTestReauth() *reauthJob { return &reauthJob{view: reauthView{State: reauthIdle}} }
++
++func TestMadShieldReauthAnswersACaptcha(t *testing.T) {
++	j := newTestReauth()
++	got := make(chan string, 1)
++	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
++		text, err := solve(ctx, "data:image/png;base64,AQID")
++		got <- text
++		return true, err
++	})
++	v := waitReauth(t, j, reauthCaptcha)
++	if v.Image != "data:image/png;base64,AQID" || v.ID == "" {
++		t.Fatalf("the picture is not offered: %+v", v)
++	}
++	if err := j.deliver("other", "abc"); err == nil {
++		t.Fatal("an answer for another picture was accepted")
++	}
++	if err := j.deliver(v.ID, "k7Q2"); err != nil {
++		t.Fatal(err)
++	}
++	if text := <-got; text != "k7Q2" {
++		t.Fatalf("the solver got %q", text)
++	}
++	done := waitReauth(t, j, reauthDone)
++	if !done.Renewed || done.Image != "" || done.ID != "" || done.Error != "" {
++		t.Fatalf("finished view: %+v", done)
++	}
++	if err := j.deliver(v.ID, "again"); err == nil {
++		t.Fatal("a second answer was accepted")
++	}
++}
++
++func TestMadShieldReauthStartJoinsARunningRenewal(t *testing.T) {
++	j := newTestReauth()
++	release := make(chan struct{})
++	runs := 0
++	run := func(ctx context.Context, _ fxa.CaptchaSolver) (bool, error) {
++		runs++
++		<-release
++		return false, nil
++	}
++	j.start(run)
++	j.start(run)
++	close(release)
++	v := waitReauth(t, j, reauthDone)
++	if runs != 1 || v.Renewed {
++		t.Fatalf("runs=%d view=%+v", runs, v)
++	}
++}
++
++func TestMadShieldReauthStopWhileWaiting(t *testing.T) {
++	j := newTestReauth()
++	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
++		_, err := solve(ctx, "data:image/png;base64,AQID")
++		return false, err
++	})
++	waitReauth(t, j, reauthCaptcha)
++	j.stop()
++	v := waitReauth(t, j, reauthFailed)
++	if v.Image != "" || v.Error == "" {
++		t.Fatalf("stopped view: %+v", v)
++	}
++}
++
++func TestMadShieldReauthFailureIsShownAndAnotherCanStart(t *testing.T) {
++	j := newTestReauth()
++	j.start(func(context.Context, fxa.CaptchaSolver) (bool, error) {
++		return false, errors.New("account server unreachable")
++	})
++	v := waitReauth(t, j, reauthFailed)
++	if v.Error != "account server unreachable" {
++		t.Fatalf("error text: %q", v.Error)
++	}
++	j.start(func(context.Context, fxa.CaptchaSolver) (bool, error) { return true, nil })
++	if v := waitReauth(t, j, reauthDone); !v.Renewed || v.Error != "" {
++		t.Fatalf("second run: %+v", v)
++	}
++}
++
++func TestMadShieldReauthSecondPictureGetsANewID(t *testing.T) {
++	j := newTestReauth()
++	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
++		if _, err := solve(ctx, "data:image/png;base64,AQID"); err != nil {
++			return false, err
++		}
++		_, err := solve(ctx, "data:image/png;base64,BAUG") // the first answer was wrong: a new picture
++		return true, err
++	})
++	first := waitReauth(t, j, reauthCaptcha)
++	if err := j.deliver(first.ID, "wrong"); err != nil {
++		t.Fatal(err)
++	}
++	deadline := time.Now().Add(3 * time.Second)
++	var second reauthView
++	for time.Now().Before(deadline) {
++		if v := j.snapshot(); v.State == reauthCaptcha && v.ID != first.ID {
++			second = v
++			break
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	if second.ID == "" || second.Image != "data:image/png;base64,BAUG" {
++		t.Fatalf("no second picture: %+v", second)
++	}
++	if err := j.deliver(first.ID, "late"); err == nil {
++		t.Fatal("an answer for the old picture was accepted")
++	}
++	if err := j.deliver(second.ID, "right"); err != nil {
++		t.Fatal(err)
++	}
++	waitReauth(t, j, reauthDone)
++}

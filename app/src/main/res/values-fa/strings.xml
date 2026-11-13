@@ -584,6 +584,17 @@
     <string name="fx_remove">حذف حساب</string>
     <string name="fx_remove_title">این حساب حذف شود؟</string>
     <string name="fx_remove_text">اطلاعات ورود از این گوشی پاک می‌شود. خود حساب Firefox شما دست‌نخورده می‌ماند.</string>
+    <string name="fx_renew_button">تازه‌سازی ورود</string>
+    <string name="fx_renew_hint">اگر اتصال با «کپچای Fastly» (بررسی ضدربات Mozilla) متوقف شد، اینجا را بزنید: تصویر نشان داده می‌شود و بعد از نوشتن حروفی که می‌بینید، ورود حساب تازه می‌شود.</string>
+    <string name="fx_renew_title">تازه‌سازی ورود</string>
+    <string name="fx_renew_working">در حال ارتباط با Mozilla…</string>
+    <string name="fx_renew_captcha">Fastly یک تصویر نشان می‌دهد. حروفی را که می‌بینید بنویسید.</string>
+    <string name="fx_renew_field">حروف تصویر</string>
+    <string name="fx_renew_send">ارسال</string>
+    <string name="fx_renew_done">ورود تازه شد. دوباره وصل شوید.</string>
+    <string name="fx_renew_still_good">ورود هنوز معتبر است؛ چیزی برای تازه‌سازی نبود.</string>
+    <string name="fx_renew_failed">تازه‌سازی انجام نشد: %1$s</string>
+    <string name="fx_renew_close">بستن</string>
     <string name="fx_step_working">در حال ورود…</string>
     <string name="fx_step_email_code">کدی را که موزیلا ایمیل کرده وارد کنید</string>
     <string name="fx_step_totp">کد برنامه‌ی احراز هویت (Authenticator) را وارد کنید</string>

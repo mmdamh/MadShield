@@ -458,6 +458,7 @@ class AetherVpnService : VpnService() {
                 // Sleep; a screen-on or a network change cuts the sleep short and ends idle mode at once.
                 if (screen.sleep(PowerPolicy.cadence(isScreenOn(), idle).healthMs)) idleTracker.wake()
                 if (engine.swapping) continue // the custom link is being switched on purpose: not an outage
+                if (FxReauthGate.active()) continue // a person is answering Fastly's CAPTCHA in the core: do not restart it
                 val screenNow = isScreenOn()
                 // Traffic counters are only read with the screen off (that is when idle is decided).
                 val idleCounters = if (screenNow) null else runCatching { tunEngine?.counters() }.getOrNull()

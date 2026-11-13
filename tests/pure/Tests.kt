@@ -2058,9 +2058,15 @@ private fun fxWebTests() {
             .none { l -> val body = l.substringAfter(">").substringBeforeLast("</string>"); Regex("(?<!\\\\)'").containsMatchIn(body) })
     val patches = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches").list().orEmpty().toList()
     check("fx web: the core hook has our browser sign-in route, Firefox TLS for the control plane, and no other project's name",
-        patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch") &&
+        patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch", "0003-madshield-reauth-captcha.patch") &&
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText().contains("/api/ms/signin-browser") &&
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText().let { p2 -> p2.contains("/api/ms/signin-browser") && p2.contains("fxa.BrowserTokens") && p2.contains("DialTLSContext") && p2.contains("asApp") && p2.contains("Accept-Encoding\", \"identity") && !p2.contains("Arman VPN", ignoreCase = true) })
+    check("fx reauth: the client calls the routes patch 0003 adds, and no other project's name is in it",
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0003-madshield-reauth-captcha.patch").readText().let { p3 ->
+            val c = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText()
+            listOf("\"POST /api/ms/reauth\"", "\"GET /api/ms/reauth\"", "\"POST /api/ms/reauth/answer\"", "\"DELETE /api/ms/reauth\"").all { p3.contains(it) } &&
+                c.contains("\"/api/ms/reauth\"") && c.contains("\"/api/ms/reauth/answer\"") && p3.contains("RenewAccessToken") && !p3.contains("Arman VPN", ignoreCase = true)
+        })
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host; the core sign-in is cancelled and cookies cleared at the end",
         screen.contains("FxWebChannel.userAgent") && screen.contains("FxWebChannel.hostAllowed") && screen.contains("cancelRunning()") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))
@@ -2308,6 +2314,25 @@ private fun fxModelTests() {
     check("fx signin: no id is null", FxJson.signIn("""{"step":"done"}""") == null)
     check("fx captcha: data url decoded, junk is null", FxJson.dataUrlBytes("data:image/png;base64,AQID")!!.contentEquals(byteArrayOf(1, 2, 3)) &&
         FxJson.dataUrlBytes("http://x/y.png") == null && FxJson.dataUrlBytes("data:image/png;base64,@@@") == null)
+
+    // the CAPTCHA renewal of the core (patch 0003)
+    val rc = FxJson.reauth("""{"state":"captcha","id":"c1","image":"data:image/png;base64,AQID","error":"","renewed":false}""")!!
+    check("fx reauth: a waiting picture is parsed", rc.waitingCaptcha && !rc.finished && rc.id == "c1")
+    check("fx reauth: a picture without id or image is not waiting",
+        !FxJson.reauth("""{"state":"captcha","id":"","image":"data:image/png;base64,AQID"}""")!!.waitingCaptcha &&
+        !FxJson.reauth("""{"state":"captcha","id":"c2","image":""}""")!!.waitingCaptcha)
+    val rd = FxJson.reauth("""{"state":"done","id":"","image":"","error":"","renewed":true}""")!!
+    check("fx reauth: done and failed are the finished states", rd.finished && rd.renewed && FxJson.reauth("""{"state":"failed","error":"x"}""")!!.finished &&
+        !FxJson.reauth("""{"state":"running"}""")!!.finished && !FxJson.reauth("""{"state":"idle"}""")!!.finished)
+    check("fx reauth: no state or junk is null", FxJson.reauth("""{"id":"c1"}""") == null && FxJson.reauth("not json") == null)
+    FxReauthGate.release()
+    check("fx reauth gate: closed at first, held for five minutes, released at once",
+        !FxReauthGate.active(1_000L) && run { FxReauthGate.hold(1_000L); FxReauthGate.active(1_000L + FxReauthGate.HOLD_MS - 1) } &&
+        !FxReauthGate.active(1_000L + FxReauthGate.HOLD_MS) && run { FxReauthGate.release(); !FxReauthGate.active(1_001L) })
+    check("fx errors: Fastly's image CAPTCHA gets the renew text, others keep theirs",
+        FxErrors.english("", "connecting to Mozilla: refresh request: Fastly anti-bot challenge: Fastly requires an image CAPTCHA; sign in from the dashboard to answer it") == FxErrors.CAPTCHA_TEXT &&
+        FxErrors.isCaptcha("Fastly requires an image CAPTCHA") && !FxErrors.isCaptcha("Fastly anti-bot challenge did not complete") &&
+        FxErrors.english("quota") == "this month's data of the Firefox Account is used up")
 
     // locations and test
     val loc = FxJson.locations("""{"locations":[{"code":"DE","name":"Germany","recommended":true,"ping_ms":41},{"name":"nocode"}],"pinged_at":null}""")!!

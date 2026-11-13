@@ -83,6 +83,17 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
     fun signInBrowser(email: String, sessionToken: String): FxSignIn =
         FxJson.signIn(call("POST", "/api/ms/signin-browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
 
+    /** Starts (or joins) the renewal of the account's access token with a person answering Fastly's CAPTCHA (patch 0003). */
+    fun reauthStart(accountId: String): FxReauth =
+        FxJson.reauth(call("POST", "/api/ms/reauth", json("account_id" to accountId))) ?: throw IOException("unreadable renewal")
+
+    fun reauthGet(): FxReauth = FxJson.reauth(call("GET", "/api/ms/reauth")) ?: throw IOException("unreadable renewal")
+
+    /** The characters of the picture named [id]. A 409 means that picture is no longer the one waiting. */
+    fun reauthAnswer(id: String, text: String) { call("POST", "/api/ms/reauth/answer", json("id" to id, "answer" to text)) }
+
+    fun reauthCancel() { call("DELETE", "/api/ms/reauth") }
+
     fun removeAccount(id: String) { call("DELETE", "/api/accounts/" + enc(id)) }
 
     fun locations(): List<FxLocation> = FxJson.locations(call("GET", "/api/locations", timeoutMs = 25_000)) ?: throw IOException("unreadable locations")

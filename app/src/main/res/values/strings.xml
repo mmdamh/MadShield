@@ -586,6 +586,17 @@
     <string name="fx_remove">Remove account</string>
     <string name="fx_remove_title">Remove this account?</string>
     <string name="fx_remove_text">The sign-in is deleted from this phone. Your Firefox Account itself is not touched.</string>
+    <string name="fx_renew_button">Renew sign-in</string>
+    <string name="fx_renew_hint">If connecting stops with a CAPTCHA from Fastly (Mozilla\'s bot check), tap here: it shows the picture, and the account\'s sign-in is renewed once you type what you see.</string>
+    <string name="fx_renew_title">Renew sign-in</string>
+    <string name="fx_renew_working">Contacting Mozilla…</string>
+    <string name="fx_renew_captcha">Fastly shows a picture. Type the characters you see.</string>
+    <string name="fx_renew_field">Characters</string>
+    <string name="fx_renew_send">Send</string>
+    <string name="fx_renew_done">The sign-in is renewed. Connect again.</string>
+    <string name="fx_renew_still_good">The sign-in is still valid; there was nothing to renew.</string>
+    <string name="fx_renew_failed">Renewing did not work: %1$s</string>
+    <string name="fx_renew_close">Close</string>
     <string name="fx_step_working">Signing in…</string>
     <string name="fx_step_email_code">Enter the code Mozilla emailed you</string>
     <string name="fx_step_totp">Enter the code from your authenticator app</string>

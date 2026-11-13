@@ -491,6 +491,8 @@ jobs:
           go vet ./cmd/madshield-fx
           # the allowlist of names (allow_test.go) runs on the build machine
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test ./cmd/madshield-fx
+          # the CAPTCHA renewal (patch 0003): its state machine, and a compile check of the core packages it touches
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -vet=off -run TestMadShieldReauth ./internal/service
           go build -v -trimpath -o "$GITHUB_WORKSPACE/fxvpn-out" -ldflags "-s -w -buildid=" ./cmd/madshield-fx
           ls -l "$GITHUB_WORKSPACE/fxvpn-out"
 
