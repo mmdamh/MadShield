@@ -1,5 +1,5 @@
 diff --git a/core/internal/fxa/challenge.go b/core/internal/fxa/challenge.go
-index 1b3fbb8..84a9174 100644
+index 1b3fbb8..2bef350 100644
 --- a/core/internal/fxa/challenge.go
 +++ b/core/internal/fxa/challenge.go
 @@ -59,6 +59,13 @@ var (
@@ -123,7 +123,7 @@ index 1b3fbb8..84a9174 100644
  }
  
  // fetchChallengePage fetches pageURL and reports whether the response is a
-@@ -425,7 +481,7 @@ func installChallengeCookies(solverJar http.CookieJar, pageURL string) error {
+@@ -425,16 +481,18 @@ func installChallengeCookies(solverJar http.CookieJar, pageURL string) error {
  	}
  	cookies := solverJar.Cookies(parsed)
  	if len(cookies) == 0 {
@@ -131,12 +131,44 @@ index 1b3fbb8..84a9174 100644
 +		return errChallengeNoCookies
  	}
  
- 	apiURL, err := url.Parse(fxaAuthServer + "/")
+-	apiURL, err := url.Parse(fxaAuthServer + "/")
+-	if err != nil {
+-		return err
++	// The cookies come out of the solver's jar without their Domain, so each host that is asked needs its own copy. The
++	// OAuth server is a host of its own (MadShield: the renewal may send its refresh there, see madshield_refresh.go).
++	for _, target := range []string{fxaAuthServer + "/", fxaSiteURL, browserOAuthTokenURL} {
++		u, err := url.Parse(target)
++		if err != nil {
++			return err
++		}
++		controlplane.SetCookies(u, cookies)
+ 	}
+-	controlplane.SetCookies(apiURL, cookies)
+-	parsed2, _ := url.Parse(fxaSiteURL)
+-	controlplane.SetCookies(parsed2, cookies)
+ 	return nil
+ }
+ 
 diff --git a/core/internal/fxa/fxa.go b/core/internal/fxa/fxa.go
-index c563454..2184111 100644
+index c563454..ec52f46 100644
 --- a/core/internal/fxa/fxa.go
 +++ b/core/internal/fxa/fxa.go
-@@ -148,6 +148,9 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
+@@ -136,6 +136,14 @@ func (e *emailCaseError) Unwrap() error { return e.err }
+ // body, no FxA error payload). The request factory is invoked again after
+ // each successful solve because request bodies are single-use readers.
+ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http.Response, error) {
++	return fxaDoWith(ctx, newRequest, nil)
++}
++
++// fxaDoWith is fxaDo with a second way to send the request: after each of the first alternateAttempts answers of HTTP 406,
++// and before the challenge is solved, alt is asked for it (MadShield: a challenge that was solved does not help when the
++// request itself is what the edge refuses, so another way of sending it is tried before a person is asked for a CAPTCHA).
++// alt returns nil, nil when that way was refused or could not be reached too.
++func fxaDoWith(ctx context.Context, newRequest func() (*http.Request, error), alt func(ctx context.Context, attempt int) (*http.Response, error)) (*http.Response, error) {
+ 	ctx, cancel := contextWithMinDeadline(ctx, fxaCallMinBudget)
+ 	defer cancel()
+ 
+@@ -148,19 +156,33 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
  		if err != nil {
  			return nil, err
  		}
@@ -146,9 +178,15 @@ index c563454..2184111 100644
  		if resp.StatusCode != http.StatusNotAcceptable {
  			return resp, nil
  		}
-@@ -155,12 +158,17 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
+ 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
  		resp.Body.Close()
  
++		if alt != nil && attempt <= alternateAttempts {
++			if resp2, err := alt(ctx, attempt); resp2 != nil || err != nil {
++				return resp2, err
++			}
++		}
++
  		logx.Info("the account server answered HTTP 406 (Fastly's bot check); solving its challenge attempt=%d", attempt)
 +		emitChallenge(ctx, ChallengeEvent{Kind: EvAttempt, Attempt: attempt, Status: resp.StatusCode})
  		if err := solveFastlyChallenge(ctx); err != nil {
@@ -165,12 +203,31 @@ index c563454..2184111 100644
  }
  
  // fxaLogin signs in. An email typed in another letter case than the
+@@ -380,15 +402,16 @@ func fxaRefreshToken(ctx context.Context, refreshToken string) (*TokenResponse,
+ 
+ 	tokenURL := fxaAuthServer + "/oauth/token"
+ 
+-	resp, err := fxaDo(ctx, func() (*http.Request, error) {
++	resp, err := fxaDoWith(ctx, func() (*http.Request, error) {
+ 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(bodyJSON)))
+ 		if err != nil {
+ 			return nil, fmt.Errorf("creating refresh request: %w", err)
+ 		}
+ 		req.Header.Set("Content-Type", "application/json")
+ 		controlplane.ApplyFirefoxHeaders(req)
++		req.Header.Set("Accept-Encoding", "identity") // MadShield: net/http's own "gzip" next to Firefox's look is not Firefox's
+ 		return req, nil
+-	})
++	}, refreshAlternate(bodyJSON))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("refresh request: %w", err)
+ 	}
 diff --git a/core/internal/fxa/madshield_events.go b/core/internal/fxa/madshield_events.go
 new file mode 100644
-index 0000000..18b1fc8
+index 0000000..4f7a9b2
 --- /dev/null
 +++ b/core/internal/fxa/madshield_events.go
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,61 @@
 +package fxa
 +
 +import (
@@ -200,18 +257,19 @@ index 0000000..18b1fc8
 +}
 +
 +const (
-+	EvAttempt  = "attempt"           // the account server answered 406 to try Attempt; the challenge is about to be solved
-+	EvHost     = "host"              // the flow begins on Host
-+	EvNoPage   = "no_challenge_page" // Host served a normal page: nothing to solve there
-+	EvRound    = "round"             // Fastly asked Kinds in post-back round Round
-+	EvPostBack = "post_back"         // the post-back of the round was answered: Status, Result success|more|rejected|error
-+	EvProbe    = "probe"             // the probe after "success": Result accepted|still_challenged
-+	EvCookies  = "cookies"           // the solved cookie moved into the control plane's jar: Result installed|missing
-+	EvSolved   = "solved"            // the flow on Host is complete
-+	EvFailed   = "failed"            // the flow on Host ended with an error: Result probe|cookies|rounds|cancelled|other
-+	EvRetry    = "retry"             // the original request is sent again after a solved challenge (Attempt is the new try)
-+	EvReply    = "reply"             // the answer to a retried request: Status
-+	EvGiveUp   = "give_up"           // every try was answered with 406 again
++	EvAttempt   = "attempt"           // the account server answered 406 to try Attempt; the challenge is about to be solved
++	EvHost      = "host"              // the flow begins on Host
++	EvNoPage    = "no_challenge_page" // Host served a normal page: nothing to solve there
++	EvRound     = "round"             // Fastly asked Kinds in post-back round Round
++	EvPostBack  = "post_back"         // the post-back of the round was answered: Status, Result success|more|rejected|error
++	EvProbe     = "probe"             // the probe after "success": Result accepted|still_challenged
++	EvCookies   = "cookies"           // the solved cookie moved into the control plane's jar: Result installed|missing
++	EvSolved    = "solved"            // the flow on Host is complete
++	EvFailed    = "failed"            // the flow on Host ended with an error: Result probe|cookies|rounds|cancelled|other
++	EvRetry     = "retry"             // the original request is sent again after a solved challenge (Attempt is the new try)
++	EvReply     = "reply"             // the answer to a retried request: Status
++	EvGiveUp    = "give_up"           // every try was answered with 406 again
++	EvAlternate = "alternate"         // the refresh was sent another way (Result app|page|oauth_host); Status is the answer, 0 for none
 +)
 +
 +type challengeObserverKey struct{}
@@ -233,10 +291,10 @@ index 0000000..18b1fc8
 +var ErrChallengeStillRefused = errors.New("Fastly anti-bot challenge still failing")
 diff --git a/core/internal/fxa/madshield_events_test.go b/core/internal/fxa/madshield_events_test.go
 new file mode 100644
-index 0000000..b1fe6e9
+index 0000000..47ecbf2
 --- /dev/null
 +++ b/core/internal/fxa/madshield_events_test.go
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,597 @@
 +package fxa
 +
 +import (
@@ -277,6 +335,9 @@ index 0000000..b1fe6e9
 +	// token answers the accepted refresh: status and body
 +	tokenStatus int
 +	tokenBody   string
++	// altAccepts: the way of sending the refresh the edge lets through without any cookie: "app" (the app's User-Agent),
++	// "page" (the Origin of Firefox's page) or "oauth_host" (the OAuth server's own host); "" for none.
++	altAccepts string
 +
 +	mu      sync.Mutex
 +	flow    int
@@ -284,6 +345,7 @@ index 0000000..b1fe6e9
 +	solved  bool     // the current flow's post-back said "success"
 +	answers []string // the CAPTCHA answers that reached a post-back (to prove delivery, never logged)
 +	calls   []string
++	primary []string // the Accept-Encoding of each refresh sent the first way (Firefox's User-Agent, the account host)
 +}
 +
 +func newFakeEdge(t *testing.T) *fakeEdge {
@@ -378,7 +440,23 @@ index 0000000..b1fe6e9
 +			return nil, r.Context().Err()
 +		}
 +		e.t.Fatalf("no plan for flow %d round %d", flow, round)
++	case r.Method == http.MethodPost && path == "/v1/token" && r.URL.Host == "oauth.accounts.firefox.com":
++		if e.altAccepts != "oauth_host" && !e.hasCookie(r, e.apiAccepts) {
++			return reply(r, 406, "", nil), nil
++		}
++		return reply(r, e.tokenStatus, e.tokenBody, map[string]string{"Content-Type": "application/json"}), nil
 +	case r.Method == http.MethodPost && path == "/v1/oauth/token":
++		ua := r.Header.Get("User-Agent")
++		switch {
++		case strings.HasPrefix(ua, "MozillaVPN") && e.altAccepts == "app",
++			r.Header.Get("Origin") != "" && e.altAccepts == "page":
++			return reply(r, e.tokenStatus, e.tokenBody, map[string]string{"Content-Type": "application/json"}), nil
++		}
++		if r.Header.Get("Origin") == "" && !strings.HasPrefix(ua, "MozillaVPN") {
++			e.mu.Lock()
++			e.primary = append(e.primary, r.Header.Get("Accept-Encoding"))
++			e.mu.Unlock()
++		}
 +		if !e.hasCookie(r, e.apiAccepts) {
 +			return reply(r, 406, "", nil), nil
 +		}
@@ -446,7 +524,14 @@ index 0000000..b1fe6e9
 +
 +func requireKinds(t *testing.T, w *watch, want string) {
 +	t.Helper()
-+	if got := w.kinds(); got != want {
++	// the other ways of sending the refresh (EvAlternate) have tests of their own
++	var kept []string
++	for _, k := range strings.Fields(w.kinds()) {
++		if !strings.HasPrefix(k, EvAlternate) {
++			kept = append(kept, k)
++		}
++	}
++	if got := strings.Join(kept, " "); got != want {
 +		t.Fatalf("events:\n got  %s\n want %s", got, want)
 +	}
 +}
@@ -690,6 +775,201 @@ index 0000000..b1fe6e9
 +		time.Sleep(5 * time.Millisecond)
 +	}
 +	t.Fatal("condition not reached")
++}
++
++// altResults are the Result and Status of the EvAlternate events, "app:406 page:406 oauth_host:406".
++func altResults(w *watch) string {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	var parts []string
++	for _, ev := range w.events {
++		if ev.Kind == EvAlternate {
++			parts = append(parts, fmt.Sprintf("%s:%d", ev.Result, ev.Status))
++		}
++	}
++	return strings.Join(parts, " ")
++}
++
++// The edge refuses the refresh the usual way, however many challenges are solved, and lets the app's way through: no
++// CAPTCHA may be asked.
++func TestMadShieldRefreshOtherWaysBeforeAnyCaptcha(t *testing.T) {
++	for _, way := range []string{"app", "page", "oauth_host"} {
++		t.Run(way, func(t *testing.T) {
++			edge := newFakeEdge(t)
++			edge.altAccepts = way
++			edge.apiAccepts = false // no cookie ever opens the usual way
++			w := &watch{}
++			tok, calls, err := refresh(t, context.Background(), w, "k7Q2")
++			if err != nil || tok == nil || tok.AccessToken != "A1" {
++				t.Fatalf("refresh: %v %+v", err, tok)
++			}
++			if calls != 0 || len(edge.answers) != 0 {
++				t.Fatalf("a CAPTCHA was asked although another way works: calls=%d", calls)
++			}
++			if _, solved := w.first(EvSolved); solved {
++				t.Fatal("a challenge was solved although another way works")
++			}
++			got := altResults(w)
++			if !strings.HasSuffix(got, way+":200") {
++				t.Fatalf("alternates: %s", got)
++			}
++		})
++	}
++}
++
++// When no other way is let through either, the challenge still runs as before, and the other ways were tried once for
++// each of the first answers of 406.
++func TestMadShieldRefreshOtherWaysRefusedThenChallenge(t *testing.T) {
++	edge := newFakeEdge(t)
++	w := &watch{}
++	tok, calls, err := refresh(t, context.Background(), w, "k7Q2")
++	if err != nil || tok == nil || calls != 1 {
++		t.Fatalf("refresh: %v %+v calls=%d", err, tok, calls)
++	}
++	if got := altResults(w); got != "app:406 page:406 oauth_host:406" {
++		t.Fatalf("alternates: %s", got)
++	}
++	_ = edge
++}
++
++// Every try refused: the other ways are tried for the first alternateAttempts answers only, not after every challenge.
++func TestMadShieldRefreshOtherWaysAreBounded(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.apiAccepts = false
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "k7Q2")
++	if !errors.Is(err, ErrChallengeStillRefused) {
++		t.Fatalf("want ErrChallengeStillRefused, got %v", err)
++	}
++	if n := strings.Count(altResults(w), "app:"); n != alternateAttempts {
++		t.Fatalf("the other ways were tried %d times, want %d", n, alternateAttempts)
++	}
++}
++
++// The refresh sent the usual way does not carry net/http's own gzip.
++func TestMadShieldRefreshAsksForNoCompression(t *testing.T) {
++	edge := newFakeEdge(t)
++	if _, _, err := refresh(t, context.Background(), nil, "k7Q2"); err != nil {
++		t.Fatal(err)
++	}
++	if len(edge.primary) == 0 {
++		t.Fatal("no refresh was sent the usual way")
++	}
++	for _, enc := range edge.primary {
++		if enc != "identity" {
++			t.Fatalf("Accept-Encoding %q, want identity", enc)
++		}
++	}
++}
++
++// What the edge says about an answer that is not the account server's own (an HTML page, an edge error) is not taken as
++// the answer to the refresh: the next way, then the challenge, follow.
++func TestMadShieldAccountServerAnswerIsToldFromTheEdge(t *testing.T) {
++	if !isAccountServerAnswer([]byte(`{"code":400,"errno":107,"error":"Invalid parameter"}`)) {
++		t.Fatal("an errno body is the account server's")
++	}
++	for _, body := range []string{"", "<html>blocked</html>", `{"error":"denied"}`, `{"errno":0}`} {
++		if isAccountServerAnswer([]byte(body)) {
++			t.Fatalf("%q is not the account server's", body)
++		}
++	}
++}
++
++// The solved cookie must be installed for the OAuth server's host too (it comes out of the solver's jar without its
++// Domain, so each host needs its own copy).
++func TestMadShieldSolvedCookieReachesTheOAuthHost(t *testing.T) {
++	newFakeEdge(t)
++	if _, _, err := refresh(t, context.Background(), nil, "k7Q2"); err != nil {
++		t.Fatal(err)
++	}
++	req, _ := http.NewRequest(http.MethodPost, browserOAuthTokenURL, strings.NewReader("{}"))
++	resp, err := controlplane.Do(req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		t.Fatalf("the OAuth host answered %d: the challenge cookie did not reach it", resp.StatusCode)
++	}
++}
+diff --git a/core/internal/fxa/madshield_refresh.go b/core/internal/fxa/madshield_refresh.go
+new file mode 100644
+index 0000000..bf8a861
+--- /dev/null
++++ b/core/internal/fxa/madshield_refresh.go
+@@ -0,0 +1,73 @@
++package fxa
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++)
++
++// MadShield: the other ways a refresh is sent (patch 0003).
++//
++// A refresh the edge answers with HTTP 406 is not always about a missing cookie: the same request can be refused again
++// after any number of solved challenges when what the edge dislikes is the way the request presents itself. Then another
++// CAPTCHA is asked for nothing. So, before a challenge is solved, the refresh is sent the other ways this program already
++// presents itself to the account server for the browser sign-in (see madshield_browser.go): as the app (its own
++// User-Agent, Go's own TLS, HTTP/2 where the server takes it), as Firefox's page (origin and fetch metadata), and to the
++// OAuth server's own host. The first answer that is not a refusal wins. Nothing here weakens a check: a request that is
++// refused is only sent differently, never without the credentials it needs, and the challenge stays the way through.
++
++// alternateAttempts is how many answers of 406 (counted from the first) are followed by the other ways before the challenge.
++const alternateAttempts = 2
++
++// The words of EvAlternate's Result.
++const (
++	altApp       = "app"
++	altPage      = "page"
++	altOAuthHost = "oauth_host"
++)
++
++// refreshAlternate sends the refresh body the other ways. It returns nil, nil when every way was refused (406), failed, or
++// answered with something that is not the account server's own word (an edge's page).
++func refreshAlternate(body []byte) func(ctx context.Context, attempt int) (*http.Response, error) {
++	return func(ctx context.Context, attempt int) (*http.Response, error) {
++		for _, way := range []struct {
++			name   string
++			target string
++			who    int
++		}{
++			{altApp, fxaAuthServer + "/oauth/token", asApp},
++			{altPage, fxaAuthServer + "/oauth/token", asFirefoxPage},
++			{altOAuthHost, browserOAuthTokenURL, asFirefox},
++		} {
++			a, err := send(ctx, http.MethodPost, way.target, body, "", nil, way.who)
++			if ctx.Err() != nil {
++				return nil, ctx.Err()
++			}
++			if err != nil {
++				emitChallenge(ctx, ChallengeEvent{Kind: EvAlternate, Attempt: attempt, Result: way.name})
++				continue
++			}
++			emitChallenge(ctx, ChallengeEvent{Kind: EvAlternate, Attempt: attempt, Result: way.name, Status: a.status})
++			if a.status == http.StatusOK || isAccountServerAnswer(a.body) {
++				return &http.Response{
++					StatusCode: a.status,
++					Status:     http.StatusText(a.status),
++					Header:     http.Header{"Content-Type": {"application/json"}},
++					Body:       io.NopCloser(bytes.NewReader(a.body)),
++				}, nil
++			}
++		}
++		return nil, nil
++	}
++}
++
++// isAccountServerAnswer reports whether body is an error the account server itself wrote (it carries an errno): an
++// answer to the credentials, as opposed to the edge's refusal (406, an HTML page, an empty body).
++func isAccountServerAnswer(body []byte) bool {
++	var e struct {
++		Errno int `json:"errno"`
++	}
++	return json.Unmarshal(body, &e) == nil && e.Errno > 0
 +}
 diff --git a/core/internal/proxy/madshield_reauth.go b/core/internal/proxy/madshield_reauth.go
 new file mode 100644
@@ -1112,10 +1392,10 @@ index 0947681..783f1e2 100644
  	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
 diff --git a/core/internal/service/madshield_reauth.go b/core/internal/service/madshield_reauth.go
 new file mode 100644
-index 0000000..b2f3a19
+index 0000000..a7f2f2d
 --- /dev/null
 +++ b/core/internal/service/madshield_reauth.go
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,432 @@
 +package service
 +
 +import (
@@ -1250,6 +1530,7 @@ index 0000000..b2f3a19
 +	solved    bool   // a challenge flow completed
 +	reply     int    // the status of the original request sent again after a solved challenge
 +	cause     string // why the next picture is an additional one
++	alt       string // the other ways the refresh was sent and what each was answered, "app:406,page:406"
 +}
 +
 +type reauthJob struct {
@@ -1353,6 +1634,13 @@ index 0000000..b2f3a19
 +		t.solved = true
 +	case fxa.EvReply:
 +		t.reply = ev.Status
++	case fxa.EvAlternate:
++		if len(t.alt) < 120 { // bounded: two rounds of three ways
++			if t.alt != "" {
++				t.alt += ","
++			}
++			t.alt += fmt.Sprintf("%s:%d", ev.Result, ev.Status)
++		}
 +	}
 +	round, state := j.view.Round, j.view.State
 +	j.mu.Unlock()
@@ -1501,8 +1789,8 @@ index 0000000..b2f3a19
 +	j.view = view
 +	t := j.trace
 +	j.mu.Unlock()
-+	logx.Info("renewal ended op=%s state=%s code=%s http=%d round=%d phase=%s renewed=%v attempt=%d post_back=%s probe=%s cookies=%s reply=%d err=%s",
-+		op, view.State, view.Code, view.HTTP, round, phase, view.Renewed, t.attempt, t.postBack, t.probe, t.cookies, t.reply, logx.Err(err))
++	logx.Info("renewal ended op=%s state=%s code=%s http=%d round=%d phase=%s renewed=%v attempt=%d post_back=%s probe=%s cookies=%s reply=%d alt=%s err=%s",
++		op, view.State, view.Code, view.HTTP, round, phase, view.Renewed, t.attempt, t.postBack, t.probe, t.cookies, t.reply, t.alt, logx.Err(err))
 +}
 +
 +// classify names why err ended the operation, from the error and from what the events told. Called with the lock held.

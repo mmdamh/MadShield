@@ -1,4 +1,4 @@
-# 1.18.1 - Foxy CAPTCHA renewal: reliable operation lifecycle (rename to MadShield_updateN.md when N is known)
+# 1.18.2 - Foxy CAPTCHA renewal: operation lifecycle (1.18.1) and other ways to send the refresh (1.18.2); rename to MadShield_updateN.md when N is known
 
 ## Symptom
 During Foxy account renewal a Fastly image CAPTCHA is shown, the person answers, nothing says what happened, another
@@ -35,6 +35,25 @@ Android:
   operation ends this one, cancel targets only the operation this dialog started), `FxRenew.kt` (dialog uses the flow, shows
   send errors), strings `fx_renew_*` in values and values-fa.
 - Nothing is ever labelled "incorrect" unless Fastly itself refused the post-back (HTTP 4xx): that is `answer_rejected`.
+
+## 1.18.2: why 5-6 CAPTCHAs in a row never worked (from a phone test of 1.18.1)
+Screenshot of 1.18.1: picture after picture (Picture 4 ...), then "Fastly accepted the check but still blocked the renewal"
+= failure code `refresh_still_challenged` (every one of the 5 tries of the refresh was answered 406 after a solved challenge).
+So the challenge was accepted; the refresh REQUEST itself is what the edge refused.
+Cause found in the code: the refresh (`fxaRefreshToken`, pinned 1.0.8) is sent one way only (Firefox UA + Firefox TLS over
+HTTP/1.1, with net/http's own `Accept-Encoding: gzip`). Patch 0002 already knows other ways of presenting a request for the
+browser sign-in (app UA with HTTP/2, Firefox page headers, the OAuth server's own host), but the refresh never used them, so
+more CAPTCHAs could not change the answer.
+Upstream (armanlife/firefox-vpn-client, 1.0.13-1.0.14, read only for diagnosis; the pin was NOT moved: it renamed its Go module
+and the patches would not apply) found the same family of causes: gzip as the only Accept-Encoding went with 406 on the HTTP/1.1
+OAuth path, and the solved cookie must be installed for the OAuth host as well.
+Fix (own code in patch 0003, `fxa/madshield_refresh.go`, `fxaDoWith`): the refresh sends `Accept-Encoding: identity`; after a 406
+and BEFORE a CAPTCHA, the refresh is sent as app, as Firefox page, and to the OAuth host (first non-refusal wins; only the
+account server's own answer, or 200, counts); done for the first 2 answers of 406 only. The solved cookie is installed for the
+OAuth host too. The log line `renewal ended ... alt=app:406,page:200` shows which way the edge let through.
+Tests (fake edge): each way alone is accepted with no CAPTCHA; all refused -> challenge as before; bounded; identity; cookie on OAuth host.
+Honest limit: whether the real Fastly lets one of these through is unknown until tried on the phone; if `alt=` shows all 406,
+the next step is the TLS/HTTP2 look of the refresh itself (read the `alt=` and `reply=` values in the log).
 
 ## Not touched
 HEV, sing-box, RouteFront, DNS, UDP, TLS verification, Fastly checks. No CAPTCHA answers are stored, logged or automated.
