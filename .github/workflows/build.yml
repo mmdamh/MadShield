@@ -449,9 +449,21 @@ jobs:
       - name: Show the Go version
         run: go version
 
+      # The project's own core repository already holds MadShield's changes and its entry point (core/cmd/madshield-fx); an
+      # older source (the pinned upstream) does not, and then the patches and the entry point of this repository are used.
+      - name: Check whether the core already has MadShield's changes
+        id: layout
+        run: |
+          if [ -d native/fxcore-src/core/cmd/madshield-fx ]; then
+            echo "integrated=true" >> "$GITHUB_OUTPUT"; echo "the core comes with its MadShield changes"
+          else
+            echo "integrated=false" >> "$GITHUB_OUTPUT"; echo "the core is plain: MadShield patches and entry point are added"
+          fi
+
       # Three small hooks in the core itself (native/fxvpn/patches): a guard on the names it may reach, and the switch that
       # keeps the account password off the disk. `git apply` is exact: it fails the job if the pinned source ever differs.
       - name: Apply the MadShield patches to the core
+        if: steps.layout.outputs.integrated != 'true'
         run: |
           set -e
           for p in native/fxvpn/patches/*.patch; do
@@ -477,6 +489,7 @@ jobs:
 
       # Our entry point lives inside the module (it uses internal packages), next to the CA file it embeds.
       - name: Add the MadShield entry point to the core
+        if: steps.layout.outputs.integrated != 'true'
         run: |
           set -e
           dst=native/fxcore-src/core/cmd/madshield-fx

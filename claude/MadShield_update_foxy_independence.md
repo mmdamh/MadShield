@@ -22,3 +22,15 @@ Create the copy once (GitHub: open the upstream repository, Fork, name it `madsh
 Termux `gh repo fork <upstream> --fork-name madshield-foxy-core --clone=false`). Then replace the single line in
 `native/fxvpn.source` with `https://github.com/mmdamh/madshield-foxy-core` and push. Nothing else changes: the pin is the same commit.
 This session could not create it (the GitHub proxy refuses repository creation).
+
+## 1.18.4 - the project's own core repository (instead of a fork)
+The core was prepared as a repository of its own, `madshield-foxy-core` (built from the pinned source with patches 0001-0003
+and `native/fxvpn/host/` folded in as ordinary code, module renamed to `github.com/mmdamh/madshield-foxy-core/core`, desktop-only
+parts and Windows resources left out, `NOTICE.md` + `LICENSE` kept). Behaviour is the same as the build tested so far: the
+files are identical to the tested ones except for the module path. The newer upstream snapshot that was sent was NOT used as
+the base: it differs from the pin in 144 core files and the patches would need porting and testing.
+CI (`build.yml`) now accepts both layouts: if the fetched source already has `core/cmd/madshield-fx`, it skips the patch and
+entry-point steps. Nothing changes until `native/fxvpn.source` and `native/fxvpn.pin` point at the new repository.
+Switch (after the empty public repository exists and the core is pushed to it): set `native/fxvpn.source` to its address,
+`native/fxvpn.pin` to its commit, then delete `native/fxvpn/patches/` and `native/fxvpn/host/` here (they live in the new repository).
+Not verifiable here: the full core build (Go modules are not reachable); the first real build is CI.
