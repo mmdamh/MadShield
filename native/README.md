@@ -54,7 +54,7 @@ none). Patches applied by CI, each fails the build unless its target matches exa
 
 | File | Pin | What |
 |---|---|---|
-| `libfxvpn.so` | `native/fxvpn.pin` | Go core of an open-source Firefox VPN client (GPL-3, unofficial; origin and notice in `THIRD_PARTY_NOTICES.md`), fetched by CI from the repository in `native/fxvpn.source`, built by CI as a static ELF with our own entry point `native/fxvpn/host/` and the patches in `native/fxvpn/patches/` (applied with `git apply`, which fails the job if the pinned source differs). Optional: without it the APK has no "Foxy" engine. |
+| `libfxvpn.so` | `native/fxvpn.pin` | Go core of an open-source Firefox VPN client (GPL-3, unofficial; origin and notice in `THIRD_PARTY_NOTICES.md`), fetched by CI from the project's own core repository named in `native/fxvpn.source`, at exactly the commit in `native/fxvpn.pin` (the job fails otherwise), and built by CI as a static ELF from its entry point `cmd/madshield-fx`. Optional: without it the APK has no "Foxy" engine. |
 
 What CI does to it, and why (see `claude/MadShield_fx_audit.md` in the project): only Mozilla's names can be reached
 (`allow.go`, tested in CI with `go test`), the connectivity checks outside the tunnel are off, no account password is kept
@@ -62,7 +62,7 @@ on disk (and one stored by an older build is removed at start, `scrub.go`), only
 `klauspost/compress` and `quic-go` are raised to their fixed versions (checked against the module checksum database).
 Mozilla's proxies carry TCP ports 80, 443, 8080 and 8443 only; the app blocks or sends direct the rest (Routing card).
 
-Sign-in runs in a WebView on Mozilla's own page (patch `0002-madshield-browser-signin.patch`): Mozilla's bot check (Fastly)
+Sign-in runs in a WebView on Mozilla's own page (the core's `internal/fxa/madshield_browser.go`): Mozilla's bot check (Fastly)
 answers HTTP 406 to the OAuth grant of a program that is not a browser, so the browser sends it. The core only builds the
 signed grant request (`/api/ms/browser-grant`) and adds the account from the tokens it returns (`/api/ms/browser-import`).
 The core can also split the TLS hello of its own connections (`MFX_HELLO_SPLIT`) for networks that filter by server name.

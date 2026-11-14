@@ -6,7 +6,7 @@ name: "CodeQL"
 #   python       scripts/*.py and the CI patch scripts (no build needed)
 #   actions      .github/workflows/*.yml
 # Not analysed on purpose:
-#   go    native/fxvpn/host has no go.mod; it only builds inside the pinned core that CI fetches
+#   go    the Foxy core is another repository (native/fxvpn.source), fetched and built by CI
 #   rust  the repo holds one .rs patch snippet, not a crate; the core itself is fetched by CI
 
 on:

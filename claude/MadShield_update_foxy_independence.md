@@ -34,3 +34,19 @@ entry-point steps. Nothing changes until `native/fxvpn.source` and `native/fxvpn
 Switch (after the empty public repository exists and the core is pushed to it): set `native/fxvpn.source` to its address,
 `native/fxvpn.pin` to its commit, then delete `native/fxvpn/patches/` and `native/fxvpn/host/` here (they live in the new repository).
 Not verifiable here: the full core build (Go modules are not reachable); the first real build is CI.
+
+## 1.18.5 - MadShield builds the Foxy core from its own repository
+- `native/fxvpn.source` = `https://github.com/mmdamh/madshield-foxy-core`, `native/fxvpn.pin` = `41c65a3f90e70a2777c64ba4a4be5b169112ce21`
+  (the core's `main`; later changes there need a new pin here).
+- `native/fxvpn/patches/` and `native/fxvpn/host/` are deleted from this repository: they are ordinary code in the core
+  repository (`core/cmd/madshield-fx`, `internal/fxa/madshield_*.go`, `internal/service/madshield_*.go`, ...).
+- `scripts/fetch-fxcore.sh` fetches the core into `native/fxcore-src` at exactly the pin (fails otherwise); the core build and
+  the pure-test job both use it. The CI steps that applied patches and copied the entry point are gone.
+- The pure tests that read Go files now read the core (`fxCoreFile`, folder `native/fxcore-src` or `MADSHIELD_FXCORE`); the
+  guard on the upstream author's name allows only `THIRD_PARTY_NOTICES.md` and `native/fxvpn.source` (the latter no longer names it).
+- THIRD_PARTY_NOTICES.md: origin and GPL-3 notice kept; copyright line for MadShield's own additions: "Copyright (c) 2026 mmdamh".
+- Nothing in the app, HEV, sing-box, RouteFront, DNS, UDP, TLS verification or Fastly checks changed.
+- Verified here: pure Kotlin tests ALL PASSED (reading the core from the new repository); the fetch script works against the
+  real repository. NOT run: the Android build and the native build in CI.
+- Licensing: the core stays GPL-3 (derived from GPL-3 code); the upstream license text and notices stay in the core repository.
+- Commits are authored as the project owner only, no attribution lines.

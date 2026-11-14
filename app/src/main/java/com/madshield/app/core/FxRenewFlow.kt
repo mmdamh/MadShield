@@ -1,7 +1,7 @@
 package com.madshield.app.core
 
 /**
- * What the renewal dialog shows (MadShield: the Fastly CAPTCHA renewal, patch 0003). One value per step a person can see.
+ * What the renewal dialog shows (MadShield: the Fastly CAPTCHA renewal of the core). One value per step a person can see.
  * Nothing in here says an answer was "wrong": the core never knows that, so neither does the app. [Failed] carries the
  * core's fixed failure word ([FxReauthCodes.failures]) or one of the app's own ([FxRenewFlow] constants).
  */

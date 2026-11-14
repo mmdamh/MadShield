@@ -48,7 +48,7 @@ class PortGate(val allowed: Set<Int>, otherwise: RouteAction) {
 /**
  * The Foxy engine: the Go core of an open-source Firefox VPN client (GPL-3, unofficial; THIRD_PARTY_NOTICES.md), built by
  * CI from the commit in native/fxvpn.pin and run as a child process, started like the other native engines, through
- * native/fxvpn/host/main.go. MadShield talks to it in two ways:
+ * the core's own entry point (cmd/madshield-fx). MadShield talks to it in two ways:
  *
  *  - a SOCKS5 listener on loopback with a LOGIN made up for every start ([FxCredentials]); [RouteFront] sits in front of it
  *    (routing rules, Connections, Usage, local DoH all keep working) and the tunnel engine (hev / sing-box TUN) sends to
@@ -309,7 +309,7 @@ data class FxSignIn(
 )
 
 /**
- * The core's renewal of an account's access token while a person answers Fastly's image CAPTCHA (patch 0003). One renewal
+ * The core's renewal of an account's access token while a person answers Fastly's image CAPTCHA. One renewal
  * is an operation named [op]; every picture it shows is named [id] (the answer must carry both). [state] is one of
  * [FxReauthState]. [round] counts the pictures shown so far, [cause] says why an additional one came, [code] and [error]
  * why it ended without success ([http] is the HTTP status behind that, 0 when none).
@@ -332,7 +332,7 @@ data class FxReauth(
     val finished: Boolean get() = FxReauthState.isFinal(state)
 }
 
-/** The states the core reports for a renewal (the wire words of patch 0003). */
+/** The states the core reports for a renewal (the wire words of the core). */
 object FxReauthState {
     const val IDLE = "idle"
     const val STARTING = "starting"

@@ -10,7 +10,7 @@ import java.net.URL
  * Blocking client of the Foxy core's dashboard API on 127.0.0.1:[apiPort]. Call it from a background thread.
  *
  * Every request carries the token the core wrote to its data folder ([tokenFile]); the core answers nothing else (it runs
- * with "local token required", see native/fxvpn/host/main.go), so another app on the phone that finds the port gets a 401.
+ * with "local token required", see cmd/madshield-fx in the core), so another app on the phone that finds the port gets a 401.
  * The token is read on every call: the core writes a new one at each start. It never leaves this class and is not logged.
  */
 class FxClient(private val apiPort: Int, private val tokenFile: File) {
@@ -87,7 +87,7 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
         FxJson.signIn(call("POST", "/api/ms/signin-browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
 
     /**
-     * Starts (or joins) the renewal of the account's access token with a person answering Fastly's CAPTCHA (patch 0003).
+     * Starts (or joins) the renewal of the account's access token with a person answering Fastly's CAPTCHA.
      * The view names the operation ([FxReauth.op]); everything after this call carries that name.
      */
     fun reauthStart(accountId: String): FxReauth =

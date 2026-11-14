@@ -2015,7 +2015,7 @@ private fun fxSplitTests() {
         FxEnvironment.build(1823, 40123, r1, emptyList(), "/c")["MFX_HELLO_SPLIT"] == "sni" &&
         FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", helloSplit = FxHelloSplit.OFF)["MFX_HELLO_SPLIT"] == "off" &&
         FxEnvironment.build(1823, 40123, r1, emptyList(), "/c", helloSplit = FxHelloSplit.RECORD)["MFX_HELLO_SPLIT"] == "record")
-    val main = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
+    val main = fxCoreFile("cmd/madshield-fx/main.go") ?: ""
     check("fx split: the core's entry point reads MFX_HELLO_SPLIT and accepts only the core's own names",
         main.contains("MFX_HELLO_SPLIT") && main.contains("hellosplit.Valid(v)") && main.contains("cfg.Network.HelloSplit = v"))
     check("fx split: the relay and the upstream proxy stay forced off", main.contains("cfg.Network.APIRelay = \"\"") && main.contains("cfg.Network.UpstreamProxyEnabled = false"))
@@ -2056,17 +2056,16 @@ private fun fxWebTests() {
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/res/values/strings.xml").readLines()
             .filter { it.contains("name=\"fx_") }
             .none { l -> val body = l.substringAfter(">").substringBeforeLast("</string>"); Regex("(?<!\\\\)'").containsMatchIn(body) })
-    val patches = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches").list().orEmpty().toList()
-    check("fx web: the core hook has our browser sign-in route, Firefox TLS for the control plane, and no other project's name",
-        patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch", "0003-madshield-reauth-captcha.patch") &&
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText().contains("/api/ms/signin-browser") &&
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText().let { p2 -> p2.contains("/api/ms/signin-browser") && p2.contains("fxa.BrowserTokens") && p2.contains("DialTLSContext") && p2.contains("asApp") && p2.contains("Accept-Encoding\", \"identity") })
-    check("fx reauth: the client calls the routes patch 0003 adds, and no other project's name is in it",
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0003-madshield-reauth-captcha.patch").readText().let { p3 ->
-            val c = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText()
-            listOf("\"POST /api/ms/reauth\"", "\"GET /api/ms/reauth\"", "\"POST /api/ms/reauth/answer\"", "\"DELETE /api/ms/reauth\"").all { p3.contains(it) } &&
-                c.contains("\"/api/ms/reauth\"") && c.contains("\"/api/ms/reauth/answer\"") && p3.contains("RenewAccessToken")
-        })
+    val clientSrc = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText()
+    val dash = fxCoreFile("internal/service/dashboard.go") ?: ""
+    val browser = fxCoreFile("internal/fxa/madshield_browser.go") ?: ""
+    check("fx web: the core has our browser sign-in route, Firefox TLS for the control plane, and the app's way of presenting itself",
+        clientSrc.contains("/api/ms/signin-browser") && dash.contains("\"POST /api/ms/signin-browser\"") && browser.contains("func BrowserTokens") &&
+        (fxCoreFile("internal/controlplane/client.go") ?: "").contains("DialTLSContext") && browser.contains("asApp") && browser.contains("Accept-Encoding\", \"identity"))
+    check("fx reauth: the client calls the routes the core has, and the core's token renewal exists",
+        listOf("\"POST /api/ms/reauth\"", "\"GET /api/ms/reauth\"", "\"POST /api/ms/reauth/answer\"", "\"DELETE /api/ms/reauth\"").all { dash.contains(it) } &&
+            clientSrc.contains("\"/api/ms/reauth\"") && clientSrc.contains("\"/api/ms/reauth/answer\"") &&
+            (fxCoreFile("internal/proxy/madshield_reauth.go") ?: "").contains("RenewAccessToken"))
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host; the core sign-in is cancelled and cookies cleared at the end",
         screen.contains("FxWebChannel.userAgent") && screen.contains("FxWebChannel.hostAllowed") && screen.contains("cancelRunning()") && screen.contains("removeAllCookies") && screen.contains("navigationAllowed"))
@@ -2133,15 +2132,25 @@ private fun fxPortTests() {
     }
 }
 
-/** The guards that keep the Firefox VPN core to Mozilla (native/fxvpn): they live in Go, so the tests read the files. */
+/**
+ * A file of the Foxy core (the project's own core repository, fetched by scripts/fetch-fxcore.sh into native/fxcore-src, or the
+ * folder in MADSHIELD_FXCORE). [rel] is relative to its `core/` folder. Null when the core is not there.
+ */
+private fun fxCoreFile(rel: String): String? {
+    val root = System.getenv("MADSHIELD_ROOT") ?: "."
+    val dir = System.getenv("MADSHIELD_FXCORE")?.takeIf { it.isNotBlank() } ?: "$root/native/fxcore-src"
+    return java.io.File(dir, "core/$rel").takeIf { it.isFile }?.readText()
+}
+
+/** The guards that keep the Firefox VPN core to Mozilla: they live in Go, so the tests read the core's files. */
 private fun fxHardeningTests() {
     val root = System.getenv("MADSHIELD_ROOT") ?: "."
     fun read(path: String): String? = java.io.File(root, path).takeIf { it.isFile }?.readText()
-    val main = read("native/fxvpn/host/main.go")
-    val allow = read("native/fxvpn/host/allow.go")
-    val patch = read("native/fxvpn/patches/0001-madshield-hooks.patch")
+    val main = fxCoreFile("cmd/madshield-fx/main.go")
+    val allow = fxCoreFile("cmd/madshield-fx/allow.go")
+    val resolverSrc = fxCoreFile("internal/resolver/resolver.go")
     val ci = read(".github/workflows/build.yml")
-    if (main == null || allow == null || patch == null || ci == null) { check("fx hardening: files present", false); return }
+    if (main == null || allow == null || resolverSrc == null || ci == null) { check("fx hardening: files present (the core is fetched by scripts/fetch-fxcore.sh)", false); return }
     check("fx hardening: the name guard is installed", main.contains("resolver.HostGuard = hostGuard"))
     check("fx hardening: the connectivity checks outside the tunnel are off", main.contains("netcheck.Check = ") && main.contains("netcheck.InsideVPN = "))
     check("fx hardening: the account password is not kept", main.contains("service.RememberPassword = false"))
@@ -2151,18 +2160,20 @@ private fun fxHardeningTests() {
         ?.let { Regex("\"([^\"]+)\"").findAll(it).map { m -> m.groupValues[1] }.toList() } ?: emptyList()
     check("fx hardening: the allowlist is exactly Mozilla's domains and Fastly's masque names",
         domains.sorted() == listOf("firefox.com", "fastly-masque.net", "mozilla.com", "mozilla.net", "mozilla.org").sorted())
-    check("fx hardening: the patch guards both lookup and dial and gates the password",
-        patch.contains("guardHost(host)") && patch.contains("guardHost(h)") && patch.contains("RememberPassword"))
+    check("fx hardening: the core guards both lookup and dial and gates the password",
+        resolverSrc.contains("guardHost(host)") && resolverSrc.contains("guardHost(h)") && (fxCoreFile("internal/service/madshield.go") ?: "").contains("RememberPassword") &&
+            (fxCoreFile("internal/service/daemon.go") ?: "").contains("RememberPassword"))
     check("fx hardening: old stored passwords are scrubbed at start and the scrub is tested",
-        main.contains("scrubStoredPasswords(paths.Dir)") && read("native/fxvpn/host/scrub.go")?.contains("\"password\"") == true &&
-            read("native/fxvpn/host/scrub_test.go")?.contains("TestScrubRemovesOldPasswordsAndKeepsTokens") == true)
+        main.contains("scrubStoredPasswords(paths.Dir)") && fxCoreFile("cmd/madshield-fx/scrub.go")?.contains("\"password\"") == true &&
+            fxCoreFile("cmd/madshield-fx/scrub_test.go")?.contains("TestScrubRemovesOldPasswordsAndKeepsTokens") == true)
     check("fx hardening: fixed versions of the two libraries are enforced in CI",
         ci.contains("klauspost/compress@v1.20.2") && ci.contains("quic-go/quic-go@v0.59.1"))
     val nsc = read("app/src/main/res/xml/network_security_config.xml")
     check("fx hardening: cleartext is denied except for loopback (the core's API)",
         nsc != null && nsc.contains("<base-config cleartextTrafficPermitted=\"false\"") &&
             Regex("""<domain-config cleartextTrafficPermitted="true">\s*<domain includeSubdomains="false">127\.0\.0\.1</domain>\s*<domain includeSubdomains="false">localhost</domain>\s*</domain-config>""").containsMatchIn(nsc))
-    check("fx hardening: CI applies the patches and tests the allowlist", ci.contains("native/fxvpn/patches") && ci.contains("go test ./cmd/madshield-fx") && ci.contains("cp native/fxvpn/host/*.go"))
+    check("fx hardening: CI fetches the project's core at the pin and tests the allowlist",
+        ci.contains("scripts/fetch-fxcore.sh") && ci.contains("go test ./cmd/madshield-fx") && read("scripts/fetch-fxcore.sh")?.contains("native/fxvpn.pin") == true)
 }
 
 /** A one-connection SOCKS5 server on loopback that wants a login. [seen] receives what the client sent. */
@@ -2315,25 +2326,25 @@ private fun fxModelTests() {
     check("fx captcha: data url decoded, junk is null", FxJson.dataUrlBytes("data:image/png;base64,AQID")!!.contentEquals(byteArrayOf(1, 2, 3)) &&
         FxJson.dataUrlBytes("http://x/y.png") == null && FxJson.dataUrlBytes("data:image/png;base64,@@@") == null)
 
-    // The Foxy core's author is named only where the license or the Go module path needs it (THIRD_PARTY_NOTICES.md, the
-    // patches and host program that import the module, the one-line source file); nowhere in the app or its docs.
+    // The Foxy core's origin is named only where the license needs it (THIRD_PARTY_NOTICES.md and the one-line source file
+    // while it still names it); nowhere in the app, its docs or its build files.
     run {
         val root = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".")
         val name = "ar" + "man"
-        val allowed = listOf("THIRD_PARTY_NOTICES.md", "native/fxvpn.source", "native/fxvpn/host/main.go", "native/fxvpn/patches/")
+        val allowed = listOf("THIRD_PARTY_NOTICES.md", "native/fxvpn.source")
         val offenders = root.walkTopDown()
-            .onEnter { it.name != ".git" && it.name != "build" && it.name != ".gradle" }
+            .onEnter { it.name != ".git" && it.name != "build" && it.name != ".gradle" && it.name != "fxcore-src" }
             .filter { it.isFile && it.length() < 4_000_000 && !it.name.endsWith(".png") && !it.name.endsWith(".ttf") && !it.name.endsWith(".webp") }
             .filter { f -> val rel = f.relativeTo(root).path.replace('\\', '/'); allowed.none { rel == it || rel.startsWith(it) } }
             .filter { f -> runCatching { f.readText().contains(name, ignoreCase = true) }.getOrDefault(false) }
             .map { it.relativeTo(root).path }.toList()
-        check("foxy independence: the upstream author is named only where the license or the module path needs it (found in: $offenders)", offenders.isEmpty())
+        check("foxy independence: the upstream author is named only where the license needs it (found in: $offenders)", offenders.isEmpty())
         check("foxy independence: CI takes the core from the repository in native/fxvpn.source, not from an address in the workflow",
             java.io.File(root, "native/fxvpn.source").readText().trim().matches(Regex("https://github\\.com/[^/\\s]+/[^/\\s]+")) &&
             java.io.File(root, ".github/workflows/build.yml").readText().let { y -> y.contains("native/fxvpn.source") && !Regex("fetch[^\\n]*github\\.com/" + name).containsMatchIn(y) })
     }
 
-    // the CAPTCHA renewal of the core (patch 0003)
+    // the CAPTCHA renewal of the core
     fun rv(state: String, op: String = "op1", id: String = "", image: String = "", round: Int = 0, cause: String = "", code: String = "", error: String = "", renewed: Boolean = false) =
         FxReauth(state = state, op = op, id = id, image = image, round = round, cause = cause, error = error, code = code, renewed = renewed)
     val pic = "data:image/png;base64,AQID"
@@ -2504,7 +2515,7 @@ private fun fxSpeedTests() {
     check("fx speed: the choice reaches the core", fast["MFX_UPSTREAM_CONNS"] == "3" && fast["MFX_TRANSPORT"] == "h3")
     check("fx speed: sessions stay within 1 to 4", FxSessions.clean(0) == 1 && FxSessions.clean(9) == 4 && FxSessions.clean(null) == 1 && FxSessions.clean(2) == 2)
     check("fx speed: an unknown stored transport falls back to HTTP/2", FxTransport.fromStored("quic") == FxTransport.H2 && FxTransport.fromStored("h3") == FxTransport.H3)
-    val host = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/host/main.go").readText()
+    val host = fxCoreFile("cmd/madshield-fx/main.go") ?: ""
     check("fx speed: the entry point reads and bounds both", host.contains("MFX_UPSTREAM_CONNS") && host.contains("maxUpstreamConns") && host.contains("MFX_TRANSPORT") &&
         host.contains("v == \"h2\" || v == \"h3\""))
 }

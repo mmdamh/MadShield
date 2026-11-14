@@ -48,6 +48,9 @@ jobs:
           java-version: "17"
       - name: Guardian relay Worker tests
         run: node tools/guardian-relay/worker.test.mjs
+      # Some tests read the Go core's own files (its guards, routes, entry point): the project's core repository at the pin.
+      - name: Fetch the Foxy core (read by the tests)
+        run: bash scripts/fetch-fxcore.sh
       - name: Install kotlinc 1.9.24
         run: |
           set -e
@@ -406,8 +409,8 @@ jobs:
   # EXPERIMENTAL (update28, test branch): the "Firefox VPN" (Foxy) engine. Mozilla's VPN service, driven by the Go core of an
   # open-source client (GPL-3, unofficial; see THIRD_PARTY_NOTICES.md), taken from the repository named in
   # native/fxvpn.source at the exact commit in native/fxvpn.pin. Only its Go core is built
-  # (no Flutter app), together with our own small entry point native/fxvpn/host/main.go (loopback API that needs a token,
-  # SOCKS5 login, only-Mozilla settings). The build is allowed to fail WITHOUT blocking the APK: the app then says the
+  # (no Flutter app); the core repository carries MadShield's own entry point (cmd/madshield-fx: loopback API that needs a
+  # token, SOCKS5 login, only-Mozilla settings). The build is allowed to fail WITHOUT blocking the APK: the app then says the
   # Firefox VPN engine is not in this build.
   build-native-fxvpn:
     name: Build Firefox VPN core (${{ matrix.abi }})
@@ -424,21 +427,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # The source repository is one line in native/fxvpn.source (the project's own copy of the core), the commit is the pin:
+      # The source repository is one line in native/fxvpn.source (the project's own core repository), the commit is the pin:
       # whatever the repository serves, the build fails unless it is exactly that commit.
       - name: Fetch the Foxy core at the pinned commit
-        run: |
-          set -e
-          pin="$(tr -d '[:space:]' < native/fxvpn.pin)"
-          src="$(tr -d '[:space:]' < native/fxvpn.source)"
-          case "$src" in https://github.com/*/*) ;; *) echo "native/fxvpn.source must be an https://github.com/<owner>/<repo> address"; exit 1;; esac
-          rm -rf native/fxcore-src
-          mkdir -p native/fxcore-src
-          git -C native/fxcore-src init -q
-          git -C native/fxcore-src fetch -q --depth 1 "$src" "$pin"
-          git -C native/fxcore-src checkout -q FETCH_HEAD
-          test "$(git -C native/fxcore-src rev-parse HEAD)" = "$pin"
-          echo "Foxy core @ $pin"
+        run: bash scripts/fetch-fxcore.sh
 
       - name: Install Go (the version the core's go.mod asks for)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -448,29 +440,6 @@ jobs:
 
       - name: Show the Go version
         run: go version
-
-      # The project's own core repository already holds MadShield's changes and its entry point (core/cmd/madshield-fx); an
-      # older source (the pinned upstream) does not, and then the patches and the entry point of this repository are used.
-      - name: Check whether the core already has MadShield's changes
-        id: layout
-        run: |
-          if [ -d native/fxcore-src/core/cmd/madshield-fx ]; then
-            echo "integrated=true" >> "$GITHUB_OUTPUT"; echo "the core comes with its MadShield changes"
-          else
-            echo "integrated=false" >> "$GITHUB_OUTPUT"; echo "the core is plain: MadShield patches and entry point are added"
-          fi
-
-      # Three small hooks in the core itself (native/fxvpn/patches): a guard on the names it may reach, and the switch that
-      # keeps the account password off the disk. `git apply` is exact: it fails the job if the pinned source ever differs.
-      - name: Apply the MadShield patches to the core
-        if: steps.layout.outputs.integrated != 'true'
-        run: |
-          set -e
-          for p in native/fxvpn/patches/*.patch; do
-            git -C native/fxcore-src apply --check "$GITHUB_WORKSPACE/$p"
-            git -C native/fxcore-src apply "$GITHUB_WORKSPACE/$p"
-            echo "applied $p"
-          done
 
       # Two libraries the core pins have published fixes for denial-of-service flaws that a hostile peer can trigger:
       # klauspost/compress < 1.20.2 (zstd decoder panic, CVE-2026-116591) and quic-go <= 0.59.0 (HTTP/3 trailer memory,
@@ -487,16 +456,6 @@ jobs:
           test "$(printf '%s\nv1.20.2\n' "$(v github.com/klauspost/compress)" | sort -V | head -1)" = "v1.20.2"
           test "$(printf '%s\nv0.59.1\n' "$(v github.com/quic-go/quic-go)" | sort -V | head -1)" = "v0.59.1"
 
-      # Our entry point lives inside the module (it uses internal packages), next to the CA file it embeds.
-      - name: Add the MadShield entry point to the core
-        if: steps.layout.outputs.integrated != 'true'
-        run: |
-          set -e
-          dst=native/fxcore-src/core/cmd/madshield-fx
-          mkdir -p "$dst"
-          cp native/fxvpn/host/*.go "$dst/"
-          cp native/fxcore-src/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
-
       # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon and sing-box builds).
       - name: Build madshield-fx
         working-directory: native/fxcore-src/core
@@ -509,7 +468,7 @@ jobs:
           go vet ./cmd/madshield-fx
           # the allowlist of names (allow_test.go) runs on the build machine
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test ./cmd/madshield-fx
-          # the CAPTCHA renewal (patch 0003): its state machine, and a compile check of the core packages it touches
+          # the CAPTCHA renewal: its state machine, and a compile check of the core packages it touches
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -vet=off -run TestMadShieldReauth ./internal/service
           go build -v -trimpath -o "$GITHUB_WORKSPACE/fxvpn-out" -ldflags "-s -w -buildid=" ./cmd/madshield-fx
           ls -l "$GITHUB_WORKSPACE/fxvpn-out"
