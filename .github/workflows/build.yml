@@ -403,8 +403,9 @@ jobs:
           path: staged/${{ matrix.abi }}/libsingtun.so
           retention-days: 1
 
-  # EXPERIMENTAL (update28, test branch): the "Firefox VPN" engine. Mozilla's VPN service, driven by the open-source client
-  # armanlife/firefox-vpn-client (GPL-3, unofficial) at the exact commit in native/fxvpn.pin. Only its Go core is built
+  # EXPERIMENTAL (update28, test branch): the "Firefox VPN" (Foxy) engine. Mozilla's VPN service, driven by the Go core of an
+  # open-source client (GPL-3, unofficial; see THIRD_PARTY_NOTICES.md), taken from the repository named in
+  # native/fxvpn.source at the exact commit in native/fxvpn.pin. Only its Go core is built
   # (no Flutter app), together with our own small entry point native/fxvpn/host/main.go (loopback API that needs a token,
   # SOCKS5 login, only-Mozilla settings). The build is allowed to fail WITHOUT blocking the APK: the app then says the
   # Firefox VPN engine is not in this build.
@@ -423,22 +424,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Fetch firefox-vpn-client at the pinned commit
+      # The source repository is one line in native/fxvpn.source (the project's own copy of the core), the commit is the pin:
+      # whatever the repository serves, the build fails unless it is exactly that commit.
+      - name: Fetch the Foxy core at the pinned commit
         run: |
           set -e
           pin="$(tr -d '[:space:]' < native/fxvpn.pin)"
-          rm -rf native/firefox-vpn-client
-          mkdir -p native/firefox-vpn-client
-          git -C native/firefox-vpn-client init -q
-          git -C native/firefox-vpn-client fetch -q --depth 1 https://github.com/armanlife/firefox-vpn-client "$pin"
-          git -C native/firefox-vpn-client checkout -q FETCH_HEAD
-          test "$(git -C native/firefox-vpn-client rev-parse HEAD)" = "$pin"
-          echo "firefox-vpn-client @ $pin"
+          src="$(tr -d '[:space:]' < native/fxvpn.source)"
+          case "$src" in https://github.com/*/*) ;; *) echo "native/fxvpn.source must be an https://github.com/<owner>/<repo> address"; exit 1;; esac
+          rm -rf native/fxcore-src
+          mkdir -p native/fxcore-src
+          git -C native/fxcore-src init -q
+          git -C native/fxcore-src fetch -q --depth 1 "$src" "$pin"
+          git -C native/fxcore-src checkout -q FETCH_HEAD
+          test "$(git -C native/fxcore-src rev-parse HEAD)" = "$pin"
+          echo "Foxy core @ $pin"
 
       - name: Install Go (the version the core's go.mod asks for)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: native/firefox-vpn-client/core/go.mod
+          go-version-file: native/fxcore-src/core/go.mod
           cache: false
 
       - name: Show the Go version
@@ -450,8 +455,8 @@ jobs:
         run: |
           set -e
           for p in native/fxvpn/patches/*.patch; do
-            git -C native/firefox-vpn-client apply --check "$GITHUB_WORKSPACE/$p"
-            git -C native/firefox-vpn-client apply "$GITHUB_WORKSPACE/$p"
+            git -C native/fxcore-src apply --check "$GITHUB_WORKSPACE/$p"
+            git -C native/fxcore-src apply "$GITHUB_WORKSPACE/$p"
             echo "applied $p"
           done
 
@@ -460,7 +465,7 @@ jobs:
       # GHSA-vvgj-x9jq-8cj9, fixed in 0.59.1). They are raised here, checked against the module checksum database, and
       # the build fails if the result is lower than the fix.
       - name: Raise two dependencies to their fixed versions
-        working-directory: native/firefox-vpn-client/core
+        working-directory: native/fxcore-src/core
         run: |
           set -e
           go get github.com/klauspost/compress@v1.20.2 github.com/quic-go/quic-go@v0.59.1
@@ -474,14 +479,14 @@ jobs:
       - name: Add the MadShield entry point to the core
         run: |
           set -e
-          dst=native/firefox-vpn-client/core/cmd/madshield-fx
+          dst=native/fxcore-src/core/cmd/madshield-fx
           mkdir -p "$dst"
           cp native/fxvpn/host/*.go "$dst/"
-          cp native/firefox-vpn-client/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
+          cp native/fxcore-src/core/mobile/extra-roots.pem "$dst/extra-roots.pem"
 
       # CGO off = a static ELF that runs as-is on Android (same approach as the Psiphon and sing-box builds).
       - name: Build madshield-fx
-        working-directory: native/firefox-vpn-client/core
+        working-directory: native/fxcore-src/core
         env:
           CGO_ENABLED: "0"
           GOOS: linux

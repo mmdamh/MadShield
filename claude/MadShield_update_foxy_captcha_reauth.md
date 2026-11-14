@@ -44,7 +44,7 @@ Cause found in the code: the refresh (`fxaRefreshToken`, pinned 1.0.8) is sent o
 HTTP/1.1, with net/http's own `Accept-Encoding: gzip`). Patch 0002 already knows other ways of presenting a request for the
 browser sign-in (app UA with HTTP/2, Firefox page headers, the OAuth server's own host), but the refresh never used them, so
 more CAPTCHAs could not change the answer.
-Upstream (armanlife/firefox-vpn-client, 1.0.13-1.0.14, read only for diagnosis; the pin was NOT moved: it renamed its Go module
+The Foxy core's own newer releases (read only for diagnosis; the pin was NOT moved: it renamed its Go module
 and the patches would not apply) found the same family of causes: gzip as the only Accept-Encoding went with 406 on the HTTP/1.1
 OAuth path, and the solved cookie must be installed for the OAuth host as well.
 Fix (own code in patch 0003, `fxa/madshield_refresh.go`, `fxaDoWith`): the refresh sends `Accept-Encoding: identity`; after a 406

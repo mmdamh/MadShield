@@ -46,8 +46,8 @@ class PortGate(val allowed: Set<Int>, otherwise: RouteAction) {
 }
 
 /**
- * The Foxy engine: the Go core of the open-source client armanlife/firefox-vpn-client (GPL-3, unofficial, built by
- * CI from the commit in native/fxvpn.pin) run as a child process, started like the other native engines, through
+ * The Foxy engine: the Go core of an open-source Firefox VPN client (GPL-3, unofficial; THIRD_PARTY_NOTICES.md), built by
+ * CI from the commit in native/fxvpn.pin and run as a child process, started like the other native engines, through
  * native/fxvpn/host/main.go. MadShield talks to it in two ways:
  *
  *  - a SOCKS5 listener on loopback with a LOGIN made up for every start ([FxCredentials]); [RouteFront] sits in front of it

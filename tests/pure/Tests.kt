@@ -2060,12 +2060,12 @@ private fun fxWebTests() {
     check("fx web: the core hook has our browser sign-in route, Firefox TLS for the control plane, and no other project's name",
         patches.sorted() == listOf("0001-madshield-hooks.patch", "0002-madshield-browser-signin.patch", "0003-madshield-reauth-captcha.patch") &&
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText().contains("/api/ms/signin-browser") &&
-        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText().let { p2 -> p2.contains("/api/ms/signin-browser") && p2.contains("fxa.BrowserTokens") && p2.contains("DialTLSContext") && p2.contains("asApp") && p2.contains("Accept-Encoding\", \"identity") && !p2.contains("Arman VPN", ignoreCase = true) })
+        java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0002-madshield-browser-signin.patch").readText().let { p2 -> p2.contains("/api/ms/signin-browser") && p2.contains("fxa.BrowserTokens") && p2.contains("DialTLSContext") && p2.contains("asApp") && p2.contains("Accept-Encoding\", \"identity") })
     check("fx reauth: the client calls the routes patch 0003 adds, and no other project's name is in it",
         java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "native/fxvpn/patches/0003-madshield-reauth-captcha.patch").readText().let { p3 ->
             val c = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/core/FxClient.kt").readText()
             listOf("\"POST /api/ms/reauth\"", "\"GET /api/ms/reauth\"", "\"POST /api/ms/reauth/answer\"", "\"DELETE /api/ms/reauth\"").all { p3.contains(it) } &&
-                c.contains("\"/api/ms/reauth\"") && c.contains("\"/api/ms/reauth/answer\"") && p3.contains("RenewAccessToken") && !p3.contains("Arman VPN", ignoreCase = true)
+                c.contains("\"/api/ms/reauth\"") && c.contains("\"/api/ms/reauth/answer\"") && p3.contains("RenewAccessToken")
         })
     val screen = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".", "app/src/main/java/com/madshield/app/ui/FxWebSignIn.kt").readText()
     check("fx web: the bridge checks the page's host; the core sign-in is cancelled and cookies cleared at the end",
@@ -2314,6 +2314,24 @@ private fun fxModelTests() {
     check("fx signin: no id is null", FxJson.signIn("""{"step":"done"}""") == null)
     check("fx captcha: data url decoded, junk is null", FxJson.dataUrlBytes("data:image/png;base64,AQID")!!.contentEquals(byteArrayOf(1, 2, 3)) &&
         FxJson.dataUrlBytes("http://x/y.png") == null && FxJson.dataUrlBytes("data:image/png;base64,@@@") == null)
+
+    // The Foxy core's author is named only where the license or the Go module path needs it (THIRD_PARTY_NOTICES.md, the
+    // patches and host program that import the module, the one-line source file); nowhere in the app or its docs.
+    run {
+        val root = java.io.File(System.getenv("MADSHIELD_ROOT") ?: ".")
+        val name = "ar" + "man"
+        val allowed = listOf("THIRD_PARTY_NOTICES.md", "native/fxvpn.source", "native/fxvpn/host/main.go", "native/fxvpn/patches/")
+        val offenders = root.walkTopDown()
+            .onEnter { it.name != ".git" && it.name != "build" && it.name != ".gradle" }
+            .filter { it.isFile && it.length() < 4_000_000 && !it.name.endsWith(".png") && !it.name.endsWith(".ttf") && !it.name.endsWith(".webp") }
+            .filter { f -> val rel = f.relativeTo(root).path.replace('\\', '/'); allowed.none { rel == it || rel.startsWith(it) } }
+            .filter { f -> runCatching { f.readText().contains(name, ignoreCase = true) }.getOrDefault(false) }
+            .map { it.relativeTo(root).path }.toList()
+        check("foxy independence: the upstream author is named only where the license or the module path needs it (found in: $offenders)", offenders.isEmpty())
+        check("foxy independence: CI takes the core from the repository in native/fxvpn.source, not from an address in the workflow",
+            java.io.File(root, "native/fxvpn.source").readText().trim().matches(Regex("https://github\\.com/[^/\\s]+/[^/\\s]+")) &&
+            java.io.File(root, ".github/workflows/build.yml").readText().let { y -> y.contains("native/fxvpn.source") && !Regex("fetch[^\\n]*github\\.com/" + name).containsMatchIn(y) })
+    }
 
     // the CAPTCHA renewal of the core (patch 0003)
     fun rv(state: String, op: String = "op1", id: String = "", image: String = "", round: Int = 0, cause: String = "", code: String = "", error: String = "", renewed: Boolean = false) =

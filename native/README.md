@@ -54,7 +54,7 @@ none). Patches applied by CI, each fails the build unless its target matches exa
 
 | File | Pin | What |
 |---|---|---|
-| `libfxvpn.so` | `native/fxvpn.pin` | Go core of [armanlife/firefox-vpn-client](https://github.com/armanlife/firefox-vpn-client) (GPL-3, unofficial), built by CI as a static ELF with our own entry point `native/fxvpn/host/` and the patches in `native/fxvpn/patches/` (applied with `git apply`, which fails the job if the pinned source differs). Optional: without it the APK has no "Foxy" engine. |
+| `libfxvpn.so` | `native/fxvpn.pin` | Go core of an open-source Firefox VPN client (GPL-3, unofficial; origin and notice in `THIRD_PARTY_NOTICES.md`), fetched by CI from the repository in `native/fxvpn.source`, built by CI as a static ELF with our own entry point `native/fxvpn/host/` and the patches in `native/fxvpn/patches/` (applied with `git apply`, which fails the job if the pinned source differs). Optional: without it the APK has no "Foxy" engine. |
 
 What CI does to it, and why (see `claude/MadShield_fx_audit.md` in the project): only Mozilla's names can be reached
 (`allow.go`, tested in CI with `go test`), the connectivity checks outside the tunnel are off, no account password is kept

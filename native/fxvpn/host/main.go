@@ -1,5 +1,5 @@
 // madshield-fx is the small program MadShield runs for its "Firefox VPN" engine. It is built inside the module of
-// armanlife/firefox-vpn-client (core/), at the commit in native/fxvpn.pin, because it uses that module's internal
+// the Foxy core (core/), at the commit in native/fxvpn.pin, because it uses that module's internal
 // packages: CI copies this folder to core/cmd/madshield-fx/ and builds it as a static linux/arm64 ELF.
 //
 // It does what the project's own phone build does (core/mobile/mobile.go), as a separate process instead of a library:
