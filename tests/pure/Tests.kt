@@ -2316,15 +2316,106 @@ private fun fxModelTests() {
         FxJson.dataUrlBytes("http://x/y.png") == null && FxJson.dataUrlBytes("data:image/png;base64,@@@") == null)
 
     // the CAPTCHA renewal of the core (patch 0003)
-    val rc = FxJson.reauth("""{"state":"captcha","id":"c1","image":"data:image/png;base64,AQID","error":"","renewed":false}""")!!
-    check("fx reauth: a waiting picture is parsed", rc.waitingCaptcha && !rc.finished && rc.id == "c1")
+    fun rv(state: String, op: String = "op1", id: String = "", image: String = "", round: Int = 0, cause: String = "", code: String = "", error: String = "", renewed: Boolean = false) =
+        FxReauth(state = state, op = op, id = id, image = image, round = round, cause = cause, error = error, code = code, renewed = renewed)
+    val pic = "data:image/png;base64,AQID"
+    val rc = FxJson.reauth("""{"state":"waiting_for_captcha","op":"o9","id":"o9.1","image":"data:image/png;base64,AQID","round":1,"cause":"","error":"","code":"","http":0,"renewed":false}""")!!
+    check("fx reauth: a waiting picture is parsed with its operation and picture id", rc.waitingCaptcha && !rc.finished && rc.id == "o9.1" && rc.op == "o9" && rc.round == 1)
+    check("fx reauth: an additional challenge is a waiting picture, with its cause",
+        FxJson.reauth("""{"state":"additional_challenge","op":"o9","id":"o9.2","image":"data:image/png;base64,AQID","round":2,"cause":"asked_again"}""")!!.let { it.waitingCaptcha && it.cause == "asked_again" && it.round == 2 })
     check("fx reauth: a picture without id or image is not waiting",
-        !FxJson.reauth("""{"state":"captcha","id":"","image":"data:image/png;base64,AQID"}""")!!.waitingCaptcha &&
-        !FxJson.reauth("""{"state":"captcha","id":"c2","image":""}""")!!.waitingCaptcha)
-    val rd = FxJson.reauth("""{"state":"done","id":"","image":"","error":"","renewed":true}""")!!
-    check("fx reauth: done and failed are the finished states", rd.finished && rd.renewed && FxJson.reauth("""{"state":"failed","error":"x"}""")!!.finished &&
-        !FxJson.reauth("""{"state":"running"}""")!!.finished && !FxJson.reauth("""{"state":"idle"}""")!!.finished)
+        !FxJson.reauth("""{"state":"waiting_for_captcha","op":"o","id":"","image":"data:image/png;base64,AQID"}""")!!.waitingCaptcha &&
+        !FxJson.reauth("""{"state":"waiting_for_captcha","op":"o","id":"c2","image":""}""")!!.waitingCaptcha)
+    check("fx reauth: only the four ending states are finished",
+        listOf("completed", "failed", "cancelled", "timed_out").all { FxJson.reauth("""{"state":"$it","op":"o"}""")!!.finished } &&
+        listOf("idle", "starting", "waiting_for_captcha", "submitting", "verifying", "additional_challenge").none { FxJson.reauth("""{"state":"$it","op":"o"}""")!!.finished })
+    val rf = FxJson.reauth("""{"state":"failed","op":"o","error":"Fastly refused","code":"answer_rejected","http":403,"round":2}""")!!
+    check("fx reauth: a failure keeps its word, text and HTTP status", rf.code == "answer_rejected" && rf.http == 403 && rf.error == "Fastly refused" && rf.finished)
+    check("fx reauth: completed says whether it renewed", FxJson.reauth("""{"state":"completed","op":"o","renewed":true}""")!!.renewed)
     check("fx reauth: no state or junk is null", FxJson.reauth("""{"id":"c1"}""") == null && FxJson.reauth("not json") == null)
+    check("fx reauth: the core's refusal word is read next to its text",
+        FxJson.errorCode("""{"error":"that picture is no longer the one waiting","code":"stale_challenge"}""") == "stale_challenge" && FxJson.errorCode("""{"error":"x"}""") == "" && FxJson.errorCode("junk") == "")
+
+    // the flow of one renewal as the dialog sees it
+    run {
+        val f = FxRenewFlow()
+        check("fx renew flow: starting shows connecting and names the operation",
+            f.started(rv("starting")) == FxRenewUi.Connecting && f.op == "op1" && f.polling && f.cancelTarget() == "op1")
+        val c1 = f.apply(rv("waiting_for_captcha", id = "op1.1", image = pic, round = 1))
+        check("fx renew flow: a picture is shown", c1 is FxRenewUi.Captcha && c1.id == "op1.1" && !c1.another)
+        check("fx renew flow: nothing to send, a different picture and an empty answer are refused",
+            !f.beginSubmit("op1.1", "  ") && !f.beginSubmit("op1.9", "abc") && f.ui is FxRenewUi.Captcha)
+        check("fx renew flow: the first answer goes out and locks the picture", f.beginSubmit("op1.1", "abc") && f.ui == FxRenewUi.Submitting)
+        check("fx renew flow: a second tap on the same picture is refused", !f.beginSubmit("op1.1", "abc"))
+        check("fx renew flow: a view that still shows the picture does not bring the field back (polling does not race the answer)",
+            f.apply(rv("waiting_for_captcha", id = "op1.1", image = pic, round = 1)) == FxRenewUi.Submitting)
+        check("fx renew flow: the core's submitting and verifying are shown as such",
+            f.apply(rv("submitting")) == FxRenewUi.Submitting && f.apply(rv("verifying")) == FxRenewUi.Verifying)
+        val c2 = f.apply(rv("additional_challenge", id = "op1.2", image = pic, round = 2, cause = "more_rounds"))
+        check("fx renew flow: another picture is another challenge, never an incorrect answer", c2 is FxRenewUi.Captcha && c2.another && c2.round == 2 && c2.cause == "more_rounds")
+        check("fx renew flow: the answer for the old picture is refused now, the new picture takes one", !f.beginSubmit("op1.1", "abc") && f.beginSubmit("op1.2", "xyz"))
+        check("fx renew flow: completed ends it", f.apply(rv("completed", renewed = true)) == FxRenewUi.Success(true) && !f.polling && f.cancelTarget() == null)
+        check("fx renew flow: once final it never changes", f.apply(rv("waiting_for_captcha", id = "op1.3", image = pic)) == FxRenewUi.Success(true) && !f.beginSubmit("op1.3", "q"))
+    }
+    run {
+        val f = FxRenewFlow(); f.started(rv("starting"))
+        f.apply(rv("waiting_for_captcha", id = "op1.1", image = pic, round = 1))
+        val other = f.apply(rv("waiting_for_captcha", op = "op2", id = "op2.1", image = pic, round = 1))
+        check("fx renew flow: a view of another operation ends this one as superseded, and shows no picture of it",
+            other == FxRenewUi.Failed(FxRenewFlow.SUPERSEDED, "") && f.cancelTarget() == null && !f.beginSubmit("op2.1", "abc"))
+        val g = FxRenewFlow(); g.started(rv("starting"))
+        check("fx renew flow: an idle core means this operation is gone", g.apply(rv("idle", op = "")) == FxRenewUi.Failed(FxRenewFlow.LOST, ""))
+        check("fx renew flow: a start without an operation is lost", FxRenewFlow().started(rv("starting", op = "")) == FxRenewUi.Failed(FxRenewFlow.LOST, ""))
+    }
+    run {
+        val f = FxRenewFlow(); f.started(rv("starting"))
+        f.apply(rv("waiting_for_captcha", id = "op1.1", image = pic, round = 1))
+        f.beginSubmit("op1.1", "abc")
+        val back = f.submitFailed("op1.1", "", "connection reset")
+        check("fx renew flow: a send that did not get through gives the same picture back with the reason, and may be sent again",
+            back is FxRenewUi.Captcha && back.id == "op1.1" && back.notice == "connection reset" && f.beginSubmit("op1.1", "abc"))
+        check("fx renew flow: the reason stays while the same picture is read again",
+            run { f.submitFailed("op1.1", "busy", "try later"); (f.apply(rv("waiting_for_captcha", id = "op1.1", image = pic, round = 1)) as FxRenewUi.Captcha).notice == "try later" })
+        f.beginSubmit("op1.1", "abc")
+        check("fx renew flow: a refusal that says the picture is stale or taken changes nothing here (the next view decides)",
+            listOf("stale_challenge", "already_submitted", "stale_operation", "no_challenge").all { f.submitFailed("op1.1", it, "x") == FxRenewUi.Submitting })
+        check("fx renew flow: a failure for a picture that is not the one sent is ignored", f.submitFailed("op1.0", "", "x") == FxRenewUi.Submitting)
+    }
+    run {
+        val f = FxRenewFlow(); f.started(rv("starting"))
+        var shown: FxRenewUi = f.ui
+        for (i in 1 until FxRenewFlow.MAX_POLL_FAILURES) shown = f.pollFailed("down")
+        check("fx renew flow: a few failed reads in a row are not the end", shown == FxRenewUi.Connecting && f.polling)
+        f.apply(rv("starting"))
+        for (i in 1 until FxRenewFlow.MAX_POLL_FAILURES) f.pollFailed("down")
+        check("fx renew flow: a good read starts the count again", f.polling)
+        check("fx renew flow: enough failures in a row end it with the reason", f.pollFailed("down") == FxRenewUi.Failed(FxRenewFlow.REQUEST, "down") && !f.polling)
+    }
+    run {
+        fun end(v: FxReauth): FxRenewUi { val f = FxRenewFlow(); f.started(rv("starting")); return f.apply(v) }
+        check("fx renew flow: failed shows the core's word and text, a missing word is a generic one",
+            end(rv("failed", code = "answer_rejected", error = "Fastly refused")) == FxRenewUi.Failed("answer_rejected", "Fastly refused") &&
+            end(rv("failed")) == FxRenewUi.Failed("challenge_failed", ""))
+        check("fx renew flow: cancelled and timed out are their own steps", end(rv("cancelled")) == FxRenewUi.Cancelled && end(rv("timed_out", code = "timeout")) == FxRenewUi.TimedOut)
+        check("fx renew flow: a state the app does not know yet is just waiting", end(rv("something_new")) == FxRenewUi.Connecting)
+        check("fx renew flow: a start the core refused because another account is renewing is its own step",
+            FxRenewFlow().startFailed("busy", "x") == FxRenewUi.Failed("busy", "") && FxRenewFlow().startFailed("", "no token").let { it is FxRenewUi.Failed && it.code == FxRenewFlow.REQUEST && it.detail == "no token" })
+        check("fx renew flow: a dialog that never got an operation has nothing to cancel", FxRenewFlow().cancelTarget() == null && !FxRenewFlow().polling)
+    }
+    run {
+        val root = System.getenv("MADSHIELD_ROOT") ?: "."
+        val en = java.io.File(root, "app/src/main/res/values/strings.xml").readText()
+        val fa = java.io.File(root, "app/src/main/res/values-fa/strings.xml").readText()
+        val missing = FxRenewFlow.allFailureWords.filter { w -> !en.contains("name=\"fx_renew_err_$w\"") || !fa.contains("name=\"fx_renew_err_$w\"") }
+        check("fx renew: every failure word has a text in English and Persian (missing: $missing)", missing.isEmpty())
+        val ui = java.io.File(root, "app/src/main/java/com/madshield/app/ui/FxRenew.kt").readText()
+        val unmapped = FxRenewFlow.allFailureWords.filter { w -> !ui.contains("R.string.fx_renew_err_$w") }
+        check("fx renew: the dialog maps every failure word to its text (unmapped: $unmapped)", unmapped.isEmpty())
+        check("fx renew: the dialog cancels by the operation it started and does not swallow a failed send",
+            ui.contains("cancelTarget()") && ui.contains("reauthAnswer(op, id, answer)") && ui.contains("submitFailed(") && !ui.contains("catch (_: Exception)") && !ui.contains("reauthCancel()"))
+        val client = java.io.File(root, "app/src/main/java/com/madshield/app/core/FxClient.kt").readText()
+        check("fx renew: the client names the operation in an answer and a cancel", client.contains("\"op\" to op") && client.contains("/api/ms/reauth?op="))
+    }
     FxReauthGate.release()
     check("fx reauth gate: closed at first, held for five minutes, released at once",
         !FxReauthGate.active(1_000L) && run { FxReauthGate.hold(1_000L); FxReauthGate.active(1_000L + FxReauthGate.HOLD_MS - 1) } &&

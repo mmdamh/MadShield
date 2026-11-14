@@ -15,8 +15,11 @@ import java.net.URL
  */
 class FxClient(private val apiPort: Int, private val tokenFile: File) {
 
-    /** An answer other than success. [status] is the HTTP status, the message the core's own English text. */
-    class ApiException(val status: Int, message: String) : IOException(message)
+    /**
+     * An answer other than success. [status] is the HTTP status, the message the core's own English text, [code] the
+     * fixed word the renewal routes add to it (see [FxReauthCodes]; "" for the other routes).
+     */
+    class ApiException(val status: Int, message: String, val code: String = "") : IOException(message)
 
     private fun token(): String {
         val t = try { tokenFile.readText().trim() } catch (_: IOException) { "" }
@@ -45,7 +48,7 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.use { it.readBytes().toString(Charsets.UTF_8) } ?: ""
-            if (code !in 200..299) throw ApiException(code, FxJson.errorText(text) ?: "HTTP $code")
+            if (code !in 200..299) throw ApiException(code, FxJson.errorText(text) ?: "HTTP $code", FxJson.errorCode(text))
             return text
         } finally {
             conn.disconnect()
@@ -83,16 +86,27 @@ class FxClient(private val apiPort: Int, private val tokenFile: File) {
     fun signInBrowser(email: String, sessionToken: String): FxSignIn =
         FxJson.signIn(call("POST", "/api/ms/signin-browser", json("email" to email, "session_token" to sessionToken))) ?: throw IOException("unreadable sign-in")
 
-    /** Starts (or joins) the renewal of the account's access token with a person answering Fastly's CAPTCHA (patch 0003). */
+    /**
+     * Starts (or joins) the renewal of the account's access token with a person answering Fastly's CAPTCHA (patch 0003).
+     * The view names the operation ([FxReauth.op]); everything after this call carries that name.
+     */
     fun reauthStart(accountId: String): FxReauth =
         FxJson.reauth(call("POST", "/api/ms/reauth", json("account_id" to accountId))) ?: throw IOException("unreadable renewal")
 
+    /** What the core shows of the renewal now: the view of the current operation (compare its op with the one started). */
     fun reauthGet(): FxReauth = FxJson.reauth(call("GET", "/api/ms/reauth")) ?: throw IOException("unreadable renewal")
 
-    /** The characters of the picture named [id]. A 409 means that picture is no longer the one waiting. */
-    fun reauthAnswer(id: String, text: String) { call("POST", "/api/ms/reauth/answer", json("id" to id, "answer" to text)) }
+    /**
+     * The characters of the picture [id] of operation [op]. Success (200) says only that the core took the answer for its
+     * challenge flow; whether Fastly accepts it is shown by [reauthGet]. A 409 ([ApiException.code]: stale_operation,
+     * stale_challenge, already_submitted, no_challenge) means the picture is no longer the one waiting.
+     */
+    fun reauthAnswer(op: String, id: String, text: String) {
+        call("POST", "/api/ms/reauth/answer", json("op" to op, "id" to id, "answer" to text))
+    }
 
-    fun reauthCancel() { call("DELETE", "/api/ms/reauth") }
+    /** Ends operation [op] (a cancel naming another operation changes nothing). */
+    fun reauthCancel(op: String) { call("DELETE", "/api/ms/reauth?op=" + enc(op)) }
 
     fun removeAccount(id: String) { call("DELETE", "/api/accounts/" + enc(id)) }
 

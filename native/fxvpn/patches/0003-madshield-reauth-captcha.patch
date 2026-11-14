@@ -1,13 +1,707 @@
+diff --git a/core/internal/fxa/challenge.go b/core/internal/fxa/challenge.go
+index 1b3fbb8..84a9174 100644
+--- a/core/internal/fxa/challenge.go
++++ b/core/internal/fxa/challenge.go
+@@ -59,6 +59,13 @@ var (
+ 	// on the probe request, typically because the exit IP rotated between
+ 	// solving and probing.
+ 	errChallengeNotAccepted = errors.New("challenge cookie not accepted on this exit IP")
++
++	// errChallengeNoCookies signals that Fastly said the challenge was
++	// solved but the solver's jar holds no cookie to carry over.
++	errChallengeNoCookies = errors.New("challenge completed but no cookies were issued")
++
++	// errChallengeRounds signals that Fastly kept asking after maxPostBackRounds.
++	errChallengeRounds = fmt.Errorf("Fastly challenge did not complete within %d rounds", maxPostBackRounds)
+ )
+ 
+ type fastlyChallenge struct {
+@@ -122,11 +129,40 @@ func solveFastlyChallenge(ctx context.Context) error {
+ 	return lastErr
+ }
+ 
+-// solveChallengeOnHost runs the whole challenge flow against one host using
++// solveChallengeOnHost runs the flow on one host and reports its start and
++// its end to the observer of ctx (MadShield, patch 0003).
++func solveChallengeOnHost(ctx context.Context, base string) error {
++	host := strings.TrimPrefix(base, "https://")
++	emitChallenge(ctx, ChallengeEvent{Kind: EvHost, Host: host})
++	err := solveChallengeOnHostFlow(ctx, base)
++	switch {
++	case err == nil:
++		emitChallenge(ctx, ChallengeEvent{Kind: EvSolved, Host: host})
++	case errors.Is(err, errNoChallengePage):
++		emitChallenge(ctx, ChallengeEvent{Kind: EvNoPage, Host: host})
++	default:
++		result := "other"
++		switch {
++		case errors.Is(err, errChallengeNotAccepted):
++			result = "probe"
++		case errors.Is(err, errChallengeNoCookies):
++			result = "cookies"
++		case errors.Is(err, errChallengeRounds):
++			result = "rounds"
++		case ctx.Err() != nil:
++			result = "cancelled"
++		}
++		emitChallenge(ctx, ChallengeEvent{Kind: EvFailed, Host: host, Result: result})
++	}
++	return err
++}
++
++// solveChallengeOnHostFlow runs the whole challenge flow against one host using
+ // a throw-away client with a fresh cookie jar: re-solving with a client that
+ // already holds a valid challenge cookie fails because Fastly then serves
+ // the real page instead of the challenge page.
+-func solveChallengeOnHost(ctx context.Context, base string) error {
++func solveChallengeOnHostFlow(ctx context.Context, base string) error {
++	host := strings.TrimPrefix(base, "https://")
+ 	start := time.Now()
+ 	jar, err := cookiejar.New(nil)
+ 	if err != nil {
+@@ -167,6 +203,11 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
+ 	var kinds []string
+ 	for round := 0; round < maxPostBackRounds; round++ {
+ 		answers := make([]interface{}, 0, len(challenges))
++		roundKinds := make([]string, 0, len(challenges))
++		for _, ch := range challenges {
++			roundKinds = append(roundKinds, ch.Ty)
++		}
++		emitChallenge(ctx, ChallengeEvent{Kind: EvRound, Host: host, Round: round + 1, Kinds: roundKinds})
+ 		for _, ch := range challenges {
+ 			kinds = append(kinds, ch.Ty)
+ 			answer, err := answerChallenge(ctx, client, base+prefix, token, ch)
+@@ -199,35 +240,50 @@ func solveChallengeOnHost(ctx context.Context, base string) error {
+ 			return readErr
+ 		}
+ 		if resp.StatusCode != http.StatusOK {
++			result := "error"
++			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
++				result = "rejected" // Fastly itself refused the post-back
++			}
++			emitChallenge(ctx, ChallengeEvent{Kind: EvPostBack, Host: host, Round: round + 1, Status: resp.StatusCode, Result: result})
+ 			return fmt.Errorf("challenge post-back returned HTTP %d: %s", resp.StatusCode, truncate(string(data), 256))
+ 		}
+ 
+ 		var pbResp fastlyPostBackResponse
+ 		if err := json.Unmarshal(data, &pbResp); err != nil {
++			emitChallenge(ctx, ChallengeEvent{Kind: EvPostBack, Host: host, Round: round + 1, Status: resp.StatusCode, Result: "error"})
+ 			return fmt.Errorf("parsing post-back response: %w", err)
+ 		}
+ 		if pbResp.Status == "success" {
++			emitChallenge(ctx, ChallengeEvent{Kind: EvPostBack, Host: host, Round: round + 1, Status: resp.StatusCode, Result: "success"})
+ 			// Probe before installing the cookie: with rotating-exit
+ 			// proxies the cookie may be bound to an IP the API call
+ 			// will not reuse, and the probe catches that immediately.
+ 			if _, stillChallenged, err := fetchChallengePage(ctx, client, pageURL); err != nil {
+ 				return err
+ 			} else if stillChallenged {
++				emitChallenge(ctx, ChallengeEvent{Kind: EvProbe, Host: host, Result: "still_challenged"})
+ 				return errChallengeNotAccepted
+ 			}
++			emitChallenge(ctx, ChallengeEvent{Kind: EvProbe, Host: host, Result: "accepted"})
+ 			if err := installChallengeCookies(jar, pageURL); err != nil {
++				emitChallenge(ctx, ChallengeEvent{Kind: EvCookies, Host: host, Result: "missing"})
+ 				return err
+ 			}
++			emitChallenge(ctx, ChallengeEvent{Kind: EvCookies, Host: host, Result: "installed"})
+ 			logx.Info("Fastly challenge solved host=%s challenges=%s rounds=%d took=%s",
+ 				strings.TrimPrefix(base, "https://"), strings.Join(kinds, ","), round+1, time.Since(start).Round(100*time.Millisecond))
+ 			return nil
+ 		}
+ 		if len(pbResp.Ch) == 0 || pbResp.Tok == "" {
++			emitChallenge(ctx, ChallengeEvent{Kind: EvPostBack, Host: host, Round: round + 1, Status: resp.StatusCode, Result: "error"})
+ 			return fmt.Errorf("unexpected post-back response: %s", truncate(string(data), 256))
+ 		}
++		// Fastly asked again: a further round. It does not say whether the
++		// last answer was wrong, so neither does the event.
++		emitChallenge(ctx, ChallengeEvent{Kind: EvPostBack, Host: host, Round: round + 1, Status: resp.StatusCode, Result: "more"})
+ 		challenges, token = pbResp.Ch, pbResp.Tok
+ 	}
+-	return fmt.Errorf("Fastly challenge did not complete within %d rounds", maxPostBackRounds)
++	return errChallengeRounds
+ }
+ 
+ // fetchChallengePage fetches pageURL and reports whether the response is a
+@@ -425,7 +481,7 @@ func installChallengeCookies(solverJar http.CookieJar, pageURL string) error {
+ 	}
+ 	cookies := solverJar.Cookies(parsed)
+ 	if len(cookies) == 0 {
+-		return fmt.Errorf("challenge completed but no cookies were issued")
++		return errChallengeNoCookies
+ 	}
+ 
+ 	apiURL, err := url.Parse(fxaAuthServer + "/")
+diff --git a/core/internal/fxa/fxa.go b/core/internal/fxa/fxa.go
+index c563454..2184111 100644
+--- a/core/internal/fxa/fxa.go
++++ b/core/internal/fxa/fxa.go
+@@ -148,6 +148,9 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		if attempt > 1 {
++			emitChallenge(ctx, ChallengeEvent{Kind: EvReply, Attempt: attempt, Status: resp.StatusCode})
++		}
+ 		if resp.StatusCode != http.StatusNotAcceptable {
+ 			return resp, nil
+ 		}
+@@ -155,12 +158,17 @@ func fxaDo(ctx context.Context, newRequest func() (*http.Request, error)) (*http
+ 		resp.Body.Close()
+ 
+ 		logx.Info("the account server answered HTTP 406 (Fastly's bot check); solving its challenge attempt=%d", attempt)
++		emitChallenge(ctx, ChallengeEvent{Kind: EvAttempt, Attempt: attempt, Status: resp.StatusCode})
+ 		if err := solveFastlyChallenge(ctx); err != nil {
+ 			logx.Warn("Fastly challenge failed attempt=%d err=%s", attempt, logx.Err(err))
+ 			return nil, fmt.Errorf("Fastly anti-bot challenge: %w", err)
+ 		}
++		if attempt < maxChallengeAttempts {
++			emitChallenge(ctx, ChallengeEvent{Kind: EvRetry, Attempt: attempt + 1})
++		}
+ 	}
+-	return nil, fmt.Errorf("Fastly anti-bot challenge still failing after %d attempts (HTTP 406)", maxChallengeAttempts)
++	emitChallenge(ctx, ChallengeEvent{Kind: EvGiveUp, Attempt: maxChallengeAttempts, Status: http.StatusNotAcceptable})
++	return nil, fmt.Errorf("%w after %d attempts (HTTP 406)", ErrChallengeStillRefused, maxChallengeAttempts)
+ }
+ 
+ // fxaLogin signs in. An email typed in another letter case than the
+diff --git a/core/internal/fxa/madshield_events.go b/core/internal/fxa/madshield_events.go
+new file mode 100644
+index 0000000..18b1fc8
+--- /dev/null
++++ b/core/internal/fxa/madshield_events.go
+@@ -0,0 +1,60 @@
++package fxa
++
++import (
++	"context"
++	"errors"
++)
++
++// MadShield: what the Fastly challenge flow tells a watcher (patch 0003).
++//
++// The flow in challenge.go and fxaDo knows things the caller cannot see from the final error alone: whether Fastly
++// answered a CAPTCHA with a new round, refused the post-back, accepted the cookie on the probe, or answered the original
++// request with HTTP 406 again after a solved challenge. A caller that wants them puts an observer in the context
++// (WithChallengeObserver); without one nothing is reported and nothing changes.
++//
++// An event never holds a CAPTCHA answer, a token, a cookie (name or value), a header or an account detail: only fixed
++// words, counts, HTTP statuses and host names of Mozilla's servers.
++
++// ChallengeEvent is one step of the challenge flow.
++type ChallengeEvent struct {
++	Kind    string   // one of the Ev constants
++	Attempt int      // the try of the original request (1-based), on the events of fxaDo; 0 on the others
++	Round   int      // the post-back round (1-based) inside one challenge flow, 0 when not in a round
++	Host    string   // the host the flow runs on, without the scheme
++	Status  int      // an HTTP status, where the event carries one
++	Result  string   // a short fixed word
++	Kinds   []string // the challenge types asked in the round ("pow", "pat", "clientmetrics", "captcha")
++}
++
++const (
++	EvAttempt  = "attempt"           // the account server answered 406 to try Attempt; the challenge is about to be solved
++	EvHost     = "host"              // the flow begins on Host
++	EvNoPage   = "no_challenge_page" // Host served a normal page: nothing to solve there
++	EvRound    = "round"             // Fastly asked Kinds in post-back round Round
++	EvPostBack = "post_back"         // the post-back of the round was answered: Status, Result success|more|rejected|error
++	EvProbe    = "probe"             // the probe after "success": Result accepted|still_challenged
++	EvCookies  = "cookies"           // the solved cookie moved into the control plane's jar: Result installed|missing
++	EvSolved   = "solved"            // the flow on Host is complete
++	EvFailed   = "failed"            // the flow on Host ended with an error: Result probe|cookies|rounds|cancelled|other
++	EvRetry    = "retry"             // the original request is sent again after a solved challenge (Attempt is the new try)
++	EvReply    = "reply"             // the answer to a retried request: Status
++	EvGiveUp   = "give_up"           // every try was answered with 406 again
++)
++
++type challengeObserverKey struct{}
++
++// WithChallengeObserver reports the steps of the challenge flows run with the returned context (and of the requests that
++// fxaDo retries) to obs. obs runs on the flow's goroutine: it must be quick and must not call back into this package.
++func WithChallengeObserver(ctx context.Context, obs func(ChallengeEvent)) context.Context {
++	return context.WithValue(ctx, challengeObserverKey{}, obs)
++}
++
++func emitChallenge(ctx context.Context, ev ChallengeEvent) {
++	if obs, _ := ctx.Value(challengeObserverKey{}).(func(ChallengeEvent)); obs != nil {
++		obs(ev)
++	}
++}
++
++// ErrChallengeStillRefused is the error of a request the account server kept answering with HTTP 406 even though every
++// challenge was solved (fxaDo gave up after its tries). Its text is the one this error always had.
++var ErrChallengeStillRefused = errors.New("Fastly anti-bot challenge still failing")
+diff --git a/core/internal/fxa/madshield_events_test.go b/core/internal/fxa/madshield_events_test.go
+new file mode 100644
+index 0000000..b1fe6e9
+--- /dev/null
++++ b/core/internal/fxa/madshield_events_test.go
+@@ -0,0 +1,454 @@
++package fxa
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/controlplane"
++)
++
++// MadShield (patch 0003): the real RefreshToken -> fxaDo -> solveFastlyChallenge path against a scripted stand-in for
++// Mozilla's edge (Fastly), reached through the control plane's transport seam. Nothing here touches the network.
++
++const testCaptchaImage = "data:image/png;base64,AQID"
++
++// fakeEdge answers like the edge in front of Mozilla's account server, as far as the solver and fxaDo can tell.
++type fakeEdge struct {
++	t      *testing.T
++	cookie string // the cookie value the edge accepts (unique per test: the control plane's jar outlives a test)
++
++	// plan says how the edge answers the post-back of round `round` (1-based) of flow number `flow` (1-based, counted from
++	// each challenge script fetched): "more" (asks a CAPTCHA round), "success", "success-nocookie", "reject" (HTTP 403),
++	// "error" (HTTP 500), "hang" (never answers).
++	plan func(flow, round int) string
++	// probeAccepts: the cookie is accepted on the solver's probe. apiAccepts: and on the account server's request.
++	probeAccepts bool
++	probeAlways  bool // the probe passes even without the cookie (a Fastly that said "success" and sent none)
++	apiAccepts   bool
++	// token answers the accepted refresh: status and body
++	tokenStatus int
++	tokenBody   string
++
++	mu      sync.Mutex
++	flow    int
++	round   int
++	solved  bool     // the current flow's post-back said "success"
++	answers []string // the CAPTCHA answers that reached a post-back (to prove delivery, never logged)
++	calls   []string
++}
++
++func newFakeEdge(t *testing.T) *fakeEdge {
++	e := &fakeEdge{
++		t: t, cookie: fmt.Sprintf("ok-%s-%d", strings.ReplaceAll(t.Name(), "/", "_"), time.Now().UnixNano()),
++		plan:         func(flow, round int) string { return map[int]string{1: "more", 2: "success"}[round] },
++		probeAccepts: true, apiAccepts: true,
++		tokenStatus: 200, tokenBody: `{"access_token":"A1","refresh_token":"","expires_in":3600,"scope":"s","token_type":"bearer"}`,
++	}
++	controlplane.SetTransport(e)
++	t.Cleanup(func() { controlplane.SetTransport(nil) })
++	return e
++}
++
++func (e *fakeEdge) hasCookie(r *http.Request, valid bool) bool {
++	return valid && strings.Contains(r.Header.Get("Cookie"), "fst="+e.cookie)
++}
++
++func reply(r *http.Request, status int, body string, hdr map[string]string) *http.Response {
++	h := http.Header{"Content-Type": {"text/html"}}
++	for k, v := range hdr {
++		h.Add(k, v)
++	}
++	return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Header: h,
++		Body: io.NopCloser(strings.NewReader(body)), Request: r, ProtoMajor: 1, ProtoMinor: 1}
++}
++
++func powChallenge() string {
++	sum := sha256.Sum256([]byte("bXk"))
++	return fmt.Sprintf(`{"ty":"pow","data":{"base":"b","expires":"1","hmac":"h","hash":"%s"}}`, hex.EncodeToString(sum[:]))
++}
++
++func captchaChallenge() string {
++	return `{"ty":"captcha","data":{"image_b64":"` + testCaptchaImage + `"}}`
++}
++
++func (e *fakeEdge) RoundTrip(r *http.Request) (*http.Response, error) {
++	e.mu.Lock()
++	e.calls = append(e.calls, r.Method+" "+r.URL.Host+r.URL.Path)
++	e.mu.Unlock()
++	path := r.URL.Path
++	switch {
++	case r.Method == http.MethodGet && path == "/" && r.URL.Host == "api.accounts.firefox.com":
++		return reply(r, 200, `{"ok":true}`, nil), nil // the API host serves no challenge page
++	case r.Method == http.MethodGet && path == "/":
++		e.mu.Lock()
++		afterSuccess := e.solved
++		e.mu.Unlock()
++		if (e.probeAlways && afterSuccess) || e.hasCookie(r, e.probeAccepts) {
++			return reply(r, 200, "<html>Firefox Accounts</html>", nil), nil
++		}
++		return reply(r, 200, `<html>Client Challenge <script src="/_fs-ch-abc/script.js"></script></html>`, nil), nil
++	case strings.HasSuffix(path, "/script.js"):
++		e.mu.Lock()
++		e.flow++
++		e.round = 0
++		e.solved = false
++		e.mu.Unlock()
++		return reply(r, 200, `;init([`+powChallenge()+`], "tok1", "/_fs-ch-abc", true);`, nil), nil
++	case strings.HasSuffix(path, "/fst-post-back"):
++		var pb fastlyPostBack
++		body, _ := io.ReadAll(r.Body)
++		_ = json.Unmarshal(body, &pb)
++		e.mu.Lock()
++		e.round++
++		flow, round := e.flow, e.round
++		for _, d := range pb.Data {
++			if m, ok := d.(map[string]interface{}); ok && m["ty"] == "captcha" {
++				e.answers = append(e.answers, fmt.Sprint(m["answer"]))
++			}
++		}
++		e.mu.Unlock()
++		switch e.plan(flow, round) {
++		case "more":
++			return reply(r, 200, fmt.Sprintf(`{"status":"challenge","ch":[%s],"tok":"tok%d"}`, captchaChallenge(), round+1), nil), nil
++		case "success":
++			e.mu.Lock()
++			e.solved = true
++			e.mu.Unlock()
++			return reply(r, 200, `{"status":"success"}`, map[string]string{"Set-Cookie": "fst=" + e.cookie + "; Domain=firefox.com; Path=/"}), nil
++		case "success-nocookie":
++			e.mu.Lock()
++			e.solved = true
++			e.mu.Unlock()
++			return reply(r, 200, `{"status":"success"}`, nil), nil
++		case "reject":
++			return reply(r, 403, `{"error":"denied"}`, nil), nil
++		case "error":
++			return reply(r, 500, `oops`, nil), nil
++		case "hang":
++			<-r.Context().Done()
++			return nil, r.Context().Err()
++		}
++		e.t.Fatalf("no plan for flow %d round %d", flow, round)
++	case r.Method == http.MethodPost && path == "/v1/oauth/token":
++		if !e.hasCookie(r, e.apiAccepts) {
++			return reply(r, 406, "", nil), nil
++		}
++		return reply(r, e.tokenStatus, e.tokenBody, map[string]string{"Content-Type": "application/json"}), nil
++	}
++	e.t.Fatalf("unexpected request %s %s", r.Method, r.URL)
++	return nil, nil
++}
++
++// watch collects the events of a flow.
++type watch struct {
++	mu     sync.Mutex
++	events []ChallengeEvent
++}
++
++func (w *watch) note(ev ChallengeEvent) {
++	w.mu.Lock()
++	w.events = append(w.events, ev)
++	w.mu.Unlock()
++}
++
++func (w *watch) kinds() string {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	var parts []string
++	for _, ev := range w.events {
++		s := ev.Kind
++		if ev.Result != "" {
++			s += ":" + ev.Result
++		}
++		parts = append(parts, s)
++	}
++	return strings.Join(parts, " ")
++}
++
++func (w *watch) first(kind string) (ChallengeEvent, bool) {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	for _, ev := range w.events {
++		if ev.Kind == kind {
++			return ev, true
++		}
++	}
++	return ChallengeEvent{}, false
++}
++
++// refresh runs the real refresh with a CAPTCHA solver that answers `answer` and counts its calls.
++func refresh(t *testing.T, ctx context.Context, w *watch, answer string) (*TokenResponse, int, error) {
++	t.Helper()
++	calls := 0
++	solver := func(ctx context.Context, image string) (string, error) {
++		calls++
++		if image != testCaptchaImage {
++			t.Errorf("the solver got another picture: %q", image)
++		}
++		return answer, nil
++	}
++	ctx = WithCaptchaSolver(ctx, solver)
++	if w != nil {
++		ctx = WithChallengeObserver(ctx, w.note)
++	}
++	tok, err := RefreshToken(ctx, "old-refresh")
++	return tok, calls, err
++}
++
++func requireKinds(t *testing.T, w *watch, want string) {
++	t.Helper()
++	if got := w.kinds(); got != want {
++		t.Fatalf("events:\n got  %s\n want %s", got, want)
++	}
++}
++
++// A CAPTCHA answered, Fastly accepts, the original refresh is sent again and succeeds.
++func TestMadShieldChallengeSuccessfulCaptchaAndRefresh(t *testing.T) {
++	edge := newFakeEdge(t)
++	w := &watch{}
++	tok, calls, err := refresh(t, context.Background(), w, "k7Q2")
++	if err != nil || tok == nil || tok.AccessToken != "A1" {
++		t.Fatalf("refresh: %v %+v", err, tok)
++	}
++	if tok.RefreshToken != "old-refresh" {
++		t.Fatalf("a refresh that does not rotate keeps the refresh token, got %q", tok.RefreshToken)
++	}
++	if calls != 1 || len(edge.answers) != 1 || edge.answers[0] != "k7Q2" {
++		t.Fatalf("the answer must reach the post-back: solver calls=%d answers=%d", calls, len(edge.answers))
++	}
++	requireKinds(t, w, "attempt host no_challenge_page host round post_back:more round post_back:success probe:accepted cookies:installed solved retry reply")
++	if ev, _ := w.first(EvReply); ev.Attempt != 2 || ev.Status != 200 {
++		t.Fatalf("the retried request: %+v", ev)
++	}
++	// the events must never carry what the person typed
++	if fmt.Sprintf("%+v", w.events) != strings.ReplaceAll(fmt.Sprintf("%+v", w.events), "k7Q2", "") {
++		t.Fatal("an event holds the CAPTCHA answer")
++	}
++}
++
++// A valid-looking answer followed by another round is "more", not a rejection; rounds are counted.
++func TestMadShieldChallengeAdditionalAndConsecutiveRounds(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string {
++		return map[int]string{1: "more", 2: "more", 3: "more", 4: "success"}[round]
++	}
++	w := &watch{}
++	_, calls, err := refresh(t, context.Background(), w, "abcd")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if calls != 3 {
++		t.Fatalf("three CAPTCHA rounds: solver called %d times", calls)
++	}
++	if got := strings.Count(w.kinds(), "post_back:more"); got != 3 {
++		t.Fatalf("post_back:more x%d, events: %s", got, w.kinds())
++	}
++}
++
++// Fastly itself refusing the post-back (HTTP 4xx) is reported as a refusal, with its status.
++func TestMadShieldChallengeRejectedPostBack(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string { return map[int]string{1: "more", 2: "reject"}[round] }
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "nope")
++	if err == nil {
++		t.Fatal("a refused post-back must fail the refresh")
++	}
++	pb := w.events[indexOfKind(w, EvPostBack, "rejected")]
++	if pb.Status != 403 || pb.Round != 2 {
++		t.Fatalf("post-back event: %+v", pb)
++	}
++	if !strings.Contains(w.kinds(), "failed:other") || strings.Contains(w.kinds(), "solved") {
++		t.Fatalf("events: %s", w.kinds())
++	}
++}
++
++func indexOfKind(w *watch, kind, result string) int {
++	for i, ev := range w.events {
++		if ev.Kind == kind && ev.Result == result {
++			return i
++		}
++	}
++	panic("no event " + kind + ":" + result + " in " + w.kinds())
++}
++
++// A post-back that fails on the server (HTTP 5xx) is an error, not a refusal.
++func TestMadShieldChallengeFailedPostBack(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string { return "error" }
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "x")
++	if err == nil {
++		t.Fatal("expected an error")
++	}
++	if ev := w.events[indexOfKind(w, EvPostBack, "error")]; ev.Status != 500 {
++		t.Fatalf("post-back event: %+v", ev)
++	}
++}
++
++// Fastly says "success" but no cookie reaches the jar: missing session cookies.
++func TestMadShieldChallengeMissingSessionCookies(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string { return map[int]string{1: "more", 2: "success-nocookie"}[round] }
++	edge.probeAlways = true // so the flow reaches the step that carries the cookie over
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "x")
++	if err == nil {
++		t.Fatal("expected an error")
++	}
++	got := w.kinds()
++	if !strings.Contains(got, "cookies:missing") || !strings.Contains(got, "failed:cookies") || strings.Contains(got, "solved") {
++		t.Fatalf("events: %s", got)
++	}
++	if !errors.Is(err, errChallengeNoCookies) {
++		t.Fatalf("the error must say no cookie was issued, got %v", err)
++	}
++}
++
++// The cookie is not accepted on the probe (another exit IP / transport): the flow says so and fails, it does not retry
++// the original request as if the challenge were solved.
++func TestMadShieldChallengeExitChangeFailsTheProbe(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.probeAccepts = false
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "x")
++	if !errors.Is(err, errChallengeNotAccepted) {
++		t.Fatalf("want errChallengeNotAccepted, got %v", err)
++	}
++	got := w.kinds()
++	if !strings.Contains(got, "probe:still_challenged") || !strings.Contains(got, "failed:probe") || strings.Contains(got, "retry") {
++		t.Fatalf("events: %s", got)
++	}
++}
++
++// The challenge completes and the probe passes, but the account server keeps answering 406 to the original request: every
++// try is a new flow with a new CAPTCHA, the tries are bounded, and the end is the distinct "still refused" error.
++func TestMadShieldChallengeSolvedButRefreshStillRefused(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.apiAccepts = false
++	w := &watch{}
++	_, calls, err := refresh(t, context.Background(), w, "abcd")
++	if !errors.Is(err, ErrChallengeStillRefused) {
++		t.Fatalf("want ErrChallengeStillRefused, got %v", err)
++	}
++	if calls != maxChallengeAttempts {
++		t.Fatalf("one CAPTCHA per try: %d calls, want %d", calls, maxChallengeAttempts)
++	}
++	if _, ok := w.first(EvGiveUp); !ok || strings.Count(w.kinds(), "retry") != maxChallengeAttempts-1 {
++		t.Fatalf("events: %s", w.kinds())
++	}
++	if !strings.Contains(err.Error(), "406") {
++		t.Fatalf("the error keeps its old text, got %q", err)
++	}
++}
++
++// The challenge completes but the original refresh then fails with an account-server error (not a 406).
++func TestMadShieldChallengeSolvedThenRefreshFails(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.tokenStatus, edge.tokenBody = 401, `{"errno":110,"message":"Invalid token"}`
++	w := &watch{}
++	_, _, err := refresh(t, context.Background(), w, "abcd")
++	if err == nil || errors.Is(err, ErrChallengeStillRefused) {
++		t.Fatalf("want an account-server error, got %v", err)
++	}
++	if ev, ok := w.first(EvReply); !ok || ev.Status != 401 {
++		t.Fatalf("reply event: %+v (%s)", ev, w.kinds())
++	}
++	if Message(err) != "Invalid token" {
++		t.Fatalf("message: %q", Message(err))
++	}
++}
++
++// Cancelling while the post-back is in flight ends the flow promptly with the context's error.
++func TestMadShieldChallengeCancelDuringVerification(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string { return map[int]string{1: "more", 2: "hang"}[round] }
++	w := &watch{}
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan error, 1)
++	go func() { _, _, err := refresh(t, ctx, w, "abcd"); done <- err }()
++	waitFor(t, func() bool { edge.mu.Lock(); defer edge.mu.Unlock(); return len(edge.answers) == 1 })
++	cancel()
++	select {
++	case err := <-done:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatalf("want context.Canceled, got %v", err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("the flow did not stop on cancel")
++	}
++	if !strings.Contains(w.kinds(), "failed:cancelled") {
++		t.Fatalf("events: %s", w.kinds())
++	}
++}
++
++// A deadline that passes while the post-back is in flight ends the flow with the context's deadline error.
++func TestMadShieldChallengeTimeoutDuringSubmission(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.plan = func(flow, round int) string { return map[int]string{1: "more", 2: "hang"}[round] }
++	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
++	defer cancel()
++	start := time.Now()
++	_, _, err := refresh(t, ctx, &watch{}, "abcd")
++	// fxaDo works on a context it derived (contextWithMinDeadline), so the parent's expiry reaches the request as a
++	// cancellation: the caller must read its own context to tell a timeout from a cancel (the renewal job does).
++	if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("want the context's error, got %v", err)
++	}
++	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
++		t.Fatalf("the caller's own context must report the deadline, got %v", ctx.Err())
++	}
++	if time.Since(start) > 5*time.Second {
++		t.Fatal("the deadline was not honoured")
++	}
++}
++
++// Without an observer the flow behaves as before.
++func TestMadShieldChallengeWorksWithoutObserver(t *testing.T) {
++	newFakeEdge(t)
++	tok, calls, err := refresh(t, context.Background(), nil, "abcd")
++	if err != nil || tok == nil || calls != 1 {
++		t.Fatalf("refresh: %v %+v calls=%d", err, tok, calls)
++	}
++}
++
++// A CAPTCHA with no solver in the context keeps its old, plain error.
++func TestMadShieldChallengeWithoutSolverStillSaysSignInFromTheDashboard(t *testing.T) {
++	newFakeEdge(t)
++	_, err := RefreshToken(context.Background(), "old-refresh")
++	if err == nil || !strings.Contains(err.Error(), "Fastly requires an image CAPTCHA") {
++		t.Fatalf("got %v", err)
++	}
++}
++
++// Rotation: a refresh that returns a new refresh token passes it on.
++func TestMadShieldRefreshTokenRotationIsPassedOn(t *testing.T) {
++	edge := newFakeEdge(t)
++	edge.tokenBody = `{"access_token":"A2","refresh_token":"new-refresh","expires_in":3600,"scope":"s","token_type":"bearer"}`
++	tok, _, err := refresh(t, context.Background(), nil, "abcd")
++	if err != nil || tok.RefreshToken != "new-refresh" {
++		t.Fatalf("got %v %+v", err, tok)
++	}
++}
++
++func waitFor(t *testing.T, cond func() bool) {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		if cond() {
++			return
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	t.Fatal("condition not reached")
++}
 diff --git a/core/internal/proxy/madshield_reauth.go b/core/internal/proxy/madshield_reauth.go
 new file mode 100644
-index 0000000..79a7146
+index 0000000..3f136d5
 --- /dev/null
 +++ b/core/internal/proxy/madshield_reauth.go
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,105 @@
 +package proxy
 +
 +import (
 +	"context"
++	"errors"
 +	"fmt"
 +	"time"
 +
@@ -15,11 +709,42 @@ index 0000000..79a7146
 +	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
 +)
 +
++// ErrRenewSuperseded is returned when the account's credentials were replaced (or the account was forgotten) while a
++// renewal was waiting on Mozilla: what it obtained is dropped, so it cannot overwrite anything newer.
++var ErrRenewSuperseded = errors.New("the account's sign-in changed while it was being renewed")
++
++// RenewPersistError says the renewed tokens could not be saved to the account's file. InUse reports whether they are used
++// from memory anyway: that is so when Mozilla rotated the refresh token, because the old one may no longer work and the
++// new one must not be lost. Otherwise the stored sign-in stays as it was, and it is still good.
++type RenewPersistError struct {
++	Err   error
++	InUse bool
++}
++
++func (e *RenewPersistError) Error() string {
++	if e.InUse {
++		return fmt.Sprintf("the renewed sign-in works for now but could not be saved: %v", e.Err)
++	}
++	return fmt.Sprintf("the renewed sign-in could not be saved; the stored one is unchanged: %v", e.Err)
++}
++func (e *RenewPersistError) Unwrap() error { return e.Err }
++
++// PersistFailed lets the dashboard name this failure without importing this package's type.
++func (e *RenewPersistError) PersistFailed() bool { return true }
++
 +// RenewAccessToken makes the account's access token fresh (MadShield: an account page asked for it, and a person is
 +// waiting to answer Fastly's image CAPTCHA, so the usual 15 s limit of a background refresh does not apply: ctx sets
-+// the time). It reports whether a refresh was needed; a token that is still good is left alone. The new tokens are
-+// saved like those of any refresh.
++// the time). It reports whether a refresh was needed; a token that is still good is left alone.
++//
++// The new tokens replace the old ones in one step: written to the account's file first, then put in the pool's memory,
++// both under the pool's lock and only if the pool still holds the credentials the refresh started from. So a failed
++// renewal changes nothing, a renewal that ended (cancelled, timed out) installs nothing, and one that lost a race with a
++// newer refresh does not overwrite it.
 +func (p *AccountPool) RenewAccessToken(ctx context.Context, acc accounts.Account) (bool, error) {
++	return p.renewAccessToken(ctx, acc, fxa.RefreshToken)
++}
++
++func (p *AccountPool) renewAccessToken(ctx context.Context, acc accounts.Account, refresh func(context.Context, string) (*fxa.TokenResponse, error)) (bool, error) {
 +	auth, err := p.AuthFor(acc)
 +	if err != nil {
 +		return false, err
@@ -30,15 +755,345 @@ index 0000000..79a7146
 +	if auth.Token == nil || auth.Token.RefreshToken == "" {
 +		return false, fmt.Errorf("%w: no refresh token stored", fxa.ErrReauthRequired)
 +	}
-+	token, err := fxa.RefreshToken(ctx, auth.Token.RefreshToken)
++	token, err := refresh(ctx, auth.Token.RefreshToken)
 +	if err != nil {
 +		return false, err
 +	}
-+	renewed := &runtimeAuth{Token: token, ObtainedAt: time.Now(), persist: auth.persist, accountID: auth.accountID}
-+	if err := renewed.save(); err != nil {
-+		return true, fmt.Errorf("saving the renewed tokens: %w", err)
++	if err := ctx.Err(); err != nil {
++		return false, err // the renewal ended while the answer was on its way: nothing is installed
 +	}
++	if token.RefreshToken == "" {
++		token.RefreshToken = auth.Token.RefreshToken // a refresh may not rotate it (fxa.RefreshToken already keeps it)
++	}
++	renewed := &runtimeAuth{Token: token, ObtainedAt: time.Now(), persist: auth.persist, accountID: auth.accountID}
++	return p.installRenewed(auth, renewed)
++}
++
++// installRenewed puts next in place of prev, which the refresh started from. It reports true when the account holds
++// fresh credentials afterwards.
++func (p *AccountPool) installRenewed(prev, next *runtimeAuth) (bool, error) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	cur, ok := p.auths[next.accountID]
++	if !ok {
++		return false, ErrRenewSuperseded // the account was forgotten meanwhile
++	}
++	if cur != prev {
++		// Credentials were installed after the refresh began (a background refresh): they are newer, keep them.
++		if cur.accessTokenValid(time.Now()) {
++			return true, nil
++		}
++		return false, ErrRenewSuperseded
++	}
++	err := p.store.SaveCredentials(next.accountID, &fxa.SavedTokens{
++		AccessToken:  next.Token.AccessToken,
++		RefreshToken: next.Token.RefreshToken,
++		Scope:        next.Token.Scope,
++		ObtainedAt:   next.ObtainedAt,
++		ExpiresIn:    next.Token.ExpiresIn,
++	})
++	if err != nil {
++		rotated := next.Token.RefreshToken != prev.Token.RefreshToken
++		if rotated {
++			p.auths[next.accountID] = next
++		}
++		return true, &RenewPersistError{Err: err, InUse: rotated}
++	}
++	p.auths[next.accountID] = next
 +	return true, nil
++}
+diff --git a/core/internal/proxy/madshield_reauth_test.go b/core/internal/proxy/madshield_reauth_test.go
+new file mode 100644
+index 0000000..e51a515
+--- /dev/null
++++ b/core/internal/proxy/madshield_reauth_test.go
+@@ -0,0 +1,287 @@
++package proxy
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/accounts"
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++)
++
++// MadShield (patch 0003): what a renewal does to the account's credentials, against the real account store.
++
++type renewFixture struct {
++	t     *testing.T
++	pool  *AccountPool
++	store *accounts.Store
++	acc   accounts.Account
++	dir   string
++}
++
++// newRenewFixture stores an account whose access token has expired (its refresh token is "old-refresh").
++func newRenewFixture(t *testing.T) *renewFixture {
++	t.Helper()
++	dir := t.TempDir()
++	store, err := accounts.OpenStore(dir)
++	if err != nil {
++		t.Fatal(err)
++	}
++	acc, _, err := store.Add("renew@example.invalid", &fxa.SavedTokens{
++		AccessToken: "old-access", RefreshToken: "old-refresh", Scope: "s", ExpiresIn: 3600,
++		ObtainedAt: time.Now().Add(-2 * time.Hour),
++	}, time.Now())
++	if err != nil {
++		t.Fatal(err)
++	}
++	return &renewFixture{t: t, pool: NewAccountPool(store, nil), store: store, acc: acc, dir: dir}
++}
++
++func (f *renewFixture) stored() *fxa.SavedTokens {
++	f.t.Helper()
++	creds, err := f.store.Credentials(f.acc.ID)
++	if err != nil {
++		f.t.Fatal(err)
++	}
++	return creds
++}
++
++func (f *renewFixture) cached() *runtimeAuth {
++	f.pool.mu.Lock()
++	defer f.pool.mu.Unlock()
++	return f.pool.auths[f.acc.ID]
++}
++
++func (f *renewFixture) breakStore() {
++	f.t.Helper()
++	matches, _ := filepath.Glob(filepath.Join(f.dir, "*", f.acc.ID))
++	if len(matches) != 1 {
++		f.t.Fatalf("account dir not found: %v", matches)
++	}
++	if err := os.RemoveAll(matches[0]); err != nil {
++		f.t.Fatal(err)
++	}
++	if err := os.WriteFile(matches[0], []byte("not a directory"), 0o600); err != nil {
++		f.t.Fatal(err)
++	}
++}
++
++func refreshing(refresh, access string) func(context.Context, string) (*fxa.TokenResponse, error) {
++	return func(context.Context, string) (*fxa.TokenResponse, error) {
++		return &fxa.TokenResponse{AccessToken: access, RefreshToken: refresh, ExpiresIn: 3600, Scope: "s", TokenType: "bearer"}, nil
++	}
++}
++
++// Refresh-token rotation: the new refresh token replaces the old one in memory and on disk, together.
++func TestMadShieldRenewRotatesTheRefreshToken(t *testing.T) {
++	f := newRenewFixture(t)
++	renewed, err := f.pool.renewAccessToken(context.Background(), f.acc, refreshing("new-refresh", "new-access"))
++	if err != nil || !renewed {
++		t.Fatalf("renewed=%v err=%v", renewed, err)
++	}
++	if got := f.stored(); got.RefreshToken != "new-refresh" || got.AccessToken != "new-access" {
++		t.Fatalf("stored: %+v", got)
++	}
++	if c := f.cached(); c.Token.RefreshToken != "new-refresh" || !c.accessTokenValid(time.Now()) {
++		t.Fatalf("cached: %+v", c.Token)
++	}
++}
++
++// A refresh that does not rotate keeps the stored refresh token.
++func TestMadShieldRenewKeepsTheRefreshTokenWhenNotRotated(t *testing.T) {
++	f := newRenewFixture(t)
++	if _, err := f.pool.renewAccessToken(context.Background(), f.acc, refreshing("", "new-access")); err != nil {
++		t.Fatal(err)
++	}
++	if got := f.stored(); got.RefreshToken != "old-refresh" || got.AccessToken != "new-access" {
++		t.Fatalf("stored: %+v", got)
++	}
++}
++
++// A token that is still good is not refreshed.
++func TestMadShieldRenewLeavesAValidTokenAlone(t *testing.T) {
++	f := newRenewFixture(t)
++	if err := f.store.SaveCredentials(f.acc.ID, &fxa.SavedTokens{AccessToken: "good", RefreshToken: "r", ExpiresIn: 3600, ObtainedAt: time.Now()}); err != nil {
++		t.Fatal(err)
++	}
++	called := false
++	renewed, err := f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++		called = true
++		return nil, errors.New("must not be called")
++	})
++	if renewed || err != nil || called {
++		t.Fatalf("renewed=%v err=%v called=%v", renewed, err, called)
++	}
++}
++
++// A failed renewal changes nothing: the previous session stays valid in memory and on disk.
++func TestMadShieldFailedRenewalKeepsThePreviousSession(t *testing.T) {
++	f := newRenewFixture(t)
++	before := f.stored()
++	_, err := f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++		return nil, errors.New("Fastly anti-bot challenge still failing")
++	})
++	if err == nil {
++		t.Fatal("expected an error")
++	}
++	if got := f.stored(); *got != *before {
++		t.Fatalf("stored credentials changed: %+v -> %+v", before, got)
++	}
++	if c := f.cached(); c == nil || c.Token.RefreshToken != "old-refresh" || c.Token.AccessToken != "old-access" {
++		t.Fatalf("cached credentials changed: %+v", c)
++	}
++}
++
++// A renewal that ended (cancelled / timed out) while Mozilla's answer was on its way installs nothing.
++func TestMadShieldCancelledRenewalInstallsNothing(t *testing.T) {
++	f := newRenewFixture(t)
++	ctx, cancel := context.WithCancel(context.Background())
++	_, err := f.pool.renewAccessToken(ctx, f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++		cancel() // the person cancels just as the token arrives
++		return &fxa.TokenResponse{AccessToken: "new", RefreshToken: "new-refresh", ExpiresIn: 3600}, nil
++	})
++	if !errors.Is(err, context.Canceled) {
++		t.Fatalf("got %v", err)
++	}
++	if got := f.stored(); got.RefreshToken != "old-refresh" || f.cached().Token.AccessToken != "old-access" {
++		t.Fatalf("a cancelled renewal wrote credentials: %+v", got)
++	}
++}
++
++// Persistence failure, refresh token not rotated: surfaced; the stored session stays as it was (still good).
++func TestMadShieldPersistFailureWithoutRotationKeepsTheOldSession(t *testing.T) {
++	f := newRenewFixture(t)
++	if _, err := f.pool.AuthFor(f.acc); err != nil { // load into memory before the store breaks
++		t.Fatal(err)
++	}
++	f.breakStore()
++	renewed, err := f.pool.renewAccessToken(context.Background(), f.acc, refreshing("", "new-access"))
++	var pe *RenewPersistError
++	if !errors.As(err, &pe) || !pe.PersistFailed() || pe.InUse || !renewed {
++		t.Fatalf("renewed=%v err=%v", renewed, err)
++	}
++	if c := f.cached(); c.Token.AccessToken != "old-access" || c.Token.RefreshToken != "old-refresh" {
++		t.Fatalf("memory must keep the stored session: %+v", c.Token)
++	}
++}
++
++// Persistence failure after rotation: the new refresh token is the only good one, so memory keeps it, and the error says so.
++func TestMadShieldPersistFailureAfterRotationKeepsTheNewTokenInMemory(t *testing.T) {
++	f := newRenewFixture(t)
++	if _, err := f.pool.AuthFor(f.acc); err != nil {
++		t.Fatal(err)
++	}
++	f.breakStore()
++	_, err := f.pool.renewAccessToken(context.Background(), f.acc, refreshing("rotated", "new-access"))
++	var pe *RenewPersistError
++	if !errors.As(err, &pe) || !pe.InUse {
++		t.Fatalf("err=%v", err)
++	}
++	if c := f.cached(); c.Token.RefreshToken != "rotated" {
++		t.Fatalf("the rotated refresh token was lost: %+v", c.Token)
++	}
++}
++
++// A renewal that lost a race with a newer refresh does not overwrite it.
++func TestMadShieldStaleRenewalDoesNotOverwriteNewerCredentials(t *testing.T) {
++	f := newRenewFixture(t)
++	inFlight, proceed := make(chan struct{}), make(chan struct{})
++	done := make(chan error, 1)
++	var renewed bool
++	go func() {
++		var err error
++		renewed, err = f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++			close(inFlight)
++			<-proceed
++			return &fxa.TokenResponse{AccessToken: "slow-access", RefreshToken: "slow-refresh", ExpiresIn: 3600}, nil
++		})
++		done <- err
++	}()
++	<-inFlight
++	// meanwhile a background refresh installs newer credentials the way the pool does
++	newer := &runtimeAuth{Token: &fxa.TokenResponse{AccessToken: "fast-access", RefreshToken: "fast-refresh", ExpiresIn: 3600}, ObtainedAt: time.Now(), persist: f.pool.persist, accountID: f.acc.ID}
++	if err := newer.save(); err != nil {
++		t.Fatal(err)
++	}
++	close(proceed)
++	if err := <-done; err != nil || !renewed {
++		t.Fatalf("renewed=%v err=%v", renewed, err)
++	}
++	if got := f.stored(); got.AccessToken != "fast-access" || got.RefreshToken != "fast-refresh" {
++		t.Fatalf("the stale renewal overwrote the newer credentials on disk: %+v", got)
++	}
++	if c := f.cached(); c != newer {
++		t.Fatalf("the stale renewal replaced the newer credentials in memory: %+v", c.Token)
++	}
++}
++
++// If the newer credentials are not usable either, the renewal says it was superseded instead of pretending.
++func TestMadShieldSupersededRenewalIsReportedWhenNothingFreshRemains(t *testing.T) {
++	f := newRenewFixture(t)
++	_, err := f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++		stale := &runtimeAuth{Token: &fxa.TokenResponse{AccessToken: "x", RefreshToken: "y", ExpiresIn: 1}, ObtainedAt: time.Now().Add(-time.Hour), persist: f.pool.persist, accountID: f.acc.ID}
++		_ = stale.save()
++		return &fxa.TokenResponse{AccessToken: "n", RefreshToken: "m", ExpiresIn: 3600}, nil
++	})
++	if !errors.Is(err, ErrRenewSuperseded) {
++		t.Fatalf("got %v", err)
++	}
++}
++
++// An account forgotten while it was being renewed is not brought back.
++func TestMadShieldRenewalOfAForgottenAccountInstallsNothing(t *testing.T) {
++	f := newRenewFixture(t)
++	_, err := f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++		f.pool.Forget(f.acc.ID)
++		return &fxa.TokenResponse{AccessToken: "n", RefreshToken: "m", ExpiresIn: 3600}, nil
++	})
++	if !errors.Is(err, ErrRenewSuperseded) {
++		t.Fatalf("got %v", err)
++	}
++	if f.cached() != nil || f.stored().RefreshToken != "old-refresh" {
++		t.Fatal("a forgotten account was written back")
++	}
++}
++
++// Concurrent renewals (and a concurrent reader) end with memory and disk saying the same thing.
++func TestMadShieldConcurrentRenewalsEndConsistent(t *testing.T) {
++	f := newRenewFixture(t)
++	var calls int32
++	var wg sync.WaitGroup
++	for i := 0; i < 8; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_, err := f.pool.renewAccessToken(context.Background(), f.acc, func(context.Context, string) (*fxa.TokenResponse, error) {
++				n := atomic.AddInt32(&calls, 1)
++				time.Sleep(time.Millisecond)
++				return &fxa.TokenResponse{AccessToken: "a", RefreshToken: "r" + string(rune('0'+n)), ExpiresIn: 3600}, nil
++			})
++			if err != nil {
++				t.Errorf("renewal: %v", err)
++			}
++			_, _ = f.pool.AuthFor(f.acc)
++		}()
++	}
++	wg.Wait()
++	if c, s := f.cached(), f.stored(); c.Token.RefreshToken != s.RefreshToken || c.Token.AccessToken != s.AccessToken {
++		t.Fatalf("memory %q and disk %q disagree", c.Token.RefreshToken, s.RefreshToken)
++	}
++}
++
++// With no refresh token stored the answer is "sign in again", as before.
++func TestMadShieldRenewWithoutARefreshTokenAsksForSignIn(t *testing.T) {
++	f := newRenewFixture(t)
++	if err := f.store.SaveCredentials(f.acc.ID, &fxa.SavedTokens{AccessToken: "a", ExpiresIn: 1, ObtainedAt: time.Now().Add(-time.Hour)}); err != nil {
++		t.Fatal(err)
++	}
++	_, err := f.pool.renewAccessToken(context.Background(), f.acc, refreshing("x", "y"))
++	if !errors.Is(err, fxa.ErrReauthRequired) {
++		t.Fatalf("got %v", err)
++	}
 +}
 diff --git a/core/internal/service/dashboard.go b/core/internal/service/dashboard.go
 index 0947681..783f1e2 100644
@@ -57,19 +1112,22 @@ index 0947681..783f1e2 100644
  	mux.HandleFunc("DELETE /api/signin/{id}", s.handleSignInCancel)
 diff --git a/core/internal/service/madshield_reauth.go b/core/internal/service/madshield_reauth.go
 new file mode 100644
-index 0000000..3194ae1
+index 0000000..b2f3a19
 --- /dev/null
 +++ b/core/internal/service/madshield_reauth.go
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,424 @@
 +package service
 +
 +import (
 +	"context"
++	"crypto/rand"
++	"encoding/hex"
 +	"errors"
 +	"fmt"
-+	"net/http"
++	"strings"
 +	"sync"
 +	"time"
++	"unicode/utf8"
 +
 +	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
 +	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
@@ -82,38 +1140,150 @@ index 0000000..3194ae1
 +// the same question the sign-in asks, with the same pictures, but for an account that is already added: the app starts a
 +// renewal (POST /api/ms/reauth), shows the picture the daemon offers (GET /api/ms/reauth) and sends the characters back
 +// (POST /api/ms/reauth/answer). Nothing is kept: the picture and the answer live only in memory while the renewal runs.
++//
++// One renewal is an operation with its own id (Op). Every picture it shows has an id of its own (ID = Op + "." + round).
++// An answer is taken only for the picture that is waiting now, once; a cancel names the operation it means. So a late
++// answer, a second tap, or the cleanup of an older dialog cannot touch a newer renewal.
++//
++// States of an operation:
++//
++//	idle -> starting -> waiting_for_captcha -> submitting -> verifying -> completed
++//	                         ^                                   |
++//	                         +------ additional_challenge <------+      (Fastly asked again)
++//	any running state -> failed | cancelled | timed_out
++//
++// "verifying" lasts from the moment the answer is handed to the challenge flow until the flow ends: the post-back to
++// Fastly, the probe, the cookie carried over, and the original refresh sent again. A local "answer accepted" proves none
++// of that. A new picture after an answer is "additional_challenge": Fastly does not say whether the last answer was wrong,
++// so neither does this program; only a refusal Fastly states itself (an HTTP 4xx to the post-back) is reported as one.
 +
 +const (
-+	reauthIdle      = "idle"
-+	reauthRunning   = "running"
-+	reauthCaptcha   = "captcha"
-+	reauthDone      = "done"
-+	reauthFailed    = "failed"
-+	reauthTimeLimit = 4 * time.Minute
++	reauthIdle       = "idle"
++	reauthStarting   = "starting"
++	reauthWaiting    = "waiting_for_captcha"
++	reauthSubmitting = "submitting"
++	reauthVerifying  = "verifying"
++	reauthAdditional = "additional_challenge"
++	reauthCompleted  = "completed"
++	reauthFailed     = "failed"
++	reauthCancelled  = "cancelled"
++	reauthTimedOut   = "timed_out"
++
++	reauthMaxCaptchas  = 6  // pictures one operation shows before it gives up
++	reauthMaxAnswerLen = 64 // characters of one answer
++)
++
++// reauthTimeLimit is the time one operation has, from its start. A variable only so a test can make it short.
++var reauthTimeLimit = 4 * time.Minute
++
++// Why a picture is an additional one (reauthView.Cause).
++const (
++	reauthCauseMore  = "more_rounds" // Fastly answered the post-back with another round
++	reauthCauseAgain = "asked_again" // the challenge was accepted, but the original request got HTTP 406 again
++	reauthCauseHost  = "other_host"  // the flow on one host ended, and the next host asked its own picture
++)
++
++// Why an operation failed (reauthView.Code).
++const (
++	reauthCodeTooMany     = "too_many_captchas"
++	reauthCodeStill406    = "refresh_still_challenged"
++	reauthCodePersist     = "persist_failed"
++	reauthCodeSignIn      = "sign_in_required"
++	reauthCodeRejected    = "answer_rejected" // Fastly itself refused the post-back (HTTP 4xx)
++	reauthCodePostBack    = "post_back_failed"
++	reauthCodeNotAccepted = "challenge_not_accepted" // the probe still met the challenge: cookie not accepted on this connection
++	reauthCodeNoCookies   = "session_cookies_missing"
++	reauthCodeRounds      = "challenge_rounds_exceeded"
++	reauthCodeRefresh     = "refresh_failed" // the challenge was solved, then the original request failed
++	reauthCodeChallenge   = "challenge_failed"
++	reauthCodeNetwork     = "network"
++	reauthCodeTimeout     = "timeout"
 +)
 +
 +// reauthView is what the API shows of the renewal.
 +type reauthView struct {
 +	State   string `json:"state"`
++	Op      string `json:"op"`      // names the operation; "" while idle
 +	ID      string `json:"id"`      // names the picture in Image, to be sent back with the answer
-+	Image   string `json:"image"`   // a data: URL while State is "captcha", else ""
-+	Error   string `json:"error"`   // why it failed
-+	Renewed bool   `json:"renewed"` // done: the token was renewed (false: it was still good)
++	Image   string `json:"image"`   // a data: URL while a picture waits, else ""
++	Round   int    `json:"round"`   // pictures this operation has shown (the one waiting is Round)
++	Cause   string `json:"cause"`   // additional_challenge: why another picture (reauthCause...)
++	Error   string `json:"error"`   // why it ended without success (a short English text, never a secret)
++	Code    string `json:"code"`    // the same as a fixed word (reauthCode...)
++	HTTP    int    `json:"http"`    // the HTTP status behind a failure, 0 when none
++	Renewed bool   `json:"renewed"` // completed: the token was renewed (false: it was still good)
++}
++
++// reauthError is an answer the API gives to a request it refuses.
++type reauthError struct {
++	status int
++	code   string
++	msg    string
++}
++
++func (e *reauthError) Error() string { return e.msg }
++
++var (
++	errReauthStale          = &reauthError{409, "stale_operation", "that renewal is no longer the current one"}
++	errReauthNoChallenge    = &reauthError{409, "no_challenge", "no CAPTCHA is waiting for an answer"}
++	errReauthStaleChallenge = &reauthError{409, "stale_challenge", "that picture is no longer the one waiting"}
++	errReauthDuplicate      = &reauthError{409, "already_submitted", "that answer was already sent"}
++	errReauthBusy           = &reauthError{409, "busy", "another account is being renewed"}
++	errReauthEmpty          = &reauthError{400, "empty_answer", "the answer is empty"}
++	errReauthTooLong        = &reauthError{400, "answer_too_long", "the answer is too long"}
++	errReauthOp             = &reauthError{400, "missing_operation", "the operation id is missing"}
++
++	// errTooManyCaptchas ends an operation whose pictures keep coming (the solver's own bound, below Fastly's).
++	errTooManyCaptchas = errors.New("Fastly keeps asking for CAPTCHAs; giving up")
++	// errReauthSuperseded is what a picture request of an operation that is no longer current gets.
++	errReauthSuperseded = errors.New("this renewal is no longer the current one")
++)
++
++// reauthTrace is what the events of the running operation told, for the failure's code and for the log.
++type reauthTrace struct {
++	attempt   int    // the try of the original request (fxaDo)
++	postBack  string // result of the last post-back: success|more|rejected|error
++	postBackH int    // its HTTP status
++	probe     string // accepted|still_challenged
++	cookies   string // installed|missing
++	failure   string // the last host failure: probe|cookies|rounds|cancelled|other
++	solved    bool   // a challenge flow completed
++	reply     int    // the status of the original request sent again after a solved challenge
++	cause     string // why the next picture is an additional one
 +}
 +
 +type reauthJob struct {
-+	mu     sync.Mutex
-+	view   reauthView
-+	seq    int
-+	answer chan string
-+	cancel context.CancelFunc
++	mu      sync.Mutex
++	view    reauthView
++	account string
++	lastID  string // the picture answered last (its id is gone from view once answered)
++	answer  chan string
++	cancel  context.CancelFunc
++	trace   reauthTrace
 +}
 +
-+// msReauth is the one renewal of this process; a second start while it runs joins it.
++// msReauth is the one renewal of this process; a second start for the same account while it runs joins it.
 +var msReauth = &reauthJob{view: reauthView{State: reauthIdle}}
 +
-+// reauthRun does the renewal; solve is the CAPTCHA question to give to the context it uses.
-+type reauthRun func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error)
++// reauthRun does the renewal. solve is the CAPTCHA question to put in the context it uses; note is the observer of the
++// challenge flow (fxa.WithChallengeObserver). It reports whether a refresh was needed.
++type reauthRun func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error)
++
++func reauthActive(state string) bool {
++	switch state {
++	case reauthStarting, reauthWaiting, reauthSubmitting, reauthVerifying, reauthAdditional:
++		return true
++	}
++	return false
++}
++
++func newReauthOp() string {
++	var b [6]byte
++	if _, err := rand.Read(b[:]); err != nil {
++		return fmt.Sprintf("op%d", time.Now().UnixNano())
++	}
++	return hex.EncodeToString(b[:])
++}
 +
 +func (j *reauthJob) snapshot() reauthView {
 +	j.mu.Lock()
@@ -121,83 +1291,281 @@ index 0000000..3194ae1
 +	return j.view
 +}
 +
-+// start begins a renewal (or returns the one in progress).
-+func (j *reauthJob) start(run reauthRun) reauthView {
++// start begins a renewal of account, or returns the one in progress when it is the same account. A renewal of another
++// account that is still running is not joined: the caller gets errReauthBusy and the view of the one running.
++func (j *reauthJob) start(account string, run reauthRun) (reauthView, error) {
 +	j.mu.Lock()
-+	defer j.mu.Unlock()
-+	if j.view.State == reauthRunning || j.view.State == reauthCaptcha {
-+		return j.view
++	if reauthActive(j.view.State) {
++		view := j.view
++		same := j.account == account
++		j.mu.Unlock()
++		if same {
++			return view, nil
++		}
++		return view, errReauthBusy
 +	}
++	op := newReauthOp()
 +	ctx, cancel := context.WithTimeout(context.Background(), reauthTimeLimit)
-+	j.cancel = cancel
-+	j.answer = nil
-+	j.view = reauthView{State: reauthRunning}
++	j.account, j.cancel, j.answer, j.lastID = account, cancel, nil, ""
++	j.trace = reauthTrace{}
++	j.view = reauthView{State: reauthStarting, Op: op}
 +	started := j.view
++	j.mu.Unlock()
++	logx.Info("renewal started op=%s", op)
 +	go func() {
 +		defer cancel()
-+		renewed, err := run(ctx, j.solve)
-+		j.finish(renewed, err)
++		renewed, err := run(ctx, j.solver(op), func(ev fxa.ChallengeEvent) { j.observe(op, ev) })
++		j.finish(op, ctx, renewed, err)
 +	}()
-+	return started
++	return started, nil
 +}
 +
-+func (j *reauthJob) finish(renewed bool, err error) {
++// observe takes one event of the challenge flow of operation op: for the log (fixed words, numbers and Mozilla's host
++// names only) and for the facts finish needs. It runs on the flow's goroutine and only takes the lock.
++func (j *reauthJob) observe(op string, ev fxa.ChallengeEvent) {
 +	j.mu.Lock()
-+	defer j.mu.Unlock()
-+	j.answer = nil
-+	j.view.ID, j.view.Image = "", ""
-+	if err != nil {
-+		j.view.State = reauthFailed
-+		j.view.Error = fxa.Message(err)
-+		if errors.Is(err, context.DeadlineExceeded) {
-+			j.view.Error = "no answer in time"
-+		}
-+		logx.Warn("renewing the sign-in failed err=%s", logx.Err(err))
++	if j.view.Op != op || !reauthActive(j.view.State) {
++		j.mu.Unlock()
 +		return
 +	}
-+	j.view.State, j.view.Error, j.view.Renewed = reauthDone, "", renewed
-+	logx.Info("the account's sign-in was renewed renewed=%v", renewed)
++	t := &j.trace
++	switch ev.Kind {
++	case fxa.EvAttempt:
++		t.attempt = ev.Attempt
++		if t.solved {
++			t.cause = reauthCauseAgain
++		}
++	case fxa.EvHost:
++		t.postBack, t.postBackH, t.probe, t.cookies, t.failure = "", 0, "", "", ""
++	case fxa.EvPostBack:
++		t.postBack, t.postBackH = ev.Result, ev.Status
++		if ev.Result == "more" {
++			t.cause = reauthCauseMore
++		}
++	case fxa.EvProbe:
++		t.probe = ev.Result
++	case fxa.EvCookies:
++		t.cookies = ev.Result
++	case fxa.EvFailed:
++		t.failure = ev.Result
++		t.cause = reauthCauseHost
++	case fxa.EvSolved:
++		t.solved = true
++	case fxa.EvReply:
++		t.reply = ev.Status
++	}
++	round, state := j.view.Round, j.view.State
++	j.mu.Unlock()
++	logx.Info("renewal event op=%s state=%s kind=%s attempt=%d round=%d challenge_round=%d host=%s status=%d result=%s kinds=%s",
++		op, state, ev.Kind, ev.Attempt, round, ev.Round, ev.Host, ev.Status, ev.Result, strings.Join(ev.Kinds, ","))
 +}
 +
-+// solve is the CaptchaSolver of the renewal: shows the picture and waits for the characters.
-+func (j *reauthJob) solve(ctx context.Context, image string) (string, error) {
-+	j.mu.Lock()
-+	j.seq++
-+	ch := make(chan string, 1)
-+	j.answer = ch
-+	j.view.State, j.view.ID, j.view.Image = reauthCaptcha, fmt.Sprintf("c%d", j.seq), image
-+	j.mu.Unlock()
-+	select {
-+	case text := <-ch:
++// solver is the CaptchaSolver of operation op: shows the picture and waits for the characters.
++func (j *reauthJob) solver(op string) fxa.CaptchaSolver {
++	return func(ctx context.Context, image string) (string, error) {
 +		j.mu.Lock()
-+		j.view.State, j.view.ID, j.view.Image = reauthRunning, "", ""
++		if j.view.Op != op || !reauthActive(j.view.State) {
++			j.mu.Unlock()
++			return "", errReauthSuperseded
++		}
++		if j.view.Round >= reauthMaxCaptchas {
++			j.mu.Unlock()
++			return "", errTooManyCaptchas
++		}
++		round := j.view.Round + 1
++		ch := make(chan string, 1)
++		j.answer = ch
++		state, cause := reauthWaiting, ""
++		if round > 1 {
++			state, cause = reauthAdditional, j.trace.cause
++			if cause == "" {
++				cause = reauthCauseMore
++			}
++		}
++		j.trace.cause = ""
++		id := fmt.Sprintf("%s.%d", op, round)
++		j.view = reauthView{State: state, Op: op, ID: id, Image: image, Round: round, Cause: cause}
 +		j.mu.Unlock()
-+		return text, nil
-+	case <-ctx.Done():
-+		return "", ctx.Err()
++		logx.Info("renewal picture op=%s challenge=%s round=%d state=%s cause=%s", op, id, round, state, cause)
++
++		select {
++		case text := <-ch:
++			j.mu.Lock()
++			if j.view.Op == op && j.view.State == reauthSubmitting {
++				j.view.State, j.view.ID, j.view.Image = reauthVerifying, "", ""
++			}
++			j.mu.Unlock()
++			logx.Info("renewal verifying op=%s challenge=%s", op, id)
++			return text, nil
++		case <-ctx.Done():
++			return "", ctx.Err()
++		}
 +	}
 +}
 +
-+// deliver gives the characters read from the picture named id.
-+func (j *reauthJob) deliver(id, text string) error {
++// deliver gives the characters read from the picture id of operation op. Only the picture waiting now takes an answer,
++// and only one answer: the first wins, a repeat gets errReauthDuplicate, an old picture errReauthStaleChallenge.
++func (j *reauthJob) deliver(op, id, text string) error {
++	text = strings.TrimSpace(text)
 +	j.mu.Lock()
 +	defer j.mu.Unlock()
-+	if j.view.State != reauthCaptcha || j.answer == nil || id == "" || id != j.view.ID {
-+		return errors.New("no CAPTCHA is waiting for that answer")
++	if op == "" {
++		return errReauthOp
++	}
++	if op != j.view.Op {
++		return errReauthStale
++	}
++	switch j.view.State {
++	case reauthWaiting, reauthAdditional:
++	case reauthSubmitting, reauthVerifying:
++		if id != "" && id == j.lastID {
++			return errReauthDuplicate
++		}
++		return errReauthStaleChallenge
++	default:
++		return errReauthNoChallenge
++	}
++	if id == "" || id != j.view.ID || j.answer == nil {
++		return errReauthStaleChallenge
++	}
++	if text == "" {
++		return errReauthEmpty
++	}
++	if utf8.RuneCountInString(text) > reauthMaxAnswerLen {
++		return errReauthTooLong
 +	}
 +	j.answer <- text // buffered, one answer per picture
 +	j.answer = nil
++	j.lastID = id
++	j.view.State = reauthSubmitting
 +	return nil
 +}
 +
-+// stop ends a renewal that is waiting or running.
-+func (j *reauthJob) stop() {
++// stop cancels operation op. A cancel that names another operation changes nothing (errReauthStale); one for an
++// operation that already ended is accepted and does nothing.
++func (j *reauthJob) stop(op string) error {
 +	j.mu.Lock()
++	if op == "" {
++		j.mu.Unlock()
++		return errReauthOp
++	}
++	if op != j.view.Op {
++		j.mu.Unlock()
++		return errReauthStale
++	}
++	if !reauthActive(j.view.State) {
++		j.mu.Unlock()
++		return nil
++	}
 +	cancel := j.cancel
++	phase := j.view.State
++	j.answer = nil
++	j.view = reauthView{State: reauthCancelled, Op: op, Round: j.view.Round, Code: "cancelled"}
 +	j.mu.Unlock()
++	logx.Info("renewal cancelled op=%s phase=%s", op, phase)
 +	if cancel != nil {
 +		cancel()
 +	}
++	return nil
++}
++
++// finish records how operation op ended. An operation that is no longer current, or already ended (cancelled), says
++// nothing: whatever it was doing cannot change what a newer one shows.
++func (j *reauthJob) finish(op string, ctx context.Context, renewed bool, err error) {
++	j.mu.Lock()
++	if j.view.Op != op || !reauthActive(j.view.State) {
++		j.mu.Unlock()
++		return
++	}
++	phase := j.view.State
++	round := j.view.Round
++	j.answer = nil
++	view := reauthView{Op: op, Round: round}
++	switch {
++	case err == nil:
++		view.State, view.Renewed = reauthCompleted, renewed
++	case errors.Is(ctx.Err(), context.DeadlineExceeded):
++		// the operation's own time ran out (a request's own timeout is a failure below, not this)
++		view.State, view.Code = reauthTimedOut, reauthCodeTimeout
++		view.Error = "no answer in time"
++		if phase == reauthSubmitting || phase == reauthVerifying {
++			view.Error = "Mozilla did not confirm in time"
++		}
++	case errors.Is(ctx.Err(), context.Canceled):
++		view.State, view.Code = reauthCancelled, "cancelled"
++	default:
++		view.State = reauthFailed
++		view.Code, view.HTTP = j.classify(err)
++		view.Error = fxa.Message(err)
++	}
++	j.view = view
++	t := j.trace
++	j.mu.Unlock()
++	logx.Info("renewal ended op=%s state=%s code=%s http=%d round=%d phase=%s renewed=%v attempt=%d post_back=%s probe=%s cookies=%s reply=%d err=%s",
++		op, view.State, view.Code, view.HTTP, round, phase, view.Renewed, t.attempt, t.postBack, t.probe, t.cookies, t.reply, logx.Err(err))
++}
++
++// classify names why err ended the operation, from the error and from what the events told. Called with the lock held.
++func (j *reauthJob) classify(err error) (string, int) {
++	t := j.trace
++	var persist interface{ PersistFailed() bool }
++	switch {
++	case errors.Is(err, errTooManyCaptchas):
++		return reauthCodeTooMany, 0
++	case errors.As(err, &persist) && persist.PersistFailed():
++		return reauthCodePersist, 0
++	case errors.Is(err, fxa.ErrChallengeStillRefused):
++		return reauthCodeStill406, 406
++	case errors.Is(err, fxa.ErrReauthRequired):
++		return reauthCodeSignIn, 0
++	}
++	switch t.failure {
++	case "probe":
++		return reauthCodeNotAccepted, 0
++	case "cookies":
++		return reauthCodeNoCookies, 0
++	case "rounds":
++		return reauthCodeRounds, 0
++	case "other":
++		switch t.postBack {
++		case "rejected":
++			return reauthCodeRejected, t.postBackH
++		case "error":
++			return reauthCodePostBack, t.postBackH
++		}
++		return reauthCodeChallenge, 0
++	}
++	if t.solved {
++		return reauthCodeRefresh, t.reply
++	}
++	return reauthCodeNetwork, 0
++}
+diff --git a/core/internal/service/madshield_reauth_api.go b/core/internal/service/madshield_reauth_api.go
+new file mode 100644
+index 0000000..8591729
+--- /dev/null
++++ b/core/internal/service/madshield_reauth_api.go
+@@ -0,0 +1,72 @@
++package service
++
++import (
++	"context"
++	"errors"
++	"net/http"
++
++	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++)
++
++// MadShield: the dashboard routes of the renewal (see madshield_reauth.go). Errors carry a fixed "code" next to the text
++// so the app can tell a stale picture from a finished operation without reading prose.
++
++func writeReauthError(w http.ResponseWriter, err error) {
++	var re *reauthError
++	if errors.As(err, &re) {
++		writeJSON(w, re.status, map[string]any{"error": re.msg, "code": re.code})
++		return
++	}
++	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "code": "internal"})
 +}
 +
 +func (s *dashboardServer) handleReauthStart(w http.ResponseWriter, r *http.Request) {
@@ -212,9 +1580,13 @@ index 0000000..3194ae1
 +		writeError(w, http.StatusNotFound, "unknown account")
 +		return
 +	}
-+	view := msReauth.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
-+		return s.d.pool.RenewAccessToken(fxa.WithCaptchaSolver(ctx, solve), acc)
++	view, err := msReauth.start(acc.ID, func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		return s.d.pool.RenewAccessToken(fxa.WithChallengeObserver(fxa.WithCaptchaSolver(ctx, solve), note), acc)
 +	})
++	if err != nil {
++		writeReauthError(w, err)
++		return
++	}
 +	writeJSON(w, http.StatusAccepted, view)
 +}
 +
@@ -224,162 +1596,605 @@ index 0000000..3194ae1
 +
 +func (s *dashboardServer) handleReauthAnswer(w http.ResponseWriter, r *http.Request) {
 +	var in struct {
++		Op     string `json:"op"`
 +		ID     string `json:"id"`
 +		Answer string `json:"answer"`
 +	}
 +	if !readJSON(w, r, &in) {
 +		return
 +	}
-+	if err := msReauth.deliver(in.ID, in.Answer); err != nil {
-+		writeError(w, http.StatusConflict, err.Error())
++	if err := msReauth.deliver(in.Op, in.ID, in.Answer); err != nil {
++		writeReauthError(w, err)
++		return
++	}
++	// 200 says only that the answer was handed to the challenge flow; whether Fastly accepts it is shown by the state.
++	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": msReauth.snapshot().State})
++}
++
++func (s *dashboardServer) handleReauthCancel(w http.ResponseWriter, r *http.Request) {
++	if err := msReauth.stop(r.URL.Query().Get("op")); err != nil {
++		writeReauthError(w, err)
 +		return
 +	}
 +	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 +}
-+
-+func (s *dashboardServer) handleReauthCancel(w http.ResponseWriter, _ *http.Request) {
-+	msReauth.stop()
-+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-+}
 diff --git a/core/internal/service/madshield_reauth_test.go b/core/internal/service/madshield_reauth_test.go
 new file mode 100644
-index 0000000..28b8179
+index 0000000..fb2a68a
 --- /dev/null
 +++ b/core/internal/service/madshield_reauth_test.go
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,574 @@
 +package service
 +
 +import (
++	"bytes"
 +	"context"
++	"encoding/json"
 +	"errors"
++	"fmt"
++	"os"
++	"strings"
++	"sync"
++	"sync/atomic"
 +	"testing"
 +	"time"
 +
 +	"github.com/armanlife/firefox-vpn-client/core/internal/fxa"
++	"github.com/armanlife/firefox-vpn-client/core/internal/logx"
 +)
 +
-+func waitReauth(t *testing.T, j *reauthJob, state string) reauthView {
-+	t.Helper()
-+	deadline := time.Now().Add(3 * time.Second)
-+	for time.Now().Before(deadline) {
-+		if v := j.snapshot(); v.State == state {
-+			return v
-+		}
-+		time.Sleep(5 * time.Millisecond)
-+	}
-+	t.Fatalf("state %q not reached, now %+v", state, j.snapshot())
-+	return reauthView{}
-+}
++const testPicture = "data:image/png;base64,AQID"
 +
 +func newTestReauth() *reauthJob { return &reauthJob{view: reauthView{State: reauthIdle}} }
 +
-+func TestMadShieldReauthAnswersACaptcha(t *testing.T) {
++func waitState(t *testing.T, j *reauthJob, states ...string) reauthView {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		v := j.snapshot()
++		for _, s := range states {
++			if v.State == s {
++				return v
++			}
++		}
++		time.Sleep(2 * time.Millisecond)
++	}
++	t.Fatalf("none of %v reached, now %+v", states, j.snapshot())
++	return reauthView{}
++}
++
++func mustStart(t *testing.T, j *reauthJob, account string, run reauthRun) reauthView {
++	t.Helper()
++	v, err := j.start(account, run)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return v
++}
++
++func code(err error) string {
++	var re *reauthError
++	if errors.As(err, &re) {
++		return re.code
++	}
++	if err == nil {
++		return ""
++	}
++	return "other:" + err.Error()
++}
++
++// captureLog collects everything the job logs during a test.
++func captureLog(t *testing.T) func() string {
++	t.Helper()
++	var mu sync.Mutex
++	buf := &bytes.Buffer{}
++	logx.SetOutput(writerFunc(func(p []byte) (int, error) { mu.Lock(); defer mu.Unlock(); return buf.Write(p) }))
++	t.Cleanup(func() { logx.SetOutput(os.Stderr) })
++	return func() string { mu.Lock(); defer mu.Unlock(); return buf.String() }
++}
++
++type writerFunc func([]byte) (int, error)
++
++func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
++
++// 1. A CAPTCHA answered and the renewal completes; the answer is delivered, and "verifying" is a state of its own.
++func TestMadShieldReauthSuccessfulCaptchaAndRenewal(t *testing.T) {
 +	j := newTestReauth()
 +	got := make(chan string, 1)
-+	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
-+		text, err := solve(ctx, "data:image/png;base64,AQID")
++	release := make(chan struct{})
++	started := mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		text, err := solve(ctx, testPicture)
 +		got <- text
++		<-release // the post-back, probe and the original refresh are in flight
 +		return true, err
 +	})
-+	v := waitReauth(t, j, reauthCaptcha)
-+	if v.Image != "data:image/png;base64,AQID" || v.ID == "" {
-+		t.Fatalf("the picture is not offered: %+v", v)
++	if started.State != reauthStarting || started.Op == "" {
++		t.Fatalf("started: %+v", started)
 +	}
-+	if err := j.deliver("other", "abc"); err == nil {
-+		t.Fatal("an answer for another picture was accepted")
++	v := waitState(t, j, reauthWaiting)
++	if v.Image != testPicture || v.Op != started.Op || v.Round != 1 || v.ID != started.Op+".1" || v.Cause != "" {
++		t.Fatalf("the picture is not offered as expected: %+v", v)
 +	}
-+	if err := j.deliver(v.ID, "k7Q2"); err != nil {
++	if err := j.deliver(v.Op, v.ID, "  k7Q2 "); err != nil {
 +		t.Fatal(err)
 +	}
 +	if text := <-got; text != "k7Q2" {
 +		t.Fatalf("the solver got %q", text)
 +	}
-+	done := waitReauth(t, j, reauthDone)
-+	if !done.Renewed || done.Image != "" || done.ID != "" || done.Error != "" {
-+		t.Fatalf("finished view: %+v", done)
++	ver := waitState(t, j, reauthVerifying)
++	if ver.Image != "" || ver.ID != "" {
++		t.Fatalf("a verifying view must not offer a picture: %+v", ver)
 +	}
-+	if err := j.deliver(v.ID, "again"); err == nil {
-+		t.Fatal("a second answer was accepted")
++	close(release)
++	done := waitState(t, j, reauthCompleted)
++	if !done.Renewed || done.Image != "" || done.Error != "" || done.Code != "" {
++		t.Fatalf("finished view: %+v", done)
 +	}
 +}
 +
-+func TestMadShieldReauthStartJoinsARunningRenewal(t *testing.T) {
++// 2. A valid answer followed by another picture: an additional challenge, not a failure and not "wrong".
++func TestMadShieldReauthAdditionalChallengeAfterAnAnswer(t *testing.T) {
 +	j := newTestReauth()
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		if _, err := solve(ctx, testPicture); err != nil {
++			return false, err
++		}
++		note(fxa.ChallengeEvent{Kind: fxa.EvPostBack, Round: 2, Status: 200, Result: "more"})
++		_, err := solve(ctx, testPicture)
++		return true, err
++	})
++	first := waitState(t, j, reauthWaiting)
++	if err := j.deliver(first.Op, first.ID, "one"); err != nil {
++		t.Fatal(err)
++	}
++	second := waitState(t, j, reauthAdditional)
++	if second.ID == first.ID || second.Round != 2 || second.Cause != reauthCauseMore || second.Error != "" || second.Code != "" {
++		t.Fatalf("second picture: %+v", second)
++	}
++	if err := j.deliver(first.Op, first.ID, "late"); code(err) != "stale_challenge" && code(err) != "already_submitted" {
++		t.Fatalf("an answer for the old picture: %v", err)
++	}
++	if err := j.deliver(second.Op, second.ID, "two"); err != nil {
++		t.Fatal(err)
++	}
++	if v := waitState(t, j, reauthCompleted); !v.Renewed {
++		t.Fatalf("%+v", v)
++	}
++}
++
++// The challenge accepted but the original request got 406 again: the next picture says so (asked_again).
++func TestMadShieldReauthPictureAfterASolvedChallengeSaysAskedAgain(t *testing.T) {
++	j := newTestReauth()
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		note(fxa.ChallengeEvent{Kind: fxa.EvAttempt, Attempt: 1, Status: 406})
++		if _, err := solve(ctx, testPicture); err != nil {
++			return false, err
++		}
++		note(fxa.ChallengeEvent{Kind: fxa.EvSolved, Host: "accounts.firefox.com"})
++		note(fxa.ChallengeEvent{Kind: fxa.EvRetry, Attempt: 2})
++		note(fxa.ChallengeEvent{Kind: fxa.EvReply, Attempt: 2, Status: 406})
++		note(fxa.ChallengeEvent{Kind: fxa.EvAttempt, Attempt: 2, Status: 406})
++		note(fxa.ChallengeEvent{Kind: fxa.EvHost, Host: "api.accounts.firefox.com"})
++		note(fxa.ChallengeEvent{Kind: fxa.EvNoPage, Host: "api.accounts.firefox.com"}) // the normal case: must not hide the cause
++		_, err := solve(ctx, testPicture)
++		return true, err
++	})
++	first := waitState(t, j, reauthWaiting)
++	if err := j.deliver(first.Op, first.ID, "one"); err != nil {
++		t.Fatal(err)
++	}
++	if v := waitState(t, j, reauthAdditional); v.Cause != reauthCauseAgain {
++		t.Fatalf("cause: %+v", v)
++	}
++}
++
++// 3. A refusal that Fastly itself states (HTTP 4xx to the post-back) is the one case reported as a rejected answer.
++func TestMadShieldReauthConfirmedRejection(t *testing.T) {
++	j := newTestReauth()
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		note(fxa.ChallengeEvent{Kind: fxa.EvHost, Host: "accounts.firefox.com"})
++		if _, err := solve(ctx, testPicture); err != nil {
++			return false, err
++		}
++		note(fxa.ChallengeEvent{Kind: fxa.EvPostBack, Round: 2, Status: 403, Result: "rejected"})
++		note(fxa.ChallengeEvent{Kind: fxa.EvFailed, Host: "accounts.firefox.com", Result: "other"})
++		return false, errors.New("Fastly anti-bot challenge: challenge post-back returned HTTP 403")
++	})
++	v := waitState(t, j, reauthWaiting)
++	_ = j.deliver(v.Op, v.ID, "x")
++	f := waitState(t, j, reauthFailed)
++	if f.Code != reauthCodeRejected || f.HTTP != 403 || f.Error == "" {
++		t.Fatalf("%+v", f)
++	}
++}
++
++// 4. Consecutive rounds are bounded: after reauthMaxCaptchas pictures the operation gives up with its own code.
++func TestMadShieldReauthConsecutiveRoundsAreBounded(t *testing.T) {
++	j := newTestReauth()
++	pictures := int32(0)
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		for {
++			if _, err := solve(ctx, testPicture); err != nil {
++				return false, fmt.Errorf("CAPTCHA: %w", err)
++			}
++			atomic.AddInt32(&pictures, 1)
++			note(fxa.ChallengeEvent{Kind: fxa.EvPostBack, Status: 200, Result: "more"})
++		}
++	})
++	for i := 1; i <= reauthMaxCaptchas; i++ {
++		v := waitState(t, j, reauthWaiting, reauthAdditional)
++		if v.Round != i {
++			// the previous answer has not been taken yet
++			time.Sleep(2 * time.Millisecond)
++			i--
++			continue
++		}
++		if err := j.deliver(v.Op, v.ID, "a"); err != nil {
++			t.Fatal(err)
++		}
++		deadline := time.Now().Add(3 * time.Second)
++		for int(atomic.LoadInt32(&pictures)) < i && time.Now().Before(deadline) {
++			time.Sleep(time.Millisecond)
++		}
++	}
++	f := waitState(t, j, reauthFailed)
++	if f.Code != reauthCodeTooMany || f.Round != reauthMaxCaptchas {
++		t.Fatalf("%+v", f)
++	}
++}
++
++// 5-8. Why a failed operation failed, from what the events told.
++func TestMadShieldReauthFailureCodes(t *testing.T) {
++	type step = fxa.ChallengeEvent
++	cases := []struct {
++		name     string
++		events   []step
++		err      error
++		wantCode string
++		wantHTTP int
++	}{
++		{"post-back failed (HTTP 500)", []step{{Kind: fxa.EvHost}, {Kind: fxa.EvPostBack, Status: 500, Result: "error"}, {Kind: fxa.EvFailed, Result: "other"}}, errors.New("post-back returned HTTP 500"), reauthCodePostBack, 500},
++		{"missing session cookies", []step{{Kind: fxa.EvHost}, {Kind: fxa.EvPostBack, Status: 200, Result: "success"}, {Kind: fxa.EvProbe, Result: "accepted"}, {Kind: fxa.EvCookies, Result: "missing"}, {Kind: fxa.EvFailed, Result: "cookies"}}, errors.New("no cookies were issued"), reauthCodeNoCookies, 0},
++		{"transport / exit-IP change (probe)", []step{{Kind: fxa.EvHost}, {Kind: fxa.EvPostBack, Status: 200, Result: "success"}, {Kind: fxa.EvProbe, Result: "still_challenged"}, {Kind: fxa.EvFailed, Result: "probe"}}, errors.New("cookie not accepted"), reauthCodeNotAccepted, 0},
++		{"fastly rounds exceeded", []step{{Kind: fxa.EvHost}, {Kind: fxa.EvFailed, Result: "rounds"}}, errors.New("did not complete"), reauthCodeRounds, 0},
++		{"solved, original refresh failed (HTTP 401)", []step{{Kind: fxa.EvSolved}, {Kind: fxa.EvRetry, Attempt: 2}, {Kind: fxa.EvReply, Attempt: 2, Status: 401}}, errors.New("invalid token"), reauthCodeRefresh, 401},
++		{"solved, original refresh still 406", []step{{Kind: fxa.EvSolved}, {Kind: fxa.EvGiveUp, Attempt: 5, Status: 406}}, fmt.Errorf("%w after 5 attempts (HTTP 406)", fxa.ErrChallengeStillRefused), reauthCodeStill406, 406},
++		{"sign-in required", nil, fmt.Errorf("%w: no refresh token stored", fxa.ErrReauthRequired), reauthCodeSignIn, 0},
++		{"persistence failed", []step{{Kind: fxa.EvSolved}}, &persistFailure{}, reauthCodePersist, 0},
++		{"plain network failure", nil, errors.New("dial tcp: no route to host"), reauthCodeNetwork, 0},
++	}
++	for _, c := range cases {
++		c := c
++		t.Run(c.name, func(t *testing.T) {
++			j := newTestReauth()
++			mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++				for _, ev := range c.events {
++					note(ev)
++				}
++				return false, c.err
++			})
++			f := waitState(t, j, reauthFailed)
++			if f.Code != c.wantCode || f.HTTP != c.wantHTTP || f.Error == "" || f.Renewed {
++				t.Fatalf("%+v, want code %s http %d", f, c.wantCode, c.wantHTTP)
++			}
++		})
++	}
++}
++
++type persistFailure struct{}
++
++func (*persistFailure) Error() string       { return "the renewed sign-in could not be saved" }
++func (*persistFailure) PersistFailed() bool { return true }
++
++// 10. Duplicate, stale, empty and out-of-order answers never reach the solver; the first one wins.
++func TestMadShieldReauthRejectsDuplicateAndStaleAnswers(t *testing.T) {
++	j := newTestReauth()
++	answers := make(chan string, 4)
 +	release := make(chan struct{})
-+	runs := 0
-+	run := func(ctx context.Context, _ fxa.CaptchaSolver) (bool, error) {
-+		runs++
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		text, err := solve(ctx, testPicture)
++		answers <- text
++		<-release
++		return true, err
++	})
++	v := waitState(t, j, reauthWaiting)
++	for _, c := range []struct{ op, id, text, want string }{
++		{"", v.ID, "a", "missing_operation"},
++		{"other", v.ID, "a", "stale_operation"},
++		{v.Op, "", "a", "stale_challenge"},
++		{v.Op, v.Op + ".9", "a", "stale_challenge"},
++		{v.Op, v.ID, "   ", "empty_answer"},
++		{v.Op, v.ID, strings.Repeat("x", reauthMaxAnswerLen+1), "answer_too_long"},
++	} {
++		if err := j.deliver(c.op, c.id, c.text); code(err) != c.want {
++			t.Fatalf("deliver(%q,%q): %v, want %s", c.op, c.id, err, c.want)
++		}
++	}
++	if len(answers) != 0 {
++		t.Fatal("a refused answer reached the solver")
++	}
++	if err := j.deliver(v.Op, v.ID, "first"); err != nil {
++		t.Fatal(err)
++	}
++	if err := j.deliver(v.Op, v.ID, "second"); code(err) != "already_submitted" {
++		t.Fatalf("a repeat: %v", err)
++	}
++	waitState(t, j, reauthVerifying)
++	if err := j.deliver(v.Op, v.ID, "third"); code(err) != "already_submitted" {
++		t.Fatalf("a repeat while verifying: %v", err)
++	}
++	close(release)
++	waitState(t, j, reauthCompleted)
++	if err := j.deliver(v.Op, v.ID, "fourth"); code(err) != "no_challenge" {
++		t.Fatalf("an answer after the end: %v", err)
++	}
++	if text := <-answers; text != "first" || len(answers) != 0 {
++		t.Fatalf("the solver got %q (and %d more)", text, len(answers))
++	}
++}
++
++// 12. Many answers at once for one picture: exactly one is taken.
++func TestMadShieldReauthConcurrentAnswersOneWins(t *testing.T) {
++	j := newTestReauth()
++	got := make(chan string, 8)
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		text, err := solve(ctx, testPicture)
++		got <- text
++		return true, err
++	})
++	v := waitState(t, j, reauthWaiting)
++	var ok, dup int32
++	var wg sync.WaitGroup
++	for i := 0; i < 24; i++ {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			switch err := j.deliver(v.Op, v.ID, fmt.Sprintf("ans%d", i)); code(err) {
++			case "":
++				atomic.AddInt32(&ok, 1)
++			case "already_submitted", "no_challenge":
++				atomic.AddInt32(&dup, 1)
++			default:
++				t.Errorf("unexpected %v", err)
++			}
++		}(i)
++	}
++	wg.Wait()
++	waitState(t, j, reauthCompleted)
++	if ok != 1 || dup != 23 || len(got) != 1 {
++		t.Fatalf("accepted=%d duplicates=%d solver got %d", ok, dup, len(got))
++	}
++}
++
++// 12. Concurrent renewal attempts: one operation runs; the same account joins it, another account is told it is busy.
++func TestMadShieldReauthConcurrentStartsRunOnce(t *testing.T) {
++	j := newTestReauth()
++	var runs int32
++	release := make(chan struct{})
++	run := func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		atomic.AddInt32(&runs, 1)
 +		<-release
 +		return false, nil
 +	}
-+	j.start(run)
-+	j.start(run)
++	ops := make(chan string, 32)
++	var wg sync.WaitGroup
++	for i := 0; i < 32; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			v, err := j.start("acc", run)
++			if err != nil {
++				t.Errorf("a start of the same account must join: %v", err)
++				return
++			}
++			ops <- v.Op
++		}()
++	}
++	wg.Wait()
++	close(ops)
++	first := ""
++	for op := range ops {
++		if first == "" {
++			first = op
++		}
++		if op != first {
++			t.Fatalf("two operations: %s and %s", first, op)
++		}
++	}
++	if _, err := j.start("other-account", run); code(err) != "busy" {
++		t.Fatalf("another account while one runs: %v", err)
++	}
 +	close(release)
-+	v := waitReauth(t, j, reauthDone)
-+	if runs != 1 || v.Renewed {
-+		t.Fatalf("runs=%d view=%+v", runs, v)
++	waitState(t, j, reauthCompleted)
++	if runs != 1 {
++		t.Fatalf("runs=%d", runs)
 +	}
 +}
 +
-+func TestMadShieldReauthStopWhileWaiting(t *testing.T) {
++// 13. Cancel while the answer is being verified: it stops that operation, the run's context ends, and the late end of
++// the run changes nothing. A newer operation is not touched by the cancel of an older one.
++func TestMadShieldReauthCancelDuringVerificationAndStaleCancel(t *testing.T) {
 +	j := newTestReauth()
-+	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
-+		_, err := solve(ctx, "data:image/png;base64,AQID")
-+		return false, err
-+	})
-+	waitReauth(t, j, reauthCaptcha)
-+	j.stop()
-+	v := waitReauth(t, j, reauthFailed)
-+	if v.Image != "" || v.Error == "" {
-+		t.Fatalf("stopped view: %+v", v)
-+	}
-+}
-+
-+func TestMadShieldReauthFailureIsShownAndAnotherCanStart(t *testing.T) {
-+	j := newTestReauth()
-+	j.start(func(context.Context, fxa.CaptchaSolver) (bool, error) {
-+		return false, errors.New("account server unreachable")
-+	})
-+	v := waitReauth(t, j, reauthFailed)
-+	if v.Error != "account server unreachable" {
-+		t.Fatalf("error text: %q", v.Error)
-+	}
-+	j.start(func(context.Context, fxa.CaptchaSolver) (bool, error) { return true, nil })
-+	if v := waitReauth(t, j, reauthDone); !v.Renewed || v.Error != "" {
-+		t.Fatalf("second run: %+v", v)
-+	}
-+}
-+
-+func TestMadShieldReauthSecondPictureGetsANewID(t *testing.T) {
-+	j := newTestReauth()
-+	j.start(func(ctx context.Context, solve fxa.CaptchaSolver) (bool, error) {
-+		if _, err := solve(ctx, "data:image/png;base64,AQID"); err != nil {
++	ended := make(chan error, 1)
++	releaseOld := make(chan struct{})
++	old := mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		if _, err := solve(ctx, testPicture); err != nil {
 +			return false, err
 +		}
-+		_, err := solve(ctx, "data:image/png;base64,BAUG") // the first answer was wrong: a new picture
-+		return true, err
++		<-ctx.Done() // the post-back hangs until cancelled
++		<-releaseOld // ... and the old run lingers a while after that
++		ended <- ctx.Err()
++		return true, nil // a stale "success" that must not show
 +	})
-+	first := waitReauth(t, j, reauthCaptcha)
-+	if err := j.deliver(first.ID, "wrong"); err != nil {
++	v := waitState(t, j, reauthWaiting)
++	if err := j.deliver(v.Op, v.ID, "x"); err != nil {
 +		t.Fatal(err)
 +	}
-+	deadline := time.Now().Add(3 * time.Second)
-+	var second reauthView
-+	for time.Now().Before(deadline) {
-+		if v := j.snapshot(); v.State == reauthCaptcha && v.ID != first.ID {
-+			second = v
-+			break
++	waitState(t, j, reauthVerifying)
++	if err := j.stop(old.Op); err != nil {
++		t.Fatal(err)
++	}
++	c := j.snapshot()
++	if c.State != reauthCancelled || c.Op != old.Op || c.Image != "" {
++		t.Fatalf("after cancel: %+v", c)
++	}
++	// a newer operation starts while the old run still unwinds
++	secondRelease := make(chan struct{})
++	second := mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		<-secondRelease
++		return true, nil
++	})
++	if second.Op == old.Op {
++		t.Fatal("the new operation reused the id")
++	}
++	close(releaseOld)
++	if err := <-ended; !errors.Is(err, context.Canceled) {
++		t.Fatalf("the old run's context: %v", err)
++	}
++	time.Sleep(20 * time.Millisecond)
++	if cur := j.snapshot(); cur.Op != second.Op || cur.State != reauthStarting {
++		t.Fatalf("the old operation changed the new one: %+v", cur)
++	}
++	// the cleanup of the older dialog arrives late and names the old operation: it must not stop the new one
++	if err := j.stop(old.Op); code(err) != "stale_operation" {
++		t.Fatalf("stale cancel: %v", err)
++	}
++	if cur := j.snapshot(); cur.State != reauthStarting || cur.Op != second.Op {
++		t.Fatalf("stale cancel stopped the new operation: %+v", cur)
++	}
++	if err := j.stop(""); code(err) != "missing_operation" {
++		t.Fatalf("cancel without an operation: %v", err)
++	}
++	close(secondRelease)
++	waitState(t, j, reauthCompleted)
++	if err := j.stop(second.Op); err != nil {
++		t.Fatalf("cancelling a finished operation is a no-op: %v", err)
++	}
++	if j.snapshot().State != reauthCompleted {
++		t.Fatal("a cancel after the end changed the result")
++	}
++}
++
++// The picture request of an operation that was cancelled is refused, not shown.
++func TestMadShieldReauthStalePictureIsNotShown(t *testing.T) {
++	j := newTestReauth()
++	solved := make(chan error, 1)
++	op := mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		<-ctx.Done()
++		_, err := solve(context.Background(), testPicture)
++		solved <- err
++		return false, err
++	})
++	if err := j.stop(op.Op); err != nil {
++		t.Fatal(err)
++	}
++	if err := <-solved; !errors.Is(err, errReauthSuperseded) {
++		t.Fatalf("got %v", err)
++	}
++	if v := j.snapshot(); v.State != reauthCancelled || v.Image != "" {
++		t.Fatalf("%+v", v)
++	}
++}
++
++// 14. A timeout: while waiting for the answer, and while verifying (the submission is in flight).
++func TestMadShieldReauthTimeouts(t *testing.T) {
++	old := reauthTimeLimit
++	reauthTimeLimit = 150 * time.Millisecond
++	defer func() { reauthTimeLimit = old }()
++
++	t.Run("waiting for the answer", func(t *testing.T) {
++		j := newTestReauth()
++		mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++			_, err := solve(ctx, testPicture)
++			return false, fmt.Errorf("CAPTCHA: %w", err)
++		})
++		v := waitState(t, j, reauthTimedOut)
++		if v.Code != reauthCodeTimeout || v.Error != "no answer in time" || v.Image != "" {
++			t.Fatalf("%+v", v)
 +		}
-+		time.Sleep(5 * time.Millisecond)
++	})
++	t.Run("during the submission", func(t *testing.T) {
++		j := newTestReauth()
++		mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++			if _, err := solve(ctx, testPicture); err != nil {
++				return false, err
++			}
++			<-ctx.Done()
++			// as fxaDo does, the error reaches the caller as a cancellation even when the deadline ran out
++			return false, fmt.Errorf("challenge post-back: %w", context.Canceled)
++		})
++		v := waitState(t, j, reauthWaiting)
++		if err := j.deliver(v.Op, v.ID, "x"); err != nil {
++			t.Fatal(err)
++		}
++		tv := waitState(t, j, reauthTimedOut)
++		if tv.Code != reauthCodeTimeout || tv.Error != "Mozilla did not confirm in time" {
++			t.Fatalf("%+v", tv)
++		}
++	})
++}
++
++// A request's own timeout is a failure of that request, not the operation's timeout.
++func TestMadShieldReauthRequestTimeoutIsNotTheOperationsTimeout(t *testing.T) {
++	j := newTestReauth()
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		return false, fmt.Errorf("refresh request: %w", context.DeadlineExceeded) // e.g. http.Client.Timeout
++	})
++	if v := waitState(t, j, reauthFailed); v.Code != reauthCodeNetwork {
++		t.Fatalf("%+v", v)
 +	}
-+	if second.ID == "" || second.Image != "data:image/png;base64,BAUG" {
-+		t.Fatalf("no second picture: %+v", second)
++}
++
++// A new operation can start after a failure, with a new id, and the old view is gone.
++func TestMadShieldReauthStartsAgainAfterAnEnd(t *testing.T) {
++	j := newTestReauth()
++	first := mustStart(t, j, "acc", func(context.Context, fxa.CaptchaSolver, func(fxa.ChallengeEvent)) (bool, error) {
++		return false, errors.New("account server unreachable")
++	})
++	if v := waitState(t, j, reauthFailed); v.Error != "account server unreachable" || v.Op != first.Op {
++		t.Fatalf("%+v", v)
 +	}
-+	if err := j.deliver(first.ID, "late"); err == nil {
-+		t.Fatal("an answer for the old picture was accepted")
++	second := mustStart(t, j, "acc", func(context.Context, fxa.CaptchaSolver, func(fxa.ChallengeEvent)) (bool, error) { return true, nil })
++	if second.Op == first.Op {
++		t.Fatal("the same operation id twice")
 +	}
-+	if err := j.deliver(second.ID, "right"); err != nil {
++	if v := waitState(t, j, reauthCompleted); !v.Renewed || v.Error != "" || v.Code != "" {
++		t.Fatalf("%+v", v)
++	}
++}
++
++// Diagnostics: the transitions are logged with ids, rounds, statuses and outcome; the answer is not in the log or in
++// any view.
++func TestMadShieldReauthLogsTransitionsWithoutSecrets(t *testing.T) {
++	logged := captureLog(t)
++	j := newTestReauth()
++	secret := "ZsEcReT9"
++	mustStart(t, j, "acc", func(ctx context.Context, solve fxa.CaptchaSolver, note func(fxa.ChallengeEvent)) (bool, error) {
++		note(fxa.ChallengeEvent{Kind: fxa.EvAttempt, Attempt: 1, Status: 406})
++		note(fxa.ChallengeEvent{Kind: fxa.EvHost, Host: "accounts.firefox.com"})
++		if _, err := solve(ctx, testPicture); err != nil {
++			return false, err
++		}
++		note(fxa.ChallengeEvent{Kind: fxa.EvPostBack, Round: 2, Status: 200, Result: "success"})
++		note(fxa.ChallengeEvent{Kind: fxa.EvSolved, Host: "accounts.firefox.com"})
++		return true, nil
++	})
++	v := waitState(t, j, reauthWaiting)
++	if err := j.deliver(v.Op, v.ID, secret); err != nil {
 +		t.Fatal(err)
 +	}
-+	waitReauth(t, j, reauthDone)
++	done := waitState(t, j, reauthCompleted)
++	for deadline := time.Now().Add(3 * time.Second); !strings.Contains(logged(), "renewal ended") && time.Now().Before(deadline); {
++		time.Sleep(time.Millisecond) // the end is logged just after the state changes
++	}
++	log := logged()
++	for _, want := range []string{"renewal started op=" + v.Op, "renewal picture op=" + v.Op + " challenge=" + v.ID + " round=1", "renewal verifying", "kind=post_back", "status=200", "result=success", "renewal ended op=" + v.Op + " state=completed"} {
++		if !strings.Contains(log, want) {
++			t.Fatalf("the log lacks %q:\n%s", want, log)
++		}
++	}
++	views, _ := json.Marshal([]reauthView{v, done})
++	if strings.Contains(log, secret) || strings.Contains(string(views), secret) || strings.Contains(log, "AQID") {
++		t.Fatalf("a secret reached the log or a view:\n%s", log)
++	}
 +}

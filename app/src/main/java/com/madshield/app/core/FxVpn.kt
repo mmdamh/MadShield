@@ -309,12 +309,62 @@ data class FxSignIn(
 )
 
 /**
- * The core's renewal of an account's access token while a person answers Fastly's image CAPTCHA (patch 0003):
- * [state] is idle, running, captcha (a picture waits in [image], named [id]), done or failed.
+ * The core's renewal of an account's access token while a person answers Fastly's image CAPTCHA (patch 0003). One renewal
+ * is an operation named [op]; every picture it shows is named [id] (the answer must carry both). [state] is one of
+ * [FxReauthState]. [round] counts the pictures shown so far, [cause] says why an additional one came, [code] and [error]
+ * why it ended without success ([http] is the HTTP status behind that, 0 when none).
  */
-data class FxReauth(val state: String, val id: String, val image: String, val error: String, val renewed: Boolean) {
-    val waitingCaptcha: Boolean get() = state == "captcha" && id.isNotEmpty() && image.isNotEmpty()
-    val finished: Boolean get() = state == "done" || state == "failed"
+data class FxReauth(
+    val state: String,
+    val op: String = "",
+    val id: String = "",
+    val image: String = "",
+    val round: Int = 0,
+    val cause: String = "",
+    val error: String = "",
+    val code: String = "",
+    val http: Int = 0,
+    val renewed: Boolean = false
+) {
+    /** A picture waits for an answer now. */
+    val waitingCaptcha: Boolean
+        get() = (state == FxReauthState.WAITING || state == FxReauthState.ADDITIONAL) && id.isNotEmpty() && image.isNotEmpty()
+    val finished: Boolean get() = FxReauthState.isFinal(state)
+}
+
+/** The states the core reports for a renewal (the wire words of patch 0003). */
+object FxReauthState {
+    const val IDLE = "idle"
+    const val STARTING = "starting"
+    const val WAITING = "waiting_for_captcha"
+    const val SUBMITTING = "submitting"
+    const val VERIFYING = "verifying"
+    const val ADDITIONAL = "additional_challenge"
+    const val COMPLETED = "completed"
+    const val FAILED = "failed"
+    const val CANCELLED = "cancelled"
+    const val TIMED_OUT = "timed_out"
+
+    fun isFinal(state: String): Boolean = state == COMPLETED || state == FAILED || state == CANCELLED || state == TIMED_OUT
+}
+
+/**
+ * The fixed words in which the core says why a renewal failed ([FxReauth.code]) and why an API request was refused
+ * (a 4xx body's "code"). The app has a text of its own for each failure word (strings `fx_renew_err_<code>`).
+ */
+object FxReauthCodes {
+    val failures = listOf(
+        "too_many_captchas", "refresh_still_challenged", "persist_failed", "sign_in_required", "answer_rejected",
+        "post_back_failed", "challenge_not_accepted", "session_cookies_missing", "challenge_rounds_exceeded",
+        "refresh_failed", "challenge_failed", "network", "timeout"
+    )
+    const val STALE_OPERATION = "stale_operation"
+    const val NO_CHALLENGE = "no_challenge"
+    const val STALE_CHALLENGE = "stale_challenge"
+    const val ALREADY_SUBMITTED = "already_submitted"
+    const val BUSY = "busy"
+    const val EMPTY_ANSWER = "empty_answer"
+    const val ANSWER_TOO_LONG = "answer_too_long"
 }
 
 /**
@@ -437,7 +487,11 @@ object FxJson {
         val m = MiniJson.parseObject(text) ?: return null
         val state = str(m, "state")
         if (state.isEmpty()) return null
-        return FxReauth(state, str(m, "id"), str(m, "image"), str(m, "error"), bool(m, "renewed"))
+        return FxReauth(
+            state = state, op = str(m, "op"), id = str(m, "id"), image = str(m, "image"), round = num(m, "round").toInt(),
+            cause = str(m, "cause"), error = str(m, "error"), code = str(m, "code"), http = num(m, "http").toInt(),
+            renewed = bool(m, "renewed")
+        )
     }
 
     fun locations(text: String): List<FxLocation>? {
@@ -457,6 +511,9 @@ object FxJson {
 
     /** The core's error body is `{"error": "..."}`. */
     fun errorText(text: String): String? = MiniJson.parseObject(text)?.let { str(it, "error") }?.takeIf { it.isNotEmpty() }
+
+    /** The fixed word next to the error text of the renewal routes (`{"error": "...", "code": "stale_challenge"}`), "" when none. */
+    fun errorCode(text: String): String = MiniJson.parseObject(text)?.let { str(it, "code") } ?: ""
 
     /** A data: URL ("data:image/png;base64,...") of a CAPTCHA to its bytes, or null when it is not one. */
     fun dataUrlBytes(url: String): ByteArray? {
