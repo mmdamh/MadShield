@@ -1,4 +1,4 @@
-# Foxy CAPTCHA renewal: reliable operation lifecycle (rename to MadShield_updateN.md when N is known)
+# 1.18.1 - Foxy CAPTCHA renewal: reliable operation lifecycle (rename to MadShield_updateN.md when N is known)
 
 ## Symptom
 During Foxy account renewal a Fastly image CAPTCHA is shown, the person answers, nothing says what happened, another
