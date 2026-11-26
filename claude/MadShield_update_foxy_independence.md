@@ -50,3 +50,32 @@ Not verifiable here: the full core build (Go modules are not reachable); the fir
   real repository. NOT run: the Android build and the native build in CI.
 - Licensing: the core stays GPL-3 (derived from GPL-3 code); the upstream license text and notices stay in the core repository.
 - Commits are authored as the project owner only, no attribution lines.
+
+## 1.18.6 - Foxy: connection race (servers, handshake shapes, ECH)
+Problem seen on one network: TCP to the Fastly masque proxy connects, the TLS handshake gets no answer (Firefox's hello and
+Go's both time out, `context deadline exceeded`), in TUN and in Proxy-only mode; other networks connect fast. Later finding by
+the owner: on that network only some countries connect. So the block is per server (IP or name), not one hello shape.
+`native/fxvpn.pin` = `cb7479c6d3ea7249d7c15bd115feb6184cbddbce` (core `main`). Changes are all in the core repository:
+- Servers (the fix for the finding above): the first session is raced. The selected server starts; other servers of the
+  location (for the recommended location also other locations', as the existing stand-ins) start after 2.5 s or when the one
+  before has failed; the first session established wins, the others are cancelled/closed. At most 3 servers. A winner of the
+  location is saved as the choice; a stand-in is used for now and not saved, and the location's own server that did not
+  connect is avoided for 15 minutes (`ServerFailover.Avoid`) so the next wake does not wait for it. A country the user chose
+  stays that country: only its own servers race. No-network / refused-pass errors end the race at once.
+- Handshake shapes: each connection races Firefox's hello, Go's hello, Go's hello with Encrypted Client Hello (only when the
+  proxy's name has an ECH key in DNS), and the other hello splits (record, first-byte, off, sni), 500 ms apart or at once when
+  one fails. A failure to connect ends it. The shape that worked is kept in `upstream_shape.json` (data folder), so the
+  restart the app does after a failure starts with it. `upstreamGoTLS` keeps its meaning (the remembered shape sends Go's hello).
+- Logs: every attempt logs address, TCP connect time and time to the first reply byte (`first_reply=none`: the network dropped
+  the hello), then `upstream TLS established/failed ... shape=...`, `upstream server did not connect`, `upstream server
+  connected first`, `another server connected before the selected one`.
+- Not changed: the app, HEV, sing-box, RouteFront, DNS, UDP, TLS verification, Fastly checks. Route through the owner's own
+  sing-box link (idea 4) was NOT approved and is not built.
+- Verified here: new stdlib-only packages `dialrace` and `handshake` (race, memory file, ECH key cache, real ECH handshake incl.
+  stale-key retry, trace) pass with -race; the proxy glue (shape race, server race) was compiled and tested in a temp module
+  with Firefox's hello (uTLS) replaced by Go's and the resolver stubbed, together with the old fallback tests (3 connections,
+  `upstreamGoTLS`, connect failure). NOT compiled as a whole: `controller.go`, `engine.go`, `daemon.go` (Go modules are not
+  reachable here); the first real build is CI. NOT run: anything on a phone.
+- Known limits: HTTP/3 dials cannot be cancelled, so a losing H3 attempt runs to its timeout; the ECH lookup asks the
+  proxy's plain name (not `_port._https.`), so a proxy on a non-443 port may show no key; failover strikes are still in memory
+  only (the winner and the avoidance are what survives a restart).
